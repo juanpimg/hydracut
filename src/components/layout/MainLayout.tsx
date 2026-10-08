@@ -7,6 +7,7 @@ import { Timeline } from '../timeline/Timeline';
 import { ExportModal } from '../export/ExportModal';
 import { ShortcutsModal } from '../modals/ShortcutsModal';
 import { ProjectsModal } from '../modals/ProjectsModal';
+import { WelcomeModal } from '../modals/WelcomeModal';
 import { MobileCapCutLayout } from '../mobile/MobileCapCutLayout';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useProjectStore } from '../../store/useProjectStore';
@@ -47,7 +48,7 @@ export const MainLayout: React.FC = () => {
 
       const ui = useUIStore.getState();
       const anyModalOpen =
-        ui.isExportModalOpen || ui.isProjectsModalOpen || ui.isShortcutsModalOpen;
+        ui.isExportModalOpen || ui.isProjectsModalOpen || ui.isShortcutsModalOpen || ui.isWelcomeOpen;
 
       // Escape: ProjectsModal and ExportModal own their staged dismissal
       // (confirm steps / render guard) via their local handlers — only the
@@ -168,6 +169,7 @@ export const MainLayout: React.FC = () => {
       <ExportModal />
       <ShortcutsModal />
       <ProjectsModal />
+      <WelcomeModal />
     </div>
   );
 };

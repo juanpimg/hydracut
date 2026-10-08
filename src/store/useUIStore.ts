@@ -8,6 +8,7 @@ export interface UIState {
   isExportModalOpen: boolean;
   isShortcutsModalOpen: boolean;
   isProjectsModalOpen: boolean;
+  isWelcomeOpen: boolean;
   activeTool: TimelineTool;
   isGeneratingSamples: boolean;
 
@@ -15,6 +16,7 @@ export interface UIState {
   setExportModalOpen: (open: boolean) => void;
   setShortcutsModalOpen: (open: boolean) => void;
   setProjectsModalOpen: (open: boolean) => void;
+  setWelcomeOpen: (open: boolean) => void;
   setActiveTool: (tool: TimelineTool) => void;
   setIsGeneratingSamples: (generating: boolean) => void;
 }
@@ -24,6 +26,7 @@ export const useUIStore = create<UIState>((set) => ({
   isExportModalOpen: false,
   isShortcutsModalOpen: false,
   isProjectsModalOpen: false,
+  isWelcomeOpen: true,
   activeTool: 'select',
   isGeneratingSamples: false,
 
@@ -31,6 +34,7 @@ export const useUIStore = create<UIState>((set) => ({
   setExportModalOpen: (isExportModalOpen) => set({ isExportModalOpen }),
   setShortcutsModalOpen: (isShortcutsModalOpen) => set({ isShortcutsModalOpen }),
   setProjectsModalOpen: (isProjectsModalOpen) => set({ isProjectsModalOpen }),
+  setWelcomeOpen: (isWelcomeOpen) => set({ isWelcomeOpen }),
   setActiveTool: (activeTool) => set({ activeTool }),
   setIsGeneratingSamples: (isGeneratingSamples) => set({ isGeneratingSamples }),
 }));

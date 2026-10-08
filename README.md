@@ -49,7 +49,7 @@ El núcleo de HydraCut reside en `src/core/` y opera de forma desacoplada de la 
 |                       webcodecsExporter.ts                               |
 |  - OffscreenCanvas frame rendering                                       |
 |  - VideoEncoder (AVC1 / H.264 Hardware Acceleration)                     |
-|  - AudioEncoder (AAC Stereo @ 48kHz)                                     |
+|  - AudioEncoder (AAC u Opus según plataforma)                          |
 |  - Backpressure flow control (encodeQueueSize <= 3)                      |
 |  - Zero-leak memory safety: frame.close() & audioData.close()            |
 |  - Direct container muxing via mp4-muxer                                 |
@@ -65,8 +65,11 @@ El núcleo de HydraCut reside en `src/core/` y opera de forma desacoplada de la 
 * **Sincronización:** El tiempo global del editor está anclado a `AudioContext.currentTime`. Esto previene desincronizaciones entre el audio y el video (*lip-sync drift*), comunes cuando se depende de temporizadores de JavaScript como `setInterval` o `requestAnimationFrame`.
 * **Mezcla Multicanal:** Cada clip y pista posee su propio `GainNode`, permitiendo muteo individual, curvas de fundido de volumen y control de ganancia de 0% a 200%.
 
-### 1.3. Pipeline de Exportación Acelerado por Hardware (`src/core/export/webcodecsExporter.ts`)
+### 1.3. Pipeline de Exportación (`src/core/export/webcodecsExporter.ts`)
 * **Cero Carga en el Servidor:** La exportación a MP4 se realiza íntegramente en la máquina del usuario utilizando `VideoEncoder` y `AudioEncoder`.
+* **Sonda profunda de encoder (`findWorkingVideoEncoderConfig`):** `isConfigSupported()` no basta — con `hardwareAcceleration: 'prefer-hardware'`, `configure()` puede tener éxito síncrono y el encoder de plataforma morir **asíncronamente** (`OperationError: Encoder creation error` / `NotSupportedError: Operation is not supported`, reproducido en Chrome real). Antes de exportar se crea un encoder real y se verifica que sobrevive una ventana de gracia, probando hardware → default → software × High/Main/Baseline. Si ninguna combinación sobrevive, se cae a MediaRecorder en vez de romper a mitad de exportación.
+* **Audio AAC → Opus:** Chrome/Linux no tiene encoder AAC (`NotSupportedError: Unsupported codec type`); el selector de audio prueba AAC y cae a Opus (mp4-muxer lo muxa en MP4). Sin este fallback el audio se perdía en silencio.
+* **Errores siempre accionables (`toActionableExportError`):** los fallos de plataforma (configure/encode/flush/callback) se traducen a español con resolución/fps y guía (1080p/720p@30). Lo no relacionado con el encoder pasa intacto.
 * **Control de Contrapresión (*Backpressure*):** Monitorea `videoEncoder.encodeQueueSize`. Si la cola de cuadros pendientes supera el umbral (típicamente 3 fotogramas), suspende el bucle de renderizado mediante eventos `dequeue` para evitar colapsar la memoria del navegador.
 * **Gestión Estricta de Memoria GPU:** Cada instancia de `VideoFrame` y `AudioData` generada es cerrada inmediatamente (`frame.close()`, `data.close()`), garantizando cero fugas de memoria VRAM durante renders de alta resolución o duraciones extensas.
 
@@ -93,18 +96,17 @@ Almacena el estado íntegro del proyecto audiovisual y su historial de operacion
   * `removeTrack(trackId)`: Elimina la pista y todos los clips asociados.
   * `duplicateTrack(trackId)`: Clona la pista y duplica todos sus clips preservando offsets de tiempo y estilos.
   * `reorderTrack(trackId, direction)`: Desplaza la pista hacia arriba o hacia abajo en la jerarquía visual de capas.
-  * `toggleTrackMute(trackId)`: Activa o desactiva el sonido de la pista.
-  * `toggleTrackLock(trackId)`: Bloquea la pista para prevenir modificaciones accidentales.
-  * `toggleTrackVisibility(trackId)`: Oculta o muestra la pista en el lienzo del compositor.
+  * `toggleTrackMute/trackLock/trackVisibility(trackId)`: Muteo, bloqueo y visibilidad. Los tres actualizan `updatedAt` (orden de la lista de proyectos). Una pista bloqueada congela `move/trim/split/remove` (origen y destino); `updateClip` sigue permitido.
 * **Operaciones de Clips:**
   * `addClipFromMedia(mediaItem, trackId, startTime)`: Añade un clip asignándole su duración nativa y generando sus parámetros de transformación.
-  * `removeClip(clipId)`: Elimina el clip seleccionado.
-  * `moveClip(clipId, newTrackId, newStart)`: Traslada un clip en el tiempo o entre pistas compatibles.
-  * `splitClip(clipId, splitTime)`: Divide el clip en dos partes contiguas calculando el offset fuente con compensación de velocidad.
-  * `trimClipStart(clipId, delta)` & `trimClipEnd(clipId, delta)`: Recorta los extremos del clip sin desbordar el archivo fuente.
-  * `setClipVolume(clipId, volume)`, `setClipSpeed(clipId, speed)`, `setClipTransition(clipId, transition)`, `setClipText(clipId, text, style)`.
+  * `removeClip(clipId)`: Elimina el clip seleccionado (respeta lock; deshacible con Ctrl+Z).
+  * `moveClip(clipId, newStart, newTrackId)`: Traslada un clip en el tiempo o entre pistas compatibles. Nunca mueve hacia/a partir de pista bloqueada.
+  * `splitClip(clipId, splitTime)`: Divide el clip en dos partes contiguas calculando el offset fuente con compensación de velocidad. No-op cerca de bordes (<0.05s).
+  * `trimClipStart(clipId, newStart)` & `trimClipEnd(clipId, newEnd)`: Recorta los extremos del clip sin desbordar el archivo fuente.
+  * `updateClip(clipId, updates)`: Actualización parcial (velocidad, volumen, transiciones, texto, transformaciones).
 * **Historial y Reproducción:**
   * Pilas inmutables `past` y `future` para `undo()` y `redo()`.
+  * **Historial por gesto:** `beginClipGesture()` toma un snapshot al iniciar un drag/trim; `commitClipChange()` cierra el gesto sin pushear (`move/trim` nunca pushean). Un gesto completo se deshace con un único undo. `historyGesturePending` se resetea en undo/redo/load/reset.
   * `currentTime`: Posición del cabezal en segundos (número de coma flotante de alta precisión).
   * `isPlaying`: Estado booleano de reproducción.
 
@@ -124,9 +126,9 @@ Gestiona el estado efímero de la interfaz de usuario:
 El timeline multitrack (`src/components/timeline/`) combina renderizado reactivo con matemáticas precisas de conversión tiempo-espacio.
 
 ### 3.1. Conversión Tiempo / Píxeles
-Las posiciones visuales se calculan con funciones puras:
-* `timeToPixels(time, zoom, fps)`: `time * zoom * 50` (donde zoom escala la densidad visual).
-* `pixelsToTime(pixels, zoom, fps)`: `pixels / (zoom * 50)`.
+Las posiciones visuales se calculan con funciones puras (`zoom` = píxeles por segundo):
+* `timeToPixels(time, zoom)`: `time * zoom`.
+* `pixelsToTime(pixels, zoom)`: `pixels / zoom` (0 si `zoom <= 0`).
 
 ### 3.2. Snapping Magnético Bidireccional (`calculateSnapping`)
 Al arrastrar o recortar un clip, el motor evalúa las diferencias contra puntos clave magnéticos dentro de un umbral de proximidad visual (por defecto 10 píxeles):
@@ -217,7 +219,11 @@ En pantallas con ancho menor a 768px, HydraCut activa la vista `MobileCapCutLayo
 | +-----------------------------------------+ |
 | | Clips con filmstrips y mangos táctiles  | |
 +---------------------------------------------+
-| Barra de Acciones Inferior Contextual (60px)|
+| Barra de herramientas timeline (44px)       |
+| [sel] [cuchilla] [dividir] [borrar] [imán]  |
+| [+pista] [ajustar] [zoom-] [slider] [zoom+]  |
++---------------------------------------------+
+| Barra de Acciones Inferior Contextual       |
 | [Dividir]  [Velocidad]  [Volumen]  [Eliminar]
 +---------------------------------------------+
 | Safe Area Inferior (iOS home bar)           |
@@ -226,19 +232,12 @@ En pantallas con ancho menor a 768px, HydraCut activa la vista `MobileCapCutLayo
 
 ### 5.1. Cabecera de Pistas en Móvil (`TrackHeader.tsx`)
 
-> [!WARNING]
-> **Estado: implementada pero NO terminada.** Los tests pasan, pero la comprobación visual en emulación iPhone 14 (390×844) muestra un defecto abierto: el icono del ojo (visibilidad) **se solapa con el texto del badge** (`T1`, `V2`, `V1`, `A1`). Ver `HANDOFF.md` en la raíz del repositorio para el siguiente paso.
+> Estado verificado: sin solape ojo–badge en 1280px y 390px (medición geométrica en `test-browser-projects.mjs` + inspección de capturas).
 
-Implementado (verificado por código y por captura):
-* **Badges distintivos:** `V1`, `A1`, `T1` con color por tipo de pista (azul video, esmeralda audio, púrpura texto).
-* **Acciones de pista en el store:** `duplicateTrack` y `reorderTrack(trackId, 'up' | 'down')` en `useProjectStore`, junto con `toggleTrackVisibility`.
-* **Menú rápido (`⋮`):** botón `MoreVertical` con duplicar y subir/bajar pista.
-* **Botones directos:** visibilidad, silencio y bloqueo en la propia cabecera.
-
-Pendiente / sin verificar:
-* **Solape ojo–badge** (defecto visual descrito arriba).
-* **Hitbox ≥ 44px:** el código usa `min-h-[44px]` en vertical, pero el ancho de cada botón es de solo ~25–28px (se amplía con un pseudo-elemento `after:-inset-x-2`). No está medido en un dispositivo real, así que **no se puede afirmar** que cumpla 44×44px.
-* **Pista de texto (`T1`):** no muestra botón de silencio (se deja un espaciador), lo cual es intencionado pero conviene revisarlo.
+* **Badges distintivos:** `V1`, `A1`, `T1` con color por tipo de pista (azul video, esmeralda audio, púrpura texto). Columna `w-40` en móvil; icono del badge oculto bajo 420px para evitar desborde.
+* **Botones directos 28×44px + expansión táctil:** visibilidad, silencio y bloqueo. (Nota honesta: 44×44px reales no caben 4 en 160px; la altura sí es 44px.)
+* **Menú rápido (`⋮`, `z-[60]`):** duplicar, subir/bajar (con `disabled` en bordes) y eliminar pista, con posicionamiento anti-desborde.
+* **Pista de texto (`T1`):** sin botón de silencio por diseño (espaciador invisible para alinear la cuadrícula).
 
 ### 5.2. Barra Inferior Contextual y Bottom Sheets
 * **Estado Global:** Proporciona acceso rápido a "+ Medios", "Texto", "Audio", "Formato" y la galería de proyectos.
@@ -256,18 +255,22 @@ Pendiente / sin verificar:
 | <kbd>Supr</kbd> / <kbd>Backspace</kbd> | Eliminar el clip seleccionado |
 | <kbd>←</kbd> / <kbd>→</kbd> | Avanzar o retroceder 1 fotograma |
 | <kbd>Ctrl</kbd> + <kbd>Z</kbd> | Deshacer la última acción |
+| <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Z</kbd> | Rehacer la última acción deshecha |
 | <kbd>Ctrl</kbd> + <kbd>Y</kbd> | Rehacer la última acción deshecha |
 | <kbd>Ctrl</kbd> + <kbd>Rueda</kbd> | Zoom in / Zoom out en el timeline centrado en el cursor |
 | <kbd>Home</kbd> | Trasladar el cabezal al inicio del proyecto (`00:00:00:00`) |
+| <kbd>Esc</kbd> | Cerrar modal/sheet/menú, salir de cuchilla, deseleccionar clip |
+
+> Los atajos de edición no disparan con modales abiertos ni escribiendo en campos.
 
 ---
 
 ## 7. Guía de Pruebas y Verificación
 
-HydraCut dispone de una sólida cobertura de pruebas automatizadas:
+HydraCut dispone de cobertura automatizada verificada el 2026-10-09: **118 tests unitarios** (timeline 27, engine 30, features 17, projectStorage 18, hardening 4, exporterConfig 14, clipGestures 8) y **7 suites de navegador** con 0 errores de consola.
 
 ### 7.1. Pruebas Unitarias con Vitest
-Ejecuta las pruebas unitarias que cubren conversiones temporales, algoritmos de snapping, operaciones del store, waveforms de audio, compositor de canvas y persistencia:
+Ejecuta las pruebas unitarias que cubren conversiones temporales, algoritmos de snapping, operaciones del store, gestos drag/trim/undo, waveforms de audio, compositor de canvas, persistencia y pipeline de codificación (incluida la sonda de encoder y el traductor de errores):
 
 ```bash
 # Desde la raíz del monorepo:
@@ -278,7 +281,7 @@ npm run test
 ```
 
 ### 7.2. Pruebas de Navegador con Puppeteer Core
-Valida la aplicación en una instancia real de Google Chrome sin interfaz gráfica:
+Valida la aplicación en una instancia real de Google Chrome sin interfaz gráfica. **Ejecutar siempre EN SERIE** (varios Chromes headless en paralelo con SwiftShader se matan entre sí y dan falsos negativos):
 
 ```bash
 # Iniciar servidor de desarrollo en puerto 5173
@@ -298,6 +301,12 @@ node scripts/test-browser-interactive.mjs
 
 # Validación de continuidad y ausencia de cuadros negros
 node scripts/test-browser-playback-smoothness.mjs
+
+# Proyectos + menú ⋮ (incluye medición de no-solape badge/ojo en 1280 y 390)
+node scripts/test-browser-projects.mjs
+
+# Exportación REAL: produce un MP4 y verifica fourcc avc1 + mp4a/Opus en bytes
+node scripts/test-browser-export.mjs
 ```
 
 ---
@@ -321,9 +330,9 @@ apps/hydra-cut/src/
 │   ├── storage/              # projectStorage.ts (IndexedDB) y opfsStorage.ts (OPFS streaming)
 │   └── utils/                # timecode.ts, snapping.ts, transitions.ts, waveforms.ts
 ├── store/
-│   ├── useProjectStore.ts    # Estado maestro del proyecto, pistas, clips e historial
+│   ├── useProjectStore.ts    # Estado maestro del proyecto, pistas, clips, historial por gesto, lock
 │   └── useUIStore.ts         # Estado efímero de pestañas, modales y herramientas activas
-├── tests/                    # Suites de test unitario (timeline.test.ts, features.test.ts, engine.test.ts)
+├── tests/                    # 118 tests: timeline, features, engine, projectStorage, hardening, exporterConfig, clipGestures
 └── types/                    # Definiciones TypeScript (project.ts)
 ```
 

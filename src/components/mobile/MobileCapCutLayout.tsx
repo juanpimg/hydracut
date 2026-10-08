@@ -9,6 +9,7 @@ import { ClipInspector } from '../inspector/ClipInspector';
 import { ExportModal } from '../export/ExportModal';
 import { ShortcutsModal } from '../modals/ShortcutsModal';
 import { ProjectsModal } from '../modals/ProjectsModal';
+import { WelcomeModal } from '../modals/WelcomeModal';
 import { useProjectStore } from '../../store/useProjectStore';
 import { TransitionType } from '../../types/project';
 import { Sparkles, Gauge, Volume2, Eye } from 'lucide-react';
@@ -318,6 +319,7 @@ export const MobileCapCutLayout: React.FC = () => {
       <ExportModal />
       <ShortcutsModal />
       <ProjectsModal />
+      <WelcomeModal />
     </div>
   );
 };
