@@ -623,6 +623,65 @@ describe('WebCodecs Exporter & MP4-Muxer WebKit iOS Robustness', () => {
     expect(Array.from(pps!)).toEqual(ppsPayload);
   });
 
+  it('extracts SPS and PPS correctly from AVCC keyframes with large NAL units (length >= 256 bytes) without false Annex-B trigger', async () => {
+    const { extractSpsPpsFromChunk } = await import('../core/export/webcodecsExporter');
+
+    // NAL unit with length 260 bytes (starts with 0x00, 0x00, 0x01, 0x04)
+    // Previously this caused a false positive Annex-B trigger because byte 0..2 were 0,0,1
+    const largeSps = new Uint8Array(260);
+    largeSps[0] = 0x67; // NAL unit type 7
+    largeSps[1] = 0x64; // High Profile
+    largeSps[2] = 0x00;
+    largeSps[3] = 0x28;
+
+    const pps = new Uint8Array([0x68, 0xee, 0x3c]);
+    const idr = new Uint8Array([0x65, 0xaa, 0xbb]);
+
+    const avccChunk = new Uint8Array(4 + largeSps.length + 4 + pps.length + 4 + idr.length);
+    const view = new DataView(avccChunk.buffer);
+
+    let offset = 0;
+    view.setUint32(offset, largeSps.length, false);
+    avccChunk.set(largeSps, offset + 4);
+    offset += 4 + largeSps.length;
+
+    view.setUint32(offset, pps.length, false);
+    avccChunk.set(pps, offset + 4);
+    offset += 4 + pps.length;
+
+    view.setUint32(offset, idr.length, false);
+    avccChunk.set(idr, offset + 4);
+
+    const result = extractSpsPpsFromChunk(avccChunk);
+    expect(result.sps).not.toBeNull();
+    expect(result.pps).not.toBeNull();
+    expect(result.sps!.length).toBe(260);
+    expect(Array.from(result.pps!)).toEqual([0x68, 0xee, 0x3c]);
+  });
+
+  it('generates valid baseline SPS and PPS for landscape and vertical mobile aspect ratios', async () => {
+    const { generateBaselineSps, generateBaselinePps } = await import(
+      '../core/export/webcodecsExporter'
+    );
+
+    // 16:9 Landscape (1920x1080)
+    const spsLandscape = generateBaselineSps(1920, 1080);
+    expect(spsLandscape[0] & 0x1f).toBe(7); // NAL type 7 (SPS)
+    expect(spsLandscape[1]).toBe(66); // Baseline profile (0x42)
+    expect(spsLandscape[3]).toBe(40); // Level 4.0
+
+    // 9:16 Vertical / Mobile Portrait (1080x1920)
+    const spsVertical = generateBaselineSps(1080, 1920);
+    expect(spsVertical[0] & 0x1f).toBe(7);
+    expect(spsVertical[1]).toBe(66);
+    expect(spsVertical[3]).toBe(40);
+    expect(spsVertical).not.toEqual(spsLandscape); // Different macroblock dimensions
+
+    // PPS
+    const pps = generateBaselinePps();
+    expect(pps[0] & 0x1f).toBe(8); // NAL type 8 (PPS)
+  });
+
   it('extracts SPS and PPS correctly from Annex-B start-code keyframes', async () => {
     const { extractSpsPpsFromChunk } = await import('../core/export/webcodecsExporter');
 
@@ -691,7 +750,7 @@ describe('WebCodecs Exporter & MP4-Muxer WebKit iOS Robustness', () => {
     expect(fallback).toBeInstanceOf(Uint8Array);
     expect(fallback.length).toBeGreaterThan(20);
     expect(fallback[0]).toBe(1); // configurationVersion
-    expect(fallback[1]).toBe(0x64); // High Profile
+    expect(fallback[1]).toBe(66); // Baseline Profile
   });
 
   it('controls encoder backpressure drain with dequeue and safety interval', async () => {
@@ -765,6 +824,18 @@ describe('WebCodecs Exporter & MP4-Muxer WebKit iOS Robustness', () => {
     // Finalize should cleanly create the moov and colr boxes without throwing
     expect(() => muxer.finalize()).not.toThrow();
     expect(target.buffer.byteLength).toBeGreaterThan(0);
+  });
+
+  it('demonstrates that an unpopulated Muxer track throws colorSpace error without sanitized chunks', async () => {
+    const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
+    const target = new ArrayBufferTarget();
+    const rawMuxer = new Muxer({
+      target,
+      video: { codec: 'avc', width: 1920, height: 1080 },
+      fastStart: 'in-memory',
+    });
+    // Finalizing without any chunks having decoderConfig crashes mp4-muxer on track.info.decoderConfig.colorSpace
+    expect(() => rawMuxer.finalize()).toThrow(/colorSpace/);
   });
 });
 

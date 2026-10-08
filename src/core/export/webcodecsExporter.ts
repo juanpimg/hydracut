@@ -55,6 +55,186 @@ export function sanitizeColorSpace(cs?: VideoColorSpaceInit | null): VideoColorS
 }
 
 /**
+ * Helper bit writer for generating syntactically valid H.264 SPS/PPS records.
+ */
+class H264BitWriter {
+  private bytes: number[] = [];
+  private currentByte = 0;
+  private numBits = 0;
+
+  writeBits(value: number, n: number): void {
+    for (let i = n - 1; i >= 0; i--) {
+      const bit = (value >> i) & 1;
+      this.currentByte = (this.currentByte << 1) | bit;
+      this.numBits++;
+      if (this.numBits === 8) {
+        this.bytes.push(this.currentByte);
+        this.currentByte = 0;
+        this.numBits = 0;
+      }
+    }
+  }
+
+  writeUe(val: number): void {
+    const v = val + 1;
+    let m = 0;
+    while (1 << m <= v) m++;
+    this.writeBits(0, m - 1);
+    this.writeBits(v, m);
+  }
+
+  writeSe(val: number): void {
+    if (val <= 0) this.writeUe(-val * 2);
+    else this.writeUe(val * 2 - 1);
+  }
+
+  finish(): Uint8Array {
+    if (this.numBits > 0) {
+      this.writeBits(1, 1); // rbsp_stop_one_bit
+      if (this.numBits > 0) {
+        this.writeBits(0, 8 - this.numBits); // rbsp_alignment_zero_bit
+      }
+    }
+    return new Uint8Array(this.bytes);
+  }
+}
+
+/**
+ * Generates a valid H.264 Baseline Profile Level 4.0 SPS for arbitrary dimensions.
+ */
+export function generateBaselineSps(width: number, height: number): Uint8Array {
+  const w = new H264BitWriter();
+  w.writeBits(0x67, 8); // NAL type 7 (SPS), ref_idc 3
+  w.writeBits(66, 8); // Baseline Profile (0x42)
+  w.writeBits(0xe0, 8); // constraint_set0..2 flags (0xE0)
+  w.writeBits(40, 8); // Level 4.0 (0x28)
+  w.writeUe(0); // seq_parameter_set_id = 0
+  w.writeUe(0); // log2_max_frame_num_minus4 = 0
+  w.writeUe(0); // pic_order_cnt_type = 0
+  w.writeUe(2); // log2_max_pic_order_cnt_lsb_minus4 = 2
+  w.writeUe(1); // max_num_ref_frames = 1
+  w.writeBits(0, 1); // gaps_in_frame_num_value_allowed_flag = 0
+
+  const mbsW = Math.ceil(width / 16);
+  const mbsH = Math.ceil(height / 16);
+  w.writeUe(mbsW - 1); // pic_width_in_mbs_minus1
+  w.writeUe(mbsH - 1); // pic_height_in_map_units_minus1
+  w.writeBits(1, 1); // frame_mbs_only_flag = 1
+  w.writeBits(1, 1); // direct_8x8_inference_flag = 1
+
+  const cropRight = (mbsW * 16 - width) / 2;
+  const cropBottom = (mbsH * 16 - height) / 2;
+  const hasCrop = cropRight > 0 || cropBottom > 0;
+  w.writeBits(hasCrop ? 1 : 0, 1);
+  if (hasCrop) {
+    w.writeUe(0); // crop_left
+    w.writeUe(cropRight);
+    w.writeUe(0); // crop_top
+    w.writeUe(cropBottom);
+  }
+  w.writeBits(0, 1); // vui_parameters_present_flag = 0
+  return w.finish();
+}
+
+/**
+ * Generates a valid H.264 PPS.
+ */
+export function generateBaselinePps(): Uint8Array {
+  const w = new H264BitWriter();
+  w.writeBits(0x68, 8); // NAL type 8 (PPS), ref_idc 3
+  w.writeUe(0); // pic_parameter_set_id = 0
+  w.writeUe(0); // seq_parameter_set_id = 0
+  w.writeBits(0, 1); // entropy_coding_mode_flag = 0 (CAVLC)
+  w.writeBits(0, 1); // bottom_field_pic_order_in_frame_present_flag = 0
+  w.writeUe(0); // num_slice_groups_minus1 = 0
+  w.writeUe(0); // num_ref_idx_l0_default_active_minus1 = 0
+  w.writeUe(0); // num_ref_idx_l1_default_active_minus1 = 0
+  w.writeBits(0, 1); // weighted_pred_flag = 0
+  w.writeBits(0, 2); // weighted_bipred_idc = 0
+  w.writeSe(0); // pic_init_qp_minus26 = 0
+  w.writeSe(0); // pic_init_qs_minus26 = 0
+  w.writeSe(0); // chroma_qp_index_offset = 0
+  w.writeBits(0, 1); // deblocking_filter_control_present_flag = 0
+  w.writeBits(0, 1); // constrained_intra_pred_flag = 0
+  w.writeBits(0, 1); // redundant_pic_cnt_present_flag = 0
+  return w.finish();
+}
+
+/**
+ * Parses AVCC formatted chunk (4-byte length prefixes).
+ */
+function parseAvcc(chunkData: Uint8Array): { sps: Uint8Array | null; pps: Uint8Array | null } {
+  let sps: Uint8Array | null = null;
+  let pps: Uint8Array | null = null;
+  let offset = 0;
+  const view = new DataView(chunkData.buffer, chunkData.byteOffset, chunkData.byteLength);
+
+  while (offset + 4 <= chunkData.length) {
+    const nalLength = view.getUint32(offset, false);
+    const nalStart = offset + 4;
+    const nalEnd = nalStart + nalLength;
+
+    if (nalLength === 0 || nalEnd > chunkData.length) {
+      return { sps: null, pps: null };
+    }
+
+    const nalType = chunkData[nalStart] & 0x1f;
+    if (nalType === 7 && !sps) {
+      sps = chunkData.slice(nalStart, nalEnd);
+    } else if (nalType === 8 && !pps) {
+      pps = chunkData.slice(nalStart, nalEnd);
+    }
+
+    offset = nalEnd;
+  }
+
+  if (offset === chunkData.length) {
+    return { sps, pps };
+  }
+  return { sps: null, pps: null };
+}
+
+/**
+ * Parses Annex-B formatted chunk (00 00 01 / 00 00 00 01 start codes).
+ */
+function parseAnnexB(chunkData: Uint8Array): { sps: Uint8Array | null; pps: Uint8Array | null } {
+  let sps: Uint8Array | null = null;
+  let pps: Uint8Array | null = null;
+  const startPositions: { start: number; codeLen: number }[] = [];
+  let i = 0;
+
+  while (i < chunkData.length - 2) {
+    if (chunkData[i] === 0 && chunkData[i + 1] === 0) {
+      if (chunkData[i + 2] === 1) {
+        startPositions.push({ start: i, codeLen: 3 });
+        i += 3;
+        continue;
+      } else if (chunkData[i + 2] === 0 && i + 3 < chunkData.length && chunkData[i + 3] === 1) {
+        startPositions.push({ start: i, codeLen: 4 });
+        i += 4;
+        continue;
+      }
+    }
+    i++;
+  }
+
+  for (let k = 0; k < startPositions.length; k++) {
+    const nalStart = startPositions[k].start + startPositions[k].codeLen;
+    const nalEnd = k + 1 < startPositions.length ? startPositions[k + 1].start : chunkData.length;
+    if (nalStart < nalEnd) {
+      const nalType = chunkData[nalStart] & 0x1f;
+      if (nalType === 7 && !sps) {
+        sps = chunkData.slice(nalStart, nalEnd);
+      } else if (nalType === 8 && !pps) {
+        pps = chunkData.slice(nalStart, nalEnd);
+      }
+    }
+  }
+
+  return { sps, pps };
+}
+
+/**
  * Extracts SPS (NAL unit type 7) and PPS (NAL unit type 8) from an H.264 chunk's byte buffer.
  * Supports both AVCC (4-byte length prefix) and Annex-B (00 00 01 / 00 00 00 01 start codes).
  */
@@ -62,80 +242,22 @@ export function extractSpsPpsFromChunk(chunkData: Uint8Array): {
   sps: Uint8Array | null;
   pps: Uint8Array | null;
 } {
-  let sps: Uint8Array | null = null;
-  let pps: Uint8Array | null = null;
-
-  if (!chunkData || chunkData.length < 5) return { sps, pps };
-
-  const isAnnexB =
-    (chunkData[0] === 0 && chunkData[1] === 0 && chunkData[2] === 1) ||
-    (chunkData[0] === 0 && chunkData[1] === 0 && chunkData[2] === 0 && chunkData[3] === 1);
-
-  if (isAnnexB) {
-    let i = 0;
-    while (i < chunkData.length) {
-      let startCodeLen = 0;
-      if (chunkData[i] === 0 && chunkData[i + 1] === 0) {
-        if (chunkData[i + 2] === 1) {
-          startCodeLen = 3;
-        } else if (chunkData[i + 2] === 0 && chunkData[i + 3] === 1) {
-          startCodeLen = 4;
-        }
-      }
-
-      if (startCodeLen > 0) {
-        const nalStart = i + startCodeLen;
-        let nextStart = chunkData.length;
-        for (let j = nalStart; j < chunkData.length - 2; j++) {
-          if (
-            chunkData[j] === 0 &&
-            chunkData[j + 1] === 0 &&
-            (chunkData[j + 2] === 1 || (chunkData[j + 2] === 0 && chunkData[j + 3] === 1))
-          ) {
-            nextStart = j;
-            break;
-          }
-        }
-
-        if (nalStart < nextStart) {
-          const nalType = chunkData[nalStart] & 0x1f;
-          if (nalType === 7 && !sps) {
-            sps = chunkData.slice(nalStart, nextStart);
-          } else if (nalType === 8 && !pps) {
-            pps = chunkData.slice(nalStart, nextStart);
-          }
-        }
-        i = nextStart;
-      } else {
-        i++;
-      }
-    }
-  } else {
-    // AVCC format: [4-byte big-endian length][NAL data]...
-    let offset = 0;
-    while (offset + 4 < chunkData.length) {
-      const nalLength =
-        ((chunkData[offset] << 24) >>> 0) +
-        (chunkData[offset + 1] << 16) +
-        (chunkData[offset + 2] << 8) +
-        chunkData[offset + 3];
-
-      const nalStart = offset + 4;
-      const nalEnd = nalStart + nalLength;
-      if (nalLength <= 0 || nalEnd > chunkData.length) break;
-
-      const nalType = chunkData[nalStart] & 0x1f;
-      if (nalType === 7 && !sps) {
-        sps = chunkData.slice(nalStart, nalEnd);
-      } else if (nalType === 8 && !pps) {
-        pps = chunkData.slice(nalStart, nalEnd);
-      }
-
-      offset = nalEnd;
-    }
+  if (!chunkData || chunkData.length < 5) {
+    return { sps: null, pps: null };
   }
 
-  return { sps, pps };
+  // 1. Try parsing as AVCC (4-byte length prefixed, standard WebCodecs EncodedVideoChunk format)
+  const avccResult = parseAvcc(chunkData);
+  if (avccResult.sps && avccResult.pps) {
+    return avccResult;
+  }
+
+  // 2. Try parsing as Annex-B (elementary stream with start codes)
+  const annexBResult = parseAnnexB(chunkData);
+  return {
+    sps: avccResult.sps ?? annexBResult.sps,
+    pps: avccResult.pps ?? annexBResult.pps,
+  };
 }
 
 /**
@@ -150,9 +272,9 @@ export function buildAvcDecoderConfigurationRecord(
   const view = new DataView(record.buffer);
 
   record[0] = 1; // configurationVersion = 1
-  record[1] = sps[1] ?? 0x64; // AVCProfileIndication (High Profile fallback)
+  record[1] = sps[1] ?? 0x64; // AVCProfileIndication
   record[2] = sps[2] ?? 0x00; // profile_compatibility
-  record[3] = sps[3] ?? 0x28; // AVCLevelIndication (Level 4.0 fallback)
+  record[3] = sps[3] ?? 0x28; // AVCLevelIndication
   record[4] = 0xff; // lengthSizeMinusOne = 3 (indicates 4-byte NAL length)
   record[5] = 0xe1; // numOfSequenceParameterSets = 1
   view.setUint16(6, sps.length, false);
@@ -167,14 +289,11 @@ export function buildAvcDecoderConfigurationRecord(
 }
 
 /**
- * Generates a valid fallback AVCDecoderConfigurationRecord for H.264 High Profile Level 4.0 (1080p).
+ * Generates a valid fallback AVCDecoderConfigurationRecord tailored to width and height.
  */
-export function getFallbackAvcDescription(_width = 1920, _height = 1080): Uint8Array {
-  const sps = new Uint8Array([
-    0x67, 0x64, 0x00, 0x28, 0xac, 0xd9, 0x40, 0x78, 0x02, 0x27, 0xe5, 0xc0, 0x5a, 0x80,
-    0x80, 0x80, 0xa0, 0x00, 0x00, 0x03, 0x00, 0x20, 0x00, 0x00, 0x07, 0x81,
-  ]);
-  const pps = new Uint8Array([0x68, 0xee, 0x3c, 0x80]);
+export function getFallbackAvcDescription(width = 1920, height = 1080): Uint8Array {
+  const sps = generateBaselineSps(width, height);
+  const pps = generateBaselinePps();
   return buildAvcDecoderConfigurationRecord(sps, pps);
 }
 
@@ -523,11 +642,14 @@ async function exportWithWebCodecs(
     description: getFallbackAvcDescription(width, height).buffer,
   };
 
+  let videoChunksEncoded = 0;
   let encoderError: Error | null = null;
 
   const videoEncoder = new VideoEncoder({
     output: (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => {
       try {
+        videoChunksEncoded++;
+
         // Adopt incoming decoderConfig if emitted by browser
         if (meta?.decoderConfig) {
           if (meta.decoderConfig.codec) {
@@ -547,8 +669,8 @@ async function exportWithWebCodecs(
           }
         }
 
-        // On keyframe, extract SPS and PPS if description was not supplied out-of-band
-        if (chunk.type === 'key') {
+        // On keyframe, extract SPS and PPS if description was not supplied by browser
+        if (chunk.type === 'key' && !meta?.decoderConfig?.description) {
           try {
             const chunkData = new Uint8Array(chunk.byteLength);
             chunk.copyTo(chunkData);
@@ -696,20 +818,23 @@ async function exportWithWebCodecs(
 
       const t = frameIdx / fps;
 
-      // Pre-seek any active video clips at this frame (matching clip.id in MediaSourcePool)
+      // Pre-seek any active video clips at this frame in parallel (matching clip.id in MediaSourcePool)
       const activeVideoClips = clips.filter(
         (c) => c.type === 'video' && t >= c.start && t < c.start + c.duration
       );
-      for (const vc of activeVideoClips) {
-        const media = mediaMap.get(vc.mediaId);
-        if (media) {
-          const videoEl = mediaSourcePool.getVideoElement(media, vc.id, vc.sourceStart);
-          const speed = vc.speed && vc.speed > 0 ? vc.speed : 1;
-          const sourceOffset = vc.sourceStart + (t - vc.start) * speed;
-          const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
-          const clampedOffset = Math.max(0, Math.min(maxSourceTime, sourceOffset));
-          await seekVideoElement(videoEl, clampedOffset);
-        }
+      if (activeVideoClips.length > 0) {
+        await Promise.all(
+          activeVideoClips.map((vc) => {
+            const media = mediaMap.get(vc.mediaId);
+            if (!media) return Promise.resolve();
+            const videoEl = mediaSourcePool.getVideoElement(media, vc.id, vc.sourceStart);
+            const speed = vc.speed && vc.speed > 0 ? vc.speed : 1;
+            const sourceOffset = vc.sourceStart + (t - vc.start) * speed;
+            const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
+            const clampedOffset = Math.max(0, Math.min(maxSourceTime, sourceOffset));
+            return seekVideoElement(videoEl, clampedOffset);
+          })
+        );
       }
 
       // Render frame to canvas
@@ -722,8 +847,8 @@ async function exportWithWebCodecs(
         isPlaying: false,
       });
 
-      // Control backpressure
-      await waitForEncoderDrain(videoEncoder, 3);
+      // Control backpressure (allow hardware encoder pipeline depth up to 5)
+      await waitForEncoderDrain(videoEncoder, 5);
 
       // Create VideoFrame & encode strictly protected with try...finally
       const timestampUs = Math.round(t * 1_000_000);
@@ -734,23 +859,25 @@ async function exportWithWebCodecs(
         videoFrame.close();
       }
 
-      // Progress reporting & ETA
-      const progressPercent = Math.round(((frameIdx + 1) / totalFrames) * 95);
-      const elapsedSecs = (performance.now() - renderStartTime) / 1000;
+      // Progress reporting & ETA (throttled to avoid flooding React state updates)
       const framesDone = frameIdx + 1;
-      const fpsSpeed = framesDone / Math.max(0.001, elapsedSecs);
-      const etaSeconds = Math.max(
-        0,
-        Math.round((totalFrames - framesDone) / Math.max(0.1, fpsSpeed))
-      );
+      const progressPercent = Math.round((framesDone / totalFrames) * 95);
+      if (framesDone === totalFrames || frameIdx % 4 === 0) {
+        const elapsedSecs = (performance.now() - renderStartTime) / 1000;
+        const fpsSpeed = framesDone / Math.max(0.001, elapsedSecs);
+        const etaSeconds = Math.max(
+          0,
+          Math.round((totalFrames - framesDone) / Math.max(0.1, fpsSpeed))
+        );
 
-      onProgress({
-        state: 'rendering',
-        progress: progressPercent,
-        currentFrame: framesDone,
-        totalFrames,
-        etaSeconds,
-      });
+        onProgress({
+          state: 'rendering',
+          progress: progressPercent,
+          currentFrame: framesDone,
+          totalFrames,
+          etaSeconds,
+        });
+      }
     }
 
     // 7. Flush encoders and finalize muxer
@@ -764,9 +891,28 @@ async function exportWithWebCodecs(
 
     await videoEncoder.flush();
     if (audioEncoder && audioEncoder.state !== 'closed') {
-      await audioEncoder.flush();
+      try {
+        await audioEncoder.flush();
+      } catch (err) {
+        console.warn('AudioEncoder flush warning:', err);
+      }
     }
-    muxer.finalize();
+
+    if (encoderError) {
+      throw encoderError;
+    }
+
+    if (videoChunksEncoded === 0) {
+      throw new Error('El codificador de video no generó ningún cuadro de video.');
+    }
+
+    try {
+      muxer.finalize();
+    } catch (err) {
+      throw new Error(
+        `Error al finalizar el archivo MP4: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   } finally {
     if (videoEncoder.state !== 'closed') {
       videoEncoder.close();
