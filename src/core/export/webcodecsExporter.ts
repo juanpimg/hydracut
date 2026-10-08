@@ -949,19 +949,32 @@ async function exportWithWebCodecs(
     console.warn('Offline audio render failed, exporting video without audio:', err);
   }
 
-  // Pre-validate AudioEncoder if audio is present
-  let hasAudioEncoder = false;
+  // Pre-validate AudioEncoder if audio is present.
+  // Chrome/Linux has NO AAC encoder (NotSupportedError "Unsupported codec
+  // type"), which used to silently drop audio from exports. Try AAC first,
+  // then fall back to Opus (supported by Chrome everywhere; mp4-muxer can
+  // mux Opus into MP4).
+  let audioConfig: { codec: 'aac' | 'opus'; encoderCodec: string; bitrate: number } | null = null;
   if (renderedAudio && typeof AudioEncoder !== 'undefined') {
-    try {
-      const audioSupport = await AudioEncoder.isConfigSupported({
-        codec: 'mp4a.40.2',
-        numberOfChannels: 2,
-        sampleRate: renderedAudio.sampleRate,
-        bitrate: 192_000,
-      });
-      hasAudioEncoder = !!audioSupport.supported;
-    } catch {
-      hasAudioEncoder = false;
+    const audioCandidates: Array<{ codec: 'aac' | 'opus'; encoderCodec: string; bitrate: number }> = [
+      { codec: 'aac', encoderCodec: 'mp4a.40.2', bitrate: 192_000 },
+      { codec: 'opus', encoderCodec: 'opus', bitrate: 128_000 },
+    ];
+    for (const candidate of audioCandidates) {
+      try {
+        const audioSupport = await AudioEncoder.isConfigSupported({
+          codec: candidate.encoderCodec,
+          numberOfChannels: 2,
+          sampleRate: renderedAudio.sampleRate,
+          bitrate: candidate.bitrate,
+        });
+        if (audioSupport.supported) {
+          audioConfig = candidate;
+          break;
+        }
+      } catch {
+        // Try next audio candidate
+      }
     }
   }
 
@@ -976,9 +989,9 @@ async function exportWithWebCodecs(
       frameRate: fps,
     },
     audio:
-      hasAudioEncoder && renderedAudio
+      audioConfig && renderedAudio
         ? {
-            codec: 'aac',
+            codec: audioConfig.codec,
             numberOfChannels: 2,
             sampleRate: renderedAudio.sampleRate,
           }
@@ -1109,7 +1122,7 @@ async function exportWithWebCodecs(
 
   // 4. Setup AudioEncoder & encode audio in optimized standard frames (2048 samples)
   let audioEncoder: AudioEncoder | null = null;
-  if (hasAudioEncoder && renderedAudio) {
+  if (audioConfig && renderedAudio) {
     try {
       audioEncoder = new AudioEncoder({
         output: (chunk, meta) => {
@@ -1122,10 +1135,10 @@ async function exportWithWebCodecs(
         error: (e) => console.error('AudioEncoder error:', e),
       });
       audioEncoder.configure({
-        codec: 'mp4a.40.2', // AAC LC
+        codec: audioConfig.encoderCodec,
         numberOfChannels: 2,
         sampleRate: renderedAudio.sampleRate,
-        bitrate: 192_000,
+        bitrate: audioConfig.bitrate,
       });
 
       const numFrames = renderedAudio.length;
