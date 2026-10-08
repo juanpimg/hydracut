@@ -555,6 +555,7 @@ export interface SafeChunkLike {
   type: 'key' | 'delta';
   timestamp: number;
   duration?: number | null;
+  compositionTimeOffset?: number;
 }
 
 /**
@@ -563,7 +564,8 @@ export interface SafeChunkLike {
  * mp4-muxer strictly asserts that duration is a non-negative real number (`!isNaN(duration) && duration >= 0`),
  * otherwise throwing `TypeError: addVideoChunkRaw's fourth argument (duration) must be a non-negative real number.`
  * This helper calculates the expected frame duration in microseconds (1_000_000 / fps) when chunk.duration
- * is missing, non-finite, or <= 0, and safely routes to muxer.addVideoChunkRaw.
+ * is missing, non-finite, or <= 0, guarantees integer microsecond values, forwards compositionTimeOffset,
+ * and safely routes to muxer.addVideoChunkRaw.
  */
 export function safeAddVideoChunk(
   muxer: {
@@ -579,7 +581,8 @@ export function safeAddVideoChunk(
   chunk: SafeChunkLike,
   meta?: EncodedVideoChunkMetadata,
   fps = 30,
-  preAllocatedData?: Uint8Array
+  preAllocatedData?: Uint8Array,
+  compositionTimeOffset?: number
 ): void {
   let chunkData: Uint8Array;
   if (preAllocatedData) {
@@ -589,31 +592,39 @@ export function safeAddVideoChunk(
     chunk.copyTo(chunkData);
   }
 
-  const expectedDurationUs = Math.round(1_000_000 / Math.max(1, fps));
+  const safeFps = Math.max(1, Math.round(fps));
+  const expectedDurationUs = Math.round(1_000_000 / safeFps);
   const rawDuration = chunk.duration;
   const durationUs =
     typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0
-      ? rawDuration
+      ? Math.round(rawDuration)
       : expectedDurationUs;
 
   const rawTimestamp = chunk.timestamp;
   const timestampUs =
     typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp) && rawTimestamp >= 0
-      ? rawTimestamp
+      ? Math.round(rawTimestamp)
       : 0;
+
+  const rawCto = compositionTimeOffset ?? chunk.compositionTimeOffset;
+  const cto =
+    typeof rawCto === 'number' && Number.isFinite(rawCto)
+      ? Math.round(rawCto)
+      : undefined;
 
   muxer.addVideoChunkRaw(
     chunkData,
     chunk.type,
     timestampUs,
     durationUs,
-    meta
+    meta,
+    cto
   );
 }
 
 /**
  * Safely adds an encoded audio chunk to mp4-muxer.
- * Guarantees that duration and timestamp are strictly finite, non-negative real numbers,
+ * Guarantees that duration and timestamp are strictly finite, non-negative integer microseconds,
  * preventing analogous exceptions or chunk drops in WebKit / iOS Safari.
  */
 export function safeAddAudioChunk(
@@ -639,17 +650,18 @@ export function safeAddAudioChunk(
     chunk.copyTo(audioData);
   }
 
-  const expectedAudioDurationUs = Math.round((1024 / Math.max(1, sampleRate)) * 1_000_000);
+  const safeSampleRate = Math.max(1, Math.round(sampleRate));
+  const expectedAudioDurationUs = Math.round((1024 / safeSampleRate) * 1_000_000);
   const rawDuration = chunk.duration;
   const durationUs =
     typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0
-      ? rawDuration
+      ? Math.round(rawDuration)
       : expectedAudioDurationUs;
 
   const rawTimestamp = chunk.timestamp;
   const timestampUs =
     typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp) && rawTimestamp >= 0
-      ? rawTimestamp
+      ? Math.round(rawTimestamp)
       : 0;
 
   muxer.addAudioChunkRaw(
@@ -665,7 +677,7 @@ export function safeAddAudioChunk(
  * Main export function using WebCodecs + mp4-muxer with MediaRecorder fallback.
  */
 export async function exportVideo(params: ExportParams): Promise<Blob> {
-  const fps = params.config.fps || 30;
+  const fps = Math.max(1, Math.round(params.config.fps || 30));
   const totalFrames = Math.max(1, Math.round(params.duration * fps));
   const startTime = performance.now();
 
