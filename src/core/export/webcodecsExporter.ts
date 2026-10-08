@@ -549,6 +549,118 @@ async function renderOfflineAudio(
   return await offlineCtx.startRendering();
 }
 
+export interface SafeChunkLike {
+  byteLength: number;
+  copyTo: (dest: Uint8Array) => void;
+  type: 'key' | 'delta';
+  timestamp: number;
+  duration?: number | null;
+}
+
+/**
+ * Safely adds an encoded video chunk to mp4-muxer.
+ * In WebKit / iOS Safari, EncodedVideoChunk often has `duration === null`, `undefined`, or `NaN`.
+ * mp4-muxer strictly asserts that duration is a non-negative real number (`!isNaN(duration) && duration >= 0`),
+ * otherwise throwing `TypeError: addVideoChunkRaw's fourth argument (duration) must be a non-negative real number.`
+ * This helper calculates the expected frame duration in microseconds (1_000_000 / fps) when chunk.duration
+ * is missing, non-finite, or <= 0, and safely routes to muxer.addVideoChunkRaw.
+ */
+export function safeAddVideoChunk(
+  muxer: {
+    addVideoChunkRaw: (
+      data: Uint8Array,
+      type: 'key' | 'delta',
+      timestamp: number,
+      duration: number,
+      meta?: EncodedVideoChunkMetadata,
+      compositionTimeOffset?: number
+    ) => void;
+  },
+  chunk: SafeChunkLike,
+  meta?: EncodedVideoChunkMetadata,
+  fps = 30,
+  preAllocatedData?: Uint8Array
+): void {
+  let chunkData: Uint8Array;
+  if (preAllocatedData) {
+    chunkData = preAllocatedData;
+  } else {
+    chunkData = new Uint8Array(chunk.byteLength);
+    chunk.copyTo(chunkData);
+  }
+
+  const expectedDurationUs = Math.round(1_000_000 / Math.max(1, fps));
+  const rawDuration = chunk.duration;
+  const durationUs =
+    typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0
+      ? rawDuration
+      : expectedDurationUs;
+
+  const rawTimestamp = chunk.timestamp;
+  const timestampUs =
+    typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp) && rawTimestamp >= 0
+      ? rawTimestamp
+      : 0;
+
+  muxer.addVideoChunkRaw(
+    chunkData,
+    chunk.type,
+    timestampUs,
+    durationUs,
+    meta
+  );
+}
+
+/**
+ * Safely adds an encoded audio chunk to mp4-muxer.
+ * Guarantees that duration and timestamp are strictly finite, non-negative real numbers,
+ * preventing analogous exceptions or chunk drops in WebKit / iOS Safari.
+ */
+export function safeAddAudioChunk(
+  muxer: {
+    addAudioChunkRaw: (
+      data: Uint8Array,
+      type: 'key' | 'delta',
+      timestamp: number,
+      duration: number,
+      meta?: EncodedAudioChunkMetadata
+    ) => void;
+  },
+  chunk: SafeChunkLike,
+  meta?: EncodedAudioChunkMetadata,
+  sampleRate = 48000,
+  preAllocatedData?: Uint8Array
+): void {
+  let audioData: Uint8Array;
+  if (preAllocatedData) {
+    audioData = preAllocatedData;
+  } else {
+    audioData = new Uint8Array(chunk.byteLength);
+    chunk.copyTo(audioData);
+  }
+
+  const expectedAudioDurationUs = Math.round((1024 / Math.max(1, sampleRate)) * 1_000_000);
+  const rawDuration = chunk.duration;
+  const durationUs =
+    typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0
+      ? rawDuration
+      : expectedAudioDurationUs;
+
+  const rawTimestamp = chunk.timestamp;
+  const timestampUs =
+    typeof rawTimestamp === 'number' && Number.isFinite(rawTimestamp) && rawTimestamp >= 0
+      ? rawTimestamp
+      : 0;
+
+  muxer.addAudioChunkRaw(
+    audioData,
+    chunk.type,
+    timestampUs,
+    durationUs,
+    meta || undefined
+  );
+}
+
 /**
  * Main export function using WebCodecs + mp4-muxer with MediaRecorder fallback.
  */
@@ -669,11 +781,12 @@ async function exportWithWebCodecs(
           }
         }
 
+        const chunkData = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(chunkData);
+
         // On keyframe, extract SPS and PPS if description was not supplied by browser
         if (chunk.type === 'key' && !meta?.decoderConfig?.description) {
           try {
-            const chunkData = new Uint8Array(chunk.byteLength);
-            chunk.copyTo(chunkData);
             const { sps, pps } = extractSpsPpsFromChunk(chunkData);
             if (sps && pps) {
               const record = buildAvcDecoderConfigurationRecord(sps, pps);
@@ -696,7 +809,7 @@ async function exportWithWebCodecs(
           },
         };
 
-        muxer.addVideoChunk(chunk, sanitizedMeta);
+        safeAddVideoChunk(muxer, chunk, sanitizedMeta, fps, chunkData);
       } catch (err) {
         console.error('Error adding video chunk to muxer:', err);
         encoderError = err instanceof Error ? err : new Error(String(err));
@@ -724,9 +837,9 @@ async function exportWithWebCodecs(
       audioEncoder = new AudioEncoder({
         output: (chunk, meta) => {
           try {
-            muxer.addAudioChunk(chunk, meta || undefined);
+            safeAddAudioChunk(muxer, chunk, meta || undefined, renderedAudio.sampleRate);
           } catch (e) {
-            console.warn('muxer.addAudioChunk warning:', e);
+            console.warn('safeAddAudioChunk warning:', e);
           }
         },
         error: (e) => console.error('AudioEncoder error:', e),
@@ -852,7 +965,11 @@ async function exportWithWebCodecs(
 
       // Create VideoFrame & encode strictly protected with try...finally
       const timestampUs = Math.round(t * 1_000_000);
-      const videoFrame = new VideoFrame(canvas, { timestamp: timestampUs });
+      const frameDurationUs = Math.round(1_000_000 / fps);
+      const videoFrame = new VideoFrame(canvas, {
+        timestamp: timestampUs,
+        duration: frameDurationUs,
+      });
       try {
         videoEncoder.encode(videoFrame, { keyFrame: frameIdx % (fps * 2) === 0 });
       } finally {

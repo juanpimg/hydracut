@@ -837,5 +837,203 @@ describe('WebCodecs Exporter & MP4-Muxer WebKit iOS Robustness', () => {
     // Finalizing without any chunks having decoderConfig crashes mp4-muxer on track.info.decoderConfig.colorSpace
     expect(() => rawMuxer.finalize()).toThrow(/colorSpace/);
   });
+
+  it('demonstrates that native mp4-muxer addVideoChunk throws when chunk.duration is null or undefined (WebKit iOS issue)', async () => {
+    const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
+    const { sanitizeColorSpace, getFallbackAvcDescription } = await import(
+      '../core/export/webcodecsExporter'
+    );
+
+    // Ensure EncodedVideoChunk class is available for instanceof check
+    if (typeof (globalThis as unknown as { EncodedVideoChunk?: unknown }).EncodedVideoChunk === 'undefined') {
+      (globalThis as unknown as { EncodedVideoChunk: unknown }).EncodedVideoChunk = class MockEncodedVideoChunk {
+        type: 'key' | 'delta';
+        timestamp: number;
+        duration: number | null | undefined;
+        byteLength: number;
+        private _data: Uint8Array;
+        constructor(init: { type: 'key' | 'delta'; timestamp: number; duration?: number | null; data: Uint8Array }) {
+          this.type = init.type;
+          this.timestamp = init.timestamp;
+          this.duration = init.duration;
+          this._data = init.data;
+          this.byteLength = init.data.byteLength;
+        }
+        copyTo(dest: Uint8Array) {
+          dest.set(this._data);
+        }
+      };
+    }
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      video: { codec: 'avc', width: 1920, height: 1080, frameRate: 30 },
+      fastStart: 'in-memory',
+    });
+
+    const fallbackDesc = getFallbackAvcDescription(1920, 1080);
+    const sanitizedMeta = {
+      decoderConfig: {
+        codec: 'avc1.640028',
+        codedWidth: 1920,
+        codedHeight: 1080,
+        colorSpace: sanitizeColorSpace(null),
+        description: fallbackDesc.buffer,
+      },
+    };
+
+    const EncodedVideoChunkClass = (globalThis as unknown as { EncodedVideoChunk: new (init: unknown) => unknown }).EncodedVideoChunk;
+    const chunkWithNullDuration = new EncodedVideoChunkClass({
+      type: 'key',
+      timestamp: 0,
+      duration: null, // Simulated WebKit iOS null duration
+      data: new Uint8Array([0, 0, 0, 4, 0x65, 1, 2, 3]),
+    });
+
+    // Native mp4-muxer addVideoChunk throws TypeError because chunk.duration is null
+    expect(() => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      muxer.addVideoChunk(chunkWithNullDuration as any, sanitizedMeta);
+    }).toThrow(/addVideoChunkRaw's fourth argument \(duration\) must be a non-negative real number/);
+  });
+
+  it('safely handles chunks with duration null, undefined, or 0 via safeAddVideoChunk without error', async () => {
+    const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
+    const { safeAddVideoChunk, sanitizeColorSpace, getFallbackAvcDescription } = await import(
+      '../core/export/webcodecsExporter'
+    );
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      video: {
+        codec: 'avc',
+        width: 1920,
+        height: 1080,
+        frameRate: 30,
+      },
+      fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
+    });
+
+    const fallbackDesc = getFallbackAvcDescription(1920, 1080);
+    const sanitizedMeta = {
+      decoderConfig: {
+        codec: 'avc1.640028',
+        codedWidth: 1920,
+        codedHeight: 1080,
+        colorSpace: sanitizeColorSpace(null),
+        description: fallbackDesc.buffer,
+      },
+    };
+
+    // 1. Chunk with duration = null (iOS Safari keyframe)
+    const chunkNull = {
+      byteLength: 8,
+      copyTo: (dest: Uint8Array) => dest.set([0, 0, 0, 4, 0x65, 1, 2, 3]),
+      type: 'key' as const,
+      timestamp: 0,
+      duration: null,
+    };
+    expect(() => safeAddVideoChunk(muxer, chunkNull, sanitizedMeta, 30)).not.toThrow();
+
+    // 2. Chunk with duration = undefined (iOS Safari delta frame)
+    const chunkUndefined = {
+      byteLength: 8,
+      copyTo: (dest: Uint8Array) => dest.set([0, 0, 0, 4, 0x41, 1, 2, 3]),
+      type: 'delta' as const,
+      timestamp: 33333,
+      duration: undefined,
+    };
+    expect(() => safeAddVideoChunk(muxer, chunkUndefined, sanitizedMeta, 30)).not.toThrow();
+
+    // 3. Chunk with duration = 0 (simulated 0 duration)
+    const chunkZero = {
+      byteLength: 8,
+      copyTo: (dest: Uint8Array) => dest.set([0, 0, 0, 4, 0x41, 4, 5, 6]),
+      type: 'delta' as const,
+      timestamp: 66666,
+      duration: 0,
+    };
+    expect(() => safeAddVideoChunk(muxer, chunkZero, sanitizedMeta, 30)).not.toThrow();
+
+    // 4. Chunk with duration = NaN (simulated NaN)
+    const chunkNaN = {
+      byteLength: 8,
+      copyTo: (dest: Uint8Array) => dest.set([0, 0, 0, 4, 0x41, 7, 8, 9]),
+      type: 'delta' as const,
+      timestamp: 100000,
+      duration: NaN,
+    };
+    expect(() => safeAddVideoChunk(muxer, chunkNaN, sanitizedMeta, 30)).not.toThrow();
+
+    // 5. Chunk with valid positive duration
+    const chunkValid = {
+      byteLength: 8,
+      copyTo: (dest: Uint8Array) => dest.set([0, 0, 0, 4, 0x41, 10, 11, 12]),
+      type: 'delta' as const,
+      timestamp: 133333,
+      duration: 33333,
+    };
+    expect(() => safeAddVideoChunk(muxer, chunkValid, sanitizedMeta, 30)).not.toThrow();
+
+    // Finalize should succeed cleanly
+    expect(() => muxer.finalize()).not.toThrow();
+    expect(target.buffer.byteLength).toBeGreaterThan(0);
+  });
+
+  it('safely handles audio chunks with duration null, undefined, or 0 via safeAddAudioChunk without error', async () => {
+    const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
+    const { safeAddAudioChunk } = await import('../core/export/webcodecsExporter');
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      audio: {
+        codec: 'aac',
+        numberOfChannels: 2,
+        sampleRate: 48000,
+      },
+      fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
+    });
+
+    const fakeAudioData = new Uint8Array([0x21, 0x10, 0x05, 0x20]);
+
+    // Audio chunk with duration = null
+    const audioNull = {
+      byteLength: fakeAudioData.length,
+      copyTo: (dest: Uint8Array) => dest.set(fakeAudioData),
+      type: 'key' as const,
+      timestamp: 0,
+      duration: null,
+    };
+    expect(() => safeAddAudioChunk(muxer, audioNull, undefined, 48000)).not.toThrow();
+
+    // Audio chunk with duration = undefined
+    const audioUndefined = {
+      byteLength: fakeAudioData.length,
+      copyTo: (dest: Uint8Array) => dest.set(fakeAudioData),
+      type: 'delta' as const,
+      timestamp: 21333,
+      duration: undefined,
+    };
+    expect(() => safeAddAudioChunk(muxer, audioUndefined, undefined, 48000)).not.toThrow();
+
+    // Audio chunk with duration = 0
+    const audioZero = {
+      byteLength: fakeAudioData.length,
+      copyTo: (dest: Uint8Array) => dest.set(fakeAudioData),
+      type: 'delta' as const,
+      timestamp: 42666,
+      duration: 0,
+    };
+    expect(() => safeAddAudioChunk(muxer, audioZero, undefined, 48000)).not.toThrow();
+
+    // Finalize should succeed cleanly
+    expect(() => muxer.finalize()).not.toThrow();
+    expect(target.buffer.byteLength).toBeGreaterThan(0);
+  });
 });
 
