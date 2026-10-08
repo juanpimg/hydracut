@@ -340,6 +340,139 @@ export async function selectSupportedVideoConfig(
 }
 
 /**
+ * Hardware acceleration strategies to try, in order of preference.
+ * `prefer-hardware` gives the best performance when available, but on some
+ * GPU/driver/browser combinations `VideoEncoder.configure()` succeeds
+ * synchronously and then the platform encoder dies asynchronously
+ * (OperationError: "Encoder creation error" / NotSupportedError
+ * "Operation is not supported"). The only reliable way to detect this is to
+ * create a real encoder, configure it, and verify it survives a short grace
+ * period before committing to it for the export.
+ */
+export const HARDWARE_ACCELERATION_CHAIN: HardwareAcceleration[] = [
+  'prefer-hardware',
+  'no-preference',
+  'prefer-software',
+];
+
+/**
+ * Creates and configures a throwaway VideoEncoder to verify that the platform
+ * encoder actually survives configuration (not just isConfigSupported()).
+ * Resolves true only if the encoder is still 'configured' after `graceMs`.
+ */
+export function probeEncoderSurvives(
+  codec: string,
+  width: number,
+  height: number,
+  bitrate: number,
+  framerate: number,
+  hardwareAcceleration: HardwareAcceleration,
+  graceMs = 120
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let encoder: VideoEncoder | null = null;
+
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      try {
+        if (encoder && encoder.state !== 'closed') encoder.close();
+      } catch {
+        // ignore close errors during probe
+      }
+      resolve(ok);
+    };
+
+    try {
+      encoder = new VideoEncoder({
+        output: () => {},
+        error: () => finish(false),
+      });
+    } catch {
+      finish(false);
+      return;
+    }
+
+    try {
+      encoder.configure({
+        codec,
+        width,
+        height,
+        bitrate,
+        framerate,
+        hardwareAcceleration,
+      });
+    } catch {
+      finish(false);
+      return;
+    }
+
+    // Grace period: platform encoder creation failures are asynchronous.
+    setTimeout(() => finish(encoder!.state === 'configured'), graceMs);
+  });
+}
+
+export interface WorkingVideoEncoderConfig {
+  codec: string;
+  hardwareAcceleration: HardwareAcceleration;
+}
+
+/**
+ * Finds a codec + hardwareAcceleration combination that is not only reported
+ * as supported, but whose platform encoder actually survives configuration.
+ * Tries hardware acceleration modes in order (hardware → default → software)
+ * and codec profiles High → Main → Baseline within each mode.
+ *
+ * Returns null when no combination works, in which case the caller should
+ * fall back to MediaRecorder instead of failing mid-export.
+ */
+export async function findWorkingVideoEncoderConfig(
+  width: number,
+  height: number,
+  bitrate: number,
+  framerate: number,
+  graceMs = 120
+): Promise<WorkingVideoEncoderConfig | null> {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+    return null;
+  }
+  const codecsToTry = ['avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+
+  for (const hw of HARDWARE_ACCELERATION_CHAIN) {
+    for (const codec of codecsToTry) {
+      // Fast pre-check to skip obviously unsupported combinations.
+      try {
+        const support = await VideoEncoder.isConfigSupported({
+          codec,
+          width,
+          height,
+          bitrate,
+          framerate,
+          hardwareAcceleration: hw,
+        });
+        if (!support.supported) continue;
+      } catch {
+        continue;
+      }
+      const survived = await probeEncoderSurvives(
+        codec,
+        width,
+        height,
+        bitrate,
+        framerate,
+        hw,
+        graceMs
+      );
+      if (survived) {
+        return { codec, hardwareAcceleration: hw };
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Dynamically queries VideoEncoder.isConfigSupported to find the best supported H.264 profile.
  * Prefers High Profile (avc1.640028), falls back to Main (avc1.4d002a) and Baseline (avc1.42001f).
  * NOTE: only checks codec+dimensions (fast path). For export, prefer
@@ -735,16 +868,20 @@ export function toActionableExportError(
   opts: { width: number; height: number; fps: number },
   encoderError?: Error | null
 ): Error {
-  if (encoderError) return encoderError;
-  const name = err instanceof DOMException ? err.name : (err as Error)?.name;
-  const msg = err instanceof Error ? err.message : String(err);
+  // Prefer the underlying cause when the platform error callback fired, but
+  // ALWAYS translate it: returning the raw encoderError was how
+  // "Operation is not supported" reached the user untranslated.
+  const source = encoderError ?? err;
+  const name = source instanceof DOMException ? source.name : (source as Error)?.name;
+  const msg = source instanceof Error ? source.message : String(source);
   const looksEncoderRelated =
     name === 'NotSupportedError' ||
     name === 'EncodingError' ||
     name === 'InvalidStateError' ||
-    /operation is not supported|not supported|configured first|encoder/i.test(msg);
+    name === 'OperationError' ||
+    /operation is not supported|not supported|configured first|encoder|creation error/i.test(msg);
   if (!looksEncoderRelated) {
-    return err instanceof Error ? err : new Error(String(err));
+    return source instanceof Error ? source : new Error(String(source));
   }
   const { width, height, fps } = opts;
   return new Error(
@@ -773,9 +910,13 @@ export async function exportVideo(params: ExportParams): Promise<Blob> {
     const width = params.config.width - (params.config.width % 2);
     const height = params.config.height - (params.config.height % 2);
     const bitrate = params.config.bitrate || 6_000_000;
-    const selectedCodec = await selectSupportedVideoConfig(width, height, bitrate, fps);
-    if (selectedCodec) {
-      return await exportWithWebCodecs(params, totalFrames, startTime, selectedCodec);
+    // Deep probe: create+configure a real encoder and verify it survives.
+    // Detects async platform-encoder failures ("Operation is not supported",
+    // "Encoder creation error") that isConfigSupported() cannot see, and
+    // finds a working hardwareAcceleration mode before the export starts.
+    const workingConfig = await findWorkingVideoEncoderConfig(width, height, bitrate, fps);
+    if (workingConfig) {
+      return await exportWithWebCodecs(params, totalFrames, startTime, workingConfig);
     }
     console.warn(
       `WebCodecs no soporta ${width}x${height}@${fps}fps en este dispositivo; usando MediaRecorder como respaldo.`
@@ -792,7 +933,7 @@ async function exportWithWebCodecs(
   params: ExportParams,
   totalFrames: number,
   renderStartTime: number,
-  selectedCodec: string
+  workingConfig: WorkingVideoEncoderConfig
 ): Promise<Blob> {
   const { config, duration, tracks, clips, mediaPool, onProgress, signal } = params;
   const fps = config.fps || 30;
@@ -846,16 +987,12 @@ async function exportWithWebCodecs(
     firstTimestampBehavior: 'offset',
   });
 
-  // Query best supported H.264 codec string (validated up-front in exportVideo
-  // via selectSupportedVideoConfig; re-validate here as last defense because
-  // isConfigSupported is advisory and configure() is authoritative).
-  let activeCodec = selectedCodec;
-  if (!activeCodec) {
-    activeCodec =
-      (await selectSupportedVideoConfig(width, height, config.bitrate || 6_000_000, fps)) ||
-      (await getSupportedVideoCodec(width, height)) ||
-      'avc1.640028';
-  }
+  // Use the encoder configuration that was deep-probed in exportVideo
+  // (codec + hardwareAcceleration validated by actually creating a real
+  // encoder and verifying it survives). This avoids the async platform
+  // encoder death ("Operation is not supported") that isConfigSupported()
+  // cannot detect.
+  const activeCodec = workingConfig.codec;
 
   // 3. Active video decoder configuration tracking
   // In iOS Safari / WebKit, metadata from VideoEncoder output callback is frequently
@@ -936,46 +1073,39 @@ async function exportWithWebCodecs(
     },
   });
 
-  // Configure with per-codec retry: if the GPU rejects the preferred profile,
-  // fall back through Main/Baseline before giving up. A failed configure()
-  // leaves the encoder unconfigured, and any later encode() would throw the
-  // cryptic "Encoder must be configured first" — so we throw a clear,
-  // actionable error here instead.
-  const codecFallbackChain = [activeCodec, 'avc1.4d002a', 'avc1.42001f'].filter(
-    (c, i, arr) => arr.indexOf(c) === i
-  );
-  let configuredCodec: string | null = null;
-  let configureError: unknown = null;
-  for (const candidate of codecFallbackChain) {
-    try {
-      videoEncoder.configure({
-        codec: candidate,
-        width,
-        height,
-        bitrate: config.bitrate || 6_000_000,
-        framerate: fps,
-        hardwareAcceleration: 'prefer-hardware',
-      });
-      configuredCodec = candidate;
-      break;
-    } catch (err) {
-      configureError = err;
-    }
-  }
-  if (!configuredCodec || videoEncoder.state !== 'configured') {
-    const detail = configureError instanceof Error ? configureError.message : String(configureError);
+  // Configure with the deep-probed codec + hardwareAcceleration combination.
+  // If it still fails (encoder raced to closed), fall back to MediaRecorder
+  // instead of surfacing a raw platform error to the user.
+  try {
+    videoEncoder.configure({
+      codec: workingConfig.codec,
+      width,
+      height,
+      bitrate: config.bitrate || 6_000_000,
+      framerate: fps,
+      hardwareAcceleration: workingConfig.hardwareAcceleration,
+    });
+  } catch (err) {
     try {
       if (videoEncoder.state !== 'closed') videoEncoder.close();
     } catch {
       // ignore close errors during failed setup
     }
-    throw new Error(
-      `El codificador de video no pudo inicializarse a ${width}x${height}@${fps}fps en este dispositivo (${detail}). ` +
-        `Prueba con resolución 1080p o 720p, o con 30 FPS.`
+    throw toActionableExportError(err, { width, height, fps });
+  }
+  if (videoEncoder.state !== 'configured') {
+    const asyncCause = encoderError as Error | null;
+    const detail = asyncCause ? asyncCause.message : null;
+    try {
+      if (videoEncoder.state !== 'closed') videoEncoder.close();
+    } catch {
+      // ignore close errors during failed setup
+    }
+    throw toActionableExportError(
+      asyncCause ?? new Error(detail ?? 'el encoder de la plataforma se cerró al configurarse'),
+      { width, height, fps }
     );
   }
-  activeCodec = configuredCodec;
-  activeDecoderConfig.codec = configuredCodec;
 
   // 4. Setup AudioEncoder & encode audio in optimized standard frames (2048 samples)
   let audioEncoder: AudioEncoder | null = null;
@@ -1112,14 +1242,12 @@ async function exportWithWebCodecs(
 
       // Guard: if a previous async encoding error closed/reset the encoder,
       // encode() would throw the cryptic "Encoder must be configured first".
-      // Surface the real underlying error instead.
+      // Surface the translated underlying error instead.
       if (videoEncoder.state !== 'configured') {
-        throw (
+        throw toActionableExportError(
           encoderError ??
-          new Error(
-            'El codificador de video se cerró inesperadamente durante la exportación. ' +
-              'Prueba con resolución 1080p o 720p, o reintenta la exportación.'
-          )
+            new Error('el codificador se cerró inesperadamente durante la exportación'),
+          { width, height, fps }
         );
       }
 
@@ -1135,7 +1263,9 @@ async function exportWithWebCodecs(
           videoEncoder.encode(videoFrame, { keyFrame: frameIdx % (fps * 2) === 0 });
         } catch (encodeErr) {
           const msg = encodeErr instanceof Error ? encodeErr.message : String(encodeErr);
-          if (/configured first/i.test(msg) && encoderError) throw encoderError;
+          if (/configured first/i.test(msg) && encoderError) {
+            throw toActionableExportError(encoderError, { width, height, fps });
+          }
           throw new Error(
             `Fallo al codificar el cuadro ${frameIdx + 1}/${totalFrames}: ${msg}. ` +
               `Prueba con resolución 1080p o 720p.`

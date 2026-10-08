@@ -101,11 +101,24 @@ describe('toActionableExportError (traductor de errores de encoder)', () => {
     expect(out.message).toContain('720p');
   });
 
-  it('prioriza la causa del error-callback cuando existe', async () => {
+  it('traduce la causa del error-callback en lugar de devolverla cruda', async () => {
     const { toActionableExportError } = await import('../core/export/webcodecsExporter');
-    const cause = new Error('plataforma: bitrate no soportado por el driver');
+    const cause = new DOMException('Operation is not supported', 'NotSupportedError');
     const out = toActionableExportError(new Error('flush failed'), dims, cause);
-    expect(out).toBe(cause);
+    // Nunca debe devolver el error crudo del callback (bug original):
+    expect(out).not.toBe(cause);
+    expect(out.message).toContain('3840x2160@60fps');
+    expect(out.message).toContain('Operation is not supported');
+    expect(out.message).toContain('1080p');
+  });
+
+  it('traduce "Encoder creation error" asíncrono del callback', async () => {
+    const { toActionableExportError } = await import('../core/export/webcodecsExporter');
+    const cause = new DOMException('Encoder creation error.', 'OperationError');
+    const out = toActionableExportError(new Error('flush failed'), dims, cause);
+    expect(out).not.toBe(cause);
+    expect(out.message).toContain('Encoder creation error.');
+    expect(out.message).toContain('rechazó la exportación');
   });
 
   it('deja intactos los errores no relacionados con el encoder', async () => {
@@ -114,5 +127,94 @@ describe('toActionableExportError (traductor de errores de encoder)', () => {
     expect(toActionableExportError(raw, dims)).toBe(raw);
     const typeRaw = new TypeError('Cannot read properties of null');
     expect(toActionableExportError(typeRaw, dims)).toBe(typeRaw);
+  });
+});
+
+describe('findWorkingVideoEncoderConfig (sonda profunda de encoder)', () => {
+  const REAL_VE = (globalThis as Record<string, unknown>).VideoEncoder;
+  const REAL_VF = (globalThis as Record<string, unknown>).VideoFrame;
+
+  afterEach(() => {
+    if (REAL_VE === undefined) delete (globalThis as Record<string, unknown>).VideoEncoder;
+    else (globalThis as Record<string, unknown>).VideoEncoder = REAL_VE;
+    if (REAL_VF === undefined) delete (globalThis as Record<string, unknown>).VideoFrame;
+    else (globalThis as Record<string, unknown>).VideoFrame = REAL_VF;
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Mock that reproduces the real-world failure: `prefer-hardware` configures
+   * synchronously but the platform encoder dies asynchronously right after
+   * (OperationError "Encoder creation error"), while other modes survive.
+   */
+  function installMockVideoEncoder(opts: { dieOn: string[]; supportedCodecs?: string[] }) {
+    (globalThis as Record<string, unknown>).VideoFrame = class {};
+    const supported = opts.supportedCodecs ?? ['avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+    const configureCalls: Array<{ codec: string; hw: string }> = [];
+
+    class MockVideoEncoder {
+      state: 'unconfigured' | 'configured' | 'closed' = 'unconfigured';
+      private errorCb: (e: Error) => void;
+      constructor(init: { output: () => void; error: (e: Error) => void }) {
+        this.errorCb = init.error;
+      }
+      configure(cfg: { codec: string; hardwareAcceleration?: string }) {
+        configureCalls.push({ codec: cfg.codec, hw: cfg.hardwareAcceleration || 'no-preference' });
+        this.state = 'configured';
+        if (cfg.hardwareAcceleration && opts.dieOn.includes(cfg.hardwareAcceleration)) {
+          // Asynchronous death, exactly like Chrome's platform encoder failure
+          setTimeout(() => {
+            this.state = 'closed';
+            this.errorCb(new DOMException('Encoder creation error.', 'OperationError'));
+          }, 0);
+        }
+      }
+      close() {
+        this.state = 'closed';
+      }
+      static isConfigSupported = vi.fn(async (cfg: { codec: string }) => ({
+        supported: supported.includes(cfg.codec),
+        config: cfg,
+      }));
+    }
+
+    (globalThis as Record<string, unknown>).VideoEncoder = MockVideoEncoder;
+    return { configureCalls, MockVideoEncoder };
+  }
+
+  it('detecta la muerte asíncrona de prefer-hardware y cae a no-preference', async () => {
+    const { configureCalls } = installMockVideoEncoder({ dieOn: ['prefer-hardware'] });
+    const { findWorkingVideoEncoderConfig } = await import('../core/export/webcodecsExporter');
+
+    const result = await findWorkingVideoEncoderConfig(1280, 720, 8_000_000, 30, 30);
+    expect(result).toEqual({ codec: 'avc1.640028', hardwareAcceleration: 'no-preference' });
+    // La sonda intentó primero hardware y luego el modo por defecto
+    expect(configureCalls[0].hw).toBe('prefer-hardware');
+    expect(configureCalls.some((c) => c.hw === 'no-preference')).toBe(true);
+  });
+
+  it('usa prefer-hardware cuando el encoder sobrevive (equipo sano)', async () => {
+    const { configureCalls } = installMockVideoEncoder({ dieOn: [] });
+    const { findWorkingVideoEncoderConfig } = await import('../core/export/webcodecsExporter');
+
+    const result = await findWorkingVideoEncoderConfig(1920, 1080, 8_000_000, 30, 30);
+    expect(result).toEqual({ codec: 'avc1.640028', hardwareAcceleration: 'prefer-hardware' });
+    expect(configureCalls.length).toBe(1);
+  });
+
+  it('devuelve null si ninguna combinación sobrevive (para caer a MediaRecorder)', async () => {
+    installMockVideoEncoder({ dieOn: ['prefer-hardware', 'no-preference', 'prefer-software'] });
+    const { findWorkingVideoEncoderConfig } = await import('../core/export/webcodecsExporter');
+
+    const result = await findWorkingVideoEncoderConfig(3840, 2160, 20_000_000, 60, 30);
+    expect(result).toBeNull();
+  });
+
+  it('devuelve null si el codec no está soportado por isConfigSupported', async () => {
+    installMockVideoEncoder({ dieOn: [], supportedCodecs: [] });
+    const { findWorkingVideoEncoderConfig } = await import('../core/export/webcodecsExporter');
+
+    const result = await findWorkingVideoEncoderConfig(1920, 1080, 8_000_000, 30, 30);
+    expect(result).toBeNull();
   });
 });
