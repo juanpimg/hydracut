@@ -14,39 +14,281 @@ export interface ExportParams {
 }
 
 /**
- * Checks if WebCodecs VideoEncoder is supported in this browser environment.
+ * Standard Rec.709 color space strictly matching mp4-muxer's internal mappings:
+ * COLOR_PRIMARIES_MAP, TRANSFER_CHARACTERISTICS_MAP, and MATRIX_COEFFICIENTS_MAP.
  */
-export async function isWebCodecsSupported(): Promise<boolean> {
-  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
-    return false;
+export const DEFAULT_COLOR_SPACE: VideoColorSpaceInit = {
+  primaries: 'bt709',
+  transfer: 'bt709',
+  matrix: 'bt709',
+  fullRange: false,
+};
+
+/**
+ * Validates and sanitizes a VideoColorSpaceInit object to ensure it strictly matches
+ * mp4-muxer's internal color maps. Prevents undefined / null / unsupported enum values
+ * from crashing when mp4-muxer evaluates track.info.decoderConfig.colorSpace in colr(track).
+ */
+export function sanitizeColorSpace(cs?: VideoColorSpaceInit | null): VideoColorSpaceInit {
+  if (!cs || typeof cs !== 'object') {
+    return { ...DEFAULT_COLOR_SPACE };
   }
-  try {
-    const support = await VideoEncoder.isConfigSupported({
-      codec: 'avc1.640028',
-      width: 1920,
-      height: 1080,
-    });
-    return !!support.supported;
-  } catch {
-    return false;
-  }
+  const validPrimaries: VideoColorPrimaries[] = ['bt709', 'bt470bg', 'smpte170m'];
+  const validTransfer: VideoTransferCharacteristics[] = ['bt709', 'smpte170m', 'iec61966-2-1'];
+  const validMatrix: VideoMatrixCoefficients[] = ['rgb', 'bt709', 'bt470bg', 'smpte170m'];
+
+  return {
+    primaries:
+      cs.primaries && validPrimaries.includes(cs.primaries as VideoColorPrimaries)
+        ? (cs.primaries as VideoColorPrimaries)
+        : 'bt709',
+    transfer:
+      cs.transfer && validTransfer.includes(cs.transfer as VideoTransferCharacteristics)
+        ? (cs.transfer as VideoTransferCharacteristics)
+        : 'bt709',
+    matrix:
+      cs.matrix && validMatrix.includes(cs.matrix as VideoMatrixCoefficients)
+        ? (cs.matrix as VideoMatrixCoefficients)
+        : 'bt709',
+    fullRange: typeof cs.fullRange === 'boolean' ? cs.fullRange : false,
+  };
 }
 
 /**
- * Waits for the encoder queue to drain to prevent memory exhaustion (backpressure).
+ * Extracts SPS (NAL unit type 7) and PPS (NAL unit type 8) from an H.264 chunk's byte buffer.
+ * Supports both AVCC (4-byte length prefix) and Annex-B (00 00 01 / 00 00 00 01 start codes).
  */
-function waitForEncoderDrain(encoder: VideoEncoder, maxQueue = 3): Promise<void> {
+export function extractSpsPpsFromChunk(chunkData: Uint8Array): {
+  sps: Uint8Array | null;
+  pps: Uint8Array | null;
+} {
+  let sps: Uint8Array | null = null;
+  let pps: Uint8Array | null = null;
+
+  if (!chunkData || chunkData.length < 5) return { sps, pps };
+
+  const isAnnexB =
+    (chunkData[0] === 0 && chunkData[1] === 0 && chunkData[2] === 1) ||
+    (chunkData[0] === 0 && chunkData[1] === 0 && chunkData[2] === 0 && chunkData[3] === 1);
+
+  if (isAnnexB) {
+    let i = 0;
+    while (i < chunkData.length) {
+      let startCodeLen = 0;
+      if (chunkData[i] === 0 && chunkData[i + 1] === 0) {
+        if (chunkData[i + 2] === 1) {
+          startCodeLen = 3;
+        } else if (chunkData[i + 2] === 0 && chunkData[i + 3] === 1) {
+          startCodeLen = 4;
+        }
+      }
+
+      if (startCodeLen > 0) {
+        const nalStart = i + startCodeLen;
+        let nextStart = chunkData.length;
+        for (let j = nalStart; j < chunkData.length - 2; j++) {
+          if (
+            chunkData[j] === 0 &&
+            chunkData[j + 1] === 0 &&
+            (chunkData[j + 2] === 1 || (chunkData[j + 2] === 0 && chunkData[j + 3] === 1))
+          ) {
+            nextStart = j;
+            break;
+          }
+        }
+
+        if (nalStart < nextStart) {
+          const nalType = chunkData[nalStart] & 0x1f;
+          if (nalType === 7 && !sps) {
+            sps = chunkData.slice(nalStart, nextStart);
+          } else if (nalType === 8 && !pps) {
+            pps = chunkData.slice(nalStart, nextStart);
+          }
+        }
+        i = nextStart;
+      } else {
+        i++;
+      }
+    }
+  } else {
+    // AVCC format: [4-byte big-endian length][NAL data]...
+    let offset = 0;
+    while (offset + 4 < chunkData.length) {
+      const nalLength =
+        ((chunkData[offset] << 24) >>> 0) +
+        (chunkData[offset + 1] << 16) +
+        (chunkData[offset + 2] << 8) +
+        chunkData[offset + 3];
+
+      const nalStart = offset + 4;
+      const nalEnd = nalStart + nalLength;
+      if (nalLength <= 0 || nalEnd > chunkData.length) break;
+
+      const nalType = chunkData[nalStart] & 0x1f;
+      if (nalType === 7 && !sps) {
+        sps = chunkData.slice(nalStart, nalEnd);
+      } else if (nalType === 8 && !pps) {
+        pps = chunkData.slice(nalStart, nalEnd);
+      }
+
+      offset = nalEnd;
+    }
+  }
+
+  return { sps, pps };
+}
+
+/**
+ * Builds an ISO/IEC 14496-15 AVCDecoderConfigurationRecord buffer from SPS and PPS NAL units.
+ */
+export function buildAvcDecoderConfigurationRecord(
+  sps: Uint8Array,
+  pps: Uint8Array
+): Uint8Array {
+  const totalLength = 11 + sps.length + pps.length;
+  const record = new Uint8Array(totalLength);
+  const view = new DataView(record.buffer);
+
+  record[0] = 1; // configurationVersion = 1
+  record[1] = sps[1] ?? 0x64; // AVCProfileIndication (High Profile fallback)
+  record[2] = sps[2] ?? 0x00; // profile_compatibility
+  record[3] = sps[3] ?? 0x28; // AVCLevelIndication (Level 4.0 fallback)
+  record[4] = 0xff; // lengthSizeMinusOne = 3 (indicates 4-byte NAL length)
+  record[5] = 0xe1; // numOfSequenceParameterSets = 1
+  view.setUint16(6, sps.length, false);
+  record.set(sps, 8);
+
+  const ppsPos = 8 + sps.length;
+  record[ppsPos] = 1; // numOfPictureParameterSets = 1
+  view.setUint16(ppsPos + 1, pps.length, false);
+  record.set(pps, ppsPos + 3);
+
+  return record;
+}
+
+/**
+ * Generates a valid fallback AVCDecoderConfigurationRecord for H.264 High Profile Level 4.0 (1080p).
+ */
+export function getFallbackAvcDescription(_width = 1920, _height = 1080): Uint8Array {
+  const sps = new Uint8Array([
+    0x67, 0x64, 0x00, 0x28, 0xac, 0xd9, 0x40, 0x78, 0x02, 0x27, 0xe5, 0xc0, 0x5a, 0x80,
+    0x80, 0x80, 0xa0, 0x00, 0x00, 0x03, 0x00, 0x20, 0x00, 0x00, 0x07, 0x81,
+  ]);
+  const pps = new Uint8Array([0x68, 0xee, 0x3c, 0x80]);
+  return buildAvcDecoderConfigurationRecord(sps, pps);
+}
+
+/**
+ * Dynamically queries VideoEncoder.isConfigSupported to find the best supported H.264 profile.
+ * Prefers High Profile (avc1.640028), falls back to Main (avc1.4d002a) and Baseline (avc1.42001f).
+ */
+export async function getSupportedVideoCodec(width = 1920, height = 1080): Promise<string | null> {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+    return null;
+  }
+  const codecsToTry = ['avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+  for (const codec of codecsToTry) {
+    try {
+      const support = await VideoEncoder.isConfigSupported({
+        codec,
+        width,
+        height,
+      });
+      if (support.supported) {
+        return codec;
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+  return null;
+}
+
+/**
+ * Checks if WebCodecs VideoEncoder is supported in this browser environment.
+ */
+export async function isWebCodecsSupported(): Promise<boolean> {
+  return (await getSupportedVideoCodec()) !== null;
+}
+
+/**
+ * Waits for the encoder queue to drain to prevent GPU/RAM memory exhaustion (backpressure).
+ * Includes both dequeue event listener and an interval/timeout fallback to eliminate deadlocks.
+ */
+export function waitForEncoderDrain(encoder: VideoEncoder, maxQueue = 3): Promise<void> {
   if (encoder.encodeQueueSize <= maxQueue) {
     return Promise.resolve();
   }
   return new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+    const cleanup = () => {
+      encoder.removeEventListener('dequeue', onDequeue);
+      if (timer) clearTimeout(timer);
+      if (pollInterval) clearInterval(pollInterval);
+    };
+
     const onDequeue = () => {
       if (encoder.encodeQueueSize <= maxQueue) {
-        encoder.removeEventListener('dequeue', onDequeue);
+        cleanup();
         resolve();
       }
     };
+
     encoder.addEventListener('dequeue', onDequeue);
+
+    pollInterval = setInterval(() => {
+      if (encoder.encodeQueueSize <= maxQueue) {
+        cleanup();
+        resolve();
+      }
+    }, 15);
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, 1000);
+  });
+}
+
+/**
+ * Waits for the audio encoder queue to drain to prevent audio buffer buildup.
+ */
+export function waitForAudioDrain(encoder: AudioEncoder, maxQueue = 4): Promise<void> {
+  if (encoder.encodeQueueSize <= maxQueue) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+    const cleanup = () => {
+      encoder.removeEventListener('dequeue', onDequeue);
+      if (timer) clearTimeout(timer);
+      if (pollInterval) clearInterval(pollInterval);
+    };
+
+    const onDequeue = () => {
+      if (encoder.encodeQueueSize <= maxQueue) {
+        cleanup();
+        resolve();
+      }
+    };
+
+    encoder.addEventListener('dequeue', onDequeue);
+
+    pollInterval = setInterval(() => {
+      if (encoder.encodeQueueSize <= maxQueue) {
+        cleanup();
+        resolve();
+      }
+    }, 15);
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, 800);
   });
 }
 
@@ -125,7 +367,6 @@ async function renderOfflineAudio(
     if (!media) continue;
 
     try {
-      // Fetch audio data
       const response = await fetch(media.url);
       const arrayBuffer = await response.arrayBuffer();
       const decodedBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
@@ -141,13 +382,16 @@ async function renderOfflineAudio(
       // Transitions for audio fade-in and fade-out
       if (clip.transition) {
         const { fadeInType, fadeInDuration, fadeOutType, fadeOutDuration } = clip.transition;
-        const totalFade = (fadeInDuration > 0 ? fadeInDuration : 0) + (fadeOutDuration > 0 ? fadeOutDuration : 0);
+        const totalFade =
+          (fadeInDuration > 0 ? fadeInDuration : 0) + (fadeOutDuration > 0 ? fadeOutDuration : 0);
         const scale = totalFade > clip.duration ? clip.duration / totalFade : 1;
         const effectiveIn = (fadeInDuration || 0) * scale;
         const effectiveOut = (fadeOutDuration || 0) * scale;
 
-        const hasInFade = effectiveIn > 0 && (fadeInType === 'fade-black' || fadeInType === 'fade-white');
-        const hasOutFade = effectiveOut > 0 && (fadeOutType === 'fade-black' || fadeOutType === 'fade-white');
+        const hasInFade =
+          effectiveIn > 0 && (fadeInType === 'fade-black' || fadeInType === 'fade-white');
+        const hasOutFade =
+          effectiveOut > 0 && (fadeOutType === 'fade-black' || fadeOutType === 'fade-white');
 
         if (hasInFade) {
           gainNode.gain.setValueAtTime(0, clip.start);
@@ -205,7 +449,7 @@ export async function exportVideo(params: ExportParams): Promise<Blob> {
 }
 
 /**
- * Hardware-accelerated WebCodecs export.
+ * Hardware-accelerated WebCodecs export with robust metadata sanitization and backpressure.
  */
 async function exportWithWebCodecs(
   params: ExportParams,
@@ -242,7 +486,7 @@ async function exportWithWebCodecs(
     }
   }
 
-  // 2. Setup mp4-muxer
+  // 2. Setup mp4-muxer with stream buffering and timestamp offsets
   const target = new ArrayBufferTarget();
   const muxer = new Muxer({
     target,
@@ -250,21 +494,92 @@ async function exportWithWebCodecs(
       codec: 'avc',
       width,
       height,
+      frameRate: fps,
     },
-    audio: hasAudioEncoder && renderedAudio
-      ? {
-          codec: 'aac',
-          numberOfChannels: 2,
-          sampleRate: renderedAudio.sampleRate,
-        }
-      : undefined,
+    audio:
+      hasAudioEncoder && renderedAudio
+        ? {
+            codec: 'aac',
+            numberOfChannels: 2,
+            sampleRate: renderedAudio.sampleRate,
+          }
+        : undefined,
     fastStart: 'in-memory',
+    firstTimestampBehavior: 'offset',
   });
 
-  // 3. Setup VideoEncoder
+  // Query best supported H.264 codec string
+  const selectedCodec = (await getSupportedVideoCodec(width, height)) || 'avc1.640028';
+
+  // 3. Active video decoder configuration tracking
+  // In iOS Safari / WebKit, metadata from VideoEncoder output callback is frequently
+  // omitted (undefined) or lacks decoderConfig/colorSpace. We maintain an active, valid
+  // decoderConfig so mp4-muxer always receives non-null metadata with valid colorSpace.
+  const activeDecoderConfig: VideoDecoderConfig = {
+    codec: selectedCodec,
+    codedWidth: width,
+    codedHeight: height,
+    colorSpace: { ...DEFAULT_COLOR_SPACE },
+    description: getFallbackAvcDescription(width, height).buffer,
+  };
+
   let encoderError: Error | null = null;
+
   const videoEncoder = new VideoEncoder({
-    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    output: (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => {
+      try {
+        // Adopt incoming decoderConfig if emitted by browser
+        if (meta?.decoderConfig) {
+          if (meta.decoderConfig.codec) {
+            activeDecoderConfig.codec = meta.decoderConfig.codec;
+          }
+          if (meta.decoderConfig.codedWidth) {
+            activeDecoderConfig.codedWidth = meta.decoderConfig.codedWidth;
+          }
+          if (meta.decoderConfig.codedHeight) {
+            activeDecoderConfig.codedHeight = meta.decoderConfig.codedHeight;
+          }
+          if (meta.decoderConfig.description) {
+            activeDecoderConfig.description = meta.decoderConfig.description;
+          }
+          if (meta.decoderConfig.colorSpace) {
+            activeDecoderConfig.colorSpace = sanitizeColorSpace(meta.decoderConfig.colorSpace);
+          }
+        }
+
+        // On keyframe, extract SPS and PPS if description was not supplied out-of-band
+        if (chunk.type === 'key') {
+          try {
+            const chunkData = new Uint8Array(chunk.byteLength);
+            chunk.copyTo(chunkData);
+            const { sps, pps } = extractSpsPpsFromChunk(chunkData);
+            if (sps && pps) {
+              const record = buildAvcDecoderConfigurationRecord(sps, pps);
+              activeDecoderConfig.description = record.buffer;
+            }
+          } catch {
+            // Keep existing fallback description
+          }
+        }
+
+        // Always guarantee sanitized colorSpace
+        activeDecoderConfig.colorSpace = sanitizeColorSpace(activeDecoderConfig.colorSpace);
+
+        // Construct bulletproof metadata object for mp4-muxer
+        const sanitizedMeta: EncodedVideoChunkMetadata = {
+          ...meta,
+          decoderConfig: {
+            ...activeDecoderConfig,
+            colorSpace: { ...activeDecoderConfig.colorSpace },
+          },
+        };
+
+        muxer.addVideoChunk(chunk, sanitizedMeta);
+      } catch (err) {
+        console.error('Error adding video chunk to muxer:', err);
+        encoderError = err instanceof Error ? err : new Error(String(err));
+      }
+    },
     error: (e) => {
       encoderError = e;
       console.error('VideoEncoder error:', e);
@@ -272,7 +587,7 @@ async function exportWithWebCodecs(
   });
 
   videoEncoder.configure({
-    codec: 'avc1.640028',
+    codec: selectedCodec,
     width,
     height,
     bitrate: config.bitrate || 6_000_000,
@@ -280,12 +595,18 @@ async function exportWithWebCodecs(
     hardwareAcceleration: 'prefer-hardware',
   });
 
-  // 4. Setup AudioEncoder & encode audio in standard chunks
+  // 4. Setup AudioEncoder & encode audio in optimized standard frames (2048 samples)
   let audioEncoder: AudioEncoder | null = null;
   if (hasAudioEncoder && renderedAudio) {
     try {
       audioEncoder = new AudioEncoder({
-        output: (chunk, meta) => muxer.addAudioChunk(chunk, meta),
+        output: (chunk, meta) => {
+          try {
+            muxer.addAudioChunk(chunk, meta || undefined);
+          } catch (e) {
+            console.warn('muxer.addAudioChunk warning:', e);
+          }
+        },
         error: (e) => console.error('AudioEncoder error:', e),
       });
       audioEncoder.configure({
@@ -299,17 +620,35 @@ async function exportWithWebCodecs(
       const left = renderedAudio.getChannelData(0);
       const right = renderedAudio.numberOfChannels > 1 ? renderedAudio.getChannelData(1) : left;
 
-      // AAC encodes chunks in standard frame sizes (e.g. 2048 samples)
+      // AAC standard frame multiple: 2048 samples
       const chunkSize = 2048;
+      // Preallocate planar buffer to eliminate thousands of small allocations during export
+      const planarBuffer = new Float32Array(chunkSize * 2);
+
       for (let offset = 0; offset < numFrames; offset += chunkSize) {
         if (signal?.aborted) break;
-        const framesInChunk = Math.min(chunkSize, numFrames - offset);
-        const chunkData = new Float32Array(framesInChunk * 2);
 
-        // Planar format: Channel 0 (left) samples, followed by Channel 1 (right) samples
-        for (let i = 0; i < framesInChunk; i++) {
-          chunkData[i] = left[offset + i];
-          chunkData[framesInChunk + i] = right[offset + i];
+        // Audio backpressure control
+        if (audioEncoder.encodeQueueSize > 8) {
+          await waitForAudioDrain(audioEncoder, 4);
+        }
+
+        const framesInChunk = Math.min(chunkSize, numFrames - offset);
+        let chunkData: Float32Array;
+
+        if (framesInChunk === chunkSize) {
+          for (let i = 0; i < framesInChunk; i++) {
+            planarBuffer[i] = left[offset + i];
+            planarBuffer[framesInChunk + i] = right[offset + i];
+          }
+          chunkData = planarBuffer;
+        } else {
+          // Partial tail chunk
+          chunkData = new Float32Array(framesInChunk * 2);
+          for (let i = 0; i < framesInChunk; i++) {
+            chunkData[i] = left[offset + i];
+            chunkData[framesInChunk + i] = right[offset + i];
+          }
         }
 
         const timestampUs = Math.round((offset / renderedAudio.sampleRate) * 1_000_000);
@@ -319,7 +658,7 @@ async function exportWithWebCodecs(
           numberOfFrames: framesInChunk,
           numberOfChannels: 2,
           timestamp: timestampUs,
-          data: chunkData.buffer,
+          data: chunkData as unknown as BufferSource,
         });
 
         try {
@@ -336,7 +675,7 @@ async function exportWithWebCodecs(
     }
   }
 
-  // 5. Offscreen canvas & compositor
+  // 5. Canvas & compositor
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -357,14 +696,14 @@ async function exportWithWebCodecs(
 
       const t = frameIdx / fps;
 
-      // Pre-seek any active video clips at this frame (supporting clip.speed)
+      // Pre-seek any active video clips at this frame (matching clip.id in MediaSourcePool)
       const activeVideoClips = clips.filter(
         (c) => c.type === 'video' && t >= c.start && t < c.start + c.duration
       );
       for (const vc of activeVideoClips) {
         const media = mediaMap.get(vc.mediaId);
         if (media) {
-          const videoEl = mediaSourcePool.getVideoElement(media);
+          const videoEl = mediaSourcePool.getVideoElement(media, vc.id, vc.sourceStart);
           const speed = vc.speed && vc.speed > 0 ? vc.speed : 1;
           const sourceOffset = vc.sourceStart + (t - vc.start) * speed;
           const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
@@ -400,7 +739,10 @@ async function exportWithWebCodecs(
       const elapsedSecs = (performance.now() - renderStartTime) / 1000;
       const framesDone = frameIdx + 1;
       const fpsSpeed = framesDone / Math.max(0.001, elapsedSecs);
-      const etaSeconds = Math.max(0, Math.round((totalFrames - framesDone) / Math.max(0.1, fpsSpeed)));
+      const etaSeconds = Math.max(
+        0,
+        Math.round((totalFrames - framesDone) / Math.max(0.1, fpsSpeed))
+      );
 
       onProgress({
         state: 'rendering',
@@ -421,6 +763,9 @@ async function exportWithWebCodecs(
     });
 
     await videoEncoder.flush();
+    if (audioEncoder && audioEncoder.state !== 'closed') {
+      await audioEncoder.flush();
+    }
     muxer.finalize();
   } finally {
     if (videoEncoder.state !== 'closed') {
@@ -469,7 +814,9 @@ async function exportWithMediaRecorder(
   try {
     const renderedAudio = await renderOfflineAudio(duration, tracks, clips, mediaPool);
     if (renderedAudio) {
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       offlineAudioCtx = new AudioCtx();
       const dest = offlineAudioCtx.createMediaStreamDestination();
       const source = offlineAudioCtx.createBufferSource();

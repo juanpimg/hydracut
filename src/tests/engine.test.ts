@@ -571,3 +571,200 @@ describe('Video Frame Caching & Solid Playback (Anti-Flicker)', () => {
   });
 });
 
+describe('WebCodecs Exporter & MP4-Muxer WebKit iOS Robustness', () => {
+  it('sanitizes null, undefined and partial colorSpace to prevent null evaluation in mp4-muxer', async () => {
+    const { sanitizeColorSpace, DEFAULT_COLOR_SPACE } = await import(
+      '../core/export/webcodecsExporter'
+    );
+
+    // Null and undefined fall back strictly to Rec.709
+    expect(sanitizeColorSpace(null)).toEqual(DEFAULT_COLOR_SPACE);
+    expect(sanitizeColorSpace(undefined)).toEqual(DEFAULT_COLOR_SPACE);
+
+    // Partial empty object gets populated with valid defaults
+    const partial = sanitizeColorSpace({});
+    expect(partial.primaries).toBe('bt709');
+    expect(partial.transfer).toBe('bt709');
+    expect(partial.matrix).toBe('bt709');
+    expect(partial.fullRange).toBe(false);
+
+    // Unsupported primaries (e.g., bt2020) are normalized so mp4-muxer COLOR_PRIMARIES_MAP never reads undefined
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const custom = sanitizeColorSpace({
+      primaries: 'bt2020' as any,
+      transfer: 'iec61966-2-1',
+      matrix: 'rgb',
+      fullRange: true,
+    });
+    expect(custom.primaries).toBe('bt709'); // Normalized
+    expect(custom.transfer).toBe('iec61966-2-1'); // Preserved
+    expect(custom.matrix).toBe('rgb'); // Preserved
+    expect(custom.fullRange).toBe(true);
+  });
+
+  it('extracts SPS and PPS correctly from AVCC length-prefixed keyframes', async () => {
+    const { extractSpsPpsFromChunk } = await import('../core/export/webcodecsExporter');
+
+    // AVCC format: [4-byte length][SPS (nal 7)], [4-byte length][PPS (nal 8)], [4-byte length][IDR (nal 5)]
+    const spsPayload = [0x67, 0x64, 0x00, 0x28]; // NAL unit type 7
+    const ppsPayload = [0x68, 0xee, 0x3c]; // NAL unit type 8
+    const idrPayload = [0x65, 0x01, 0x02, 0x03]; // NAL unit type 5
+
+    const avccChunk = new Uint8Array([
+      0, 0, 0, spsPayload.length, ...spsPayload,
+      0, 0, 0, ppsPayload.length, ...ppsPayload,
+      0, 0, 0, idrPayload.length, ...idrPayload,
+    ]);
+
+    const { sps, pps } = extractSpsPpsFromChunk(avccChunk);
+    expect(sps).not.toBeNull();
+    expect(pps).not.toBeNull();
+    expect(Array.from(sps!)).toEqual(spsPayload);
+    expect(Array.from(pps!)).toEqual(ppsPayload);
+  });
+
+  it('extracts SPS and PPS correctly from Annex-B start-code keyframes', async () => {
+    const { extractSpsPpsFromChunk } = await import('../core/export/webcodecsExporter');
+
+    // Annex-B format: 00 00 00 01 [SPS], 00 00 00 01 [PPS], 00 00 01 [IDR]
+    const spsPayload = [0x67, 0x64, 0x00, 0x28];
+    const ppsPayload = [0x68, 0xee, 0x3c];
+    const idrPayload = [0x65, 0x01, 0x02];
+
+    const annexBChunk = new Uint8Array([
+      0, 0, 0, 1, ...spsPayload,
+      0, 0, 0, 1, ...ppsPayload,
+      0, 0, 1, ...idrPayload,
+    ]);
+
+    const { sps, pps } = extractSpsPpsFromChunk(annexBChunk);
+    expect(sps).not.toBeNull();
+    expect(pps).not.toBeNull();
+    expect(Array.from(sps!)).toEqual(spsPayload);
+    expect(Array.from(pps!)).toEqual(ppsPayload);
+  });
+
+  it('safely returns nulls for delta frames or empty data', async () => {
+    const { extractSpsPpsFromChunk } = await import('../core/export/webcodecsExporter');
+
+    // Delta frame without SPS/PPS
+    const deltaChunk = new Uint8Array([0, 0, 0, 2, 0x41, 0x01]);
+    const { sps, pps } = extractSpsPpsFromChunk(deltaChunk);
+    expect(sps).toBeNull();
+    expect(pps).toBeNull();
+
+    // Empty data
+    expect(extractSpsPpsFromChunk(new Uint8Array(0))).toEqual({ sps: null, pps: null });
+  });
+
+  it('builds a compliant ISO/IEC 14496-15 AVCDecoderConfigurationRecord', async () => {
+    const { buildAvcDecoderConfigurationRecord } = await import(
+      '../core/export/webcodecsExporter'
+    );
+
+    const sps = new Uint8Array([0x67, 0x64, 0x00, 0x28]); // High Profile (100), Level 4.0 (40)
+    const pps = new Uint8Array([0x68, 0xee, 0x3c]);
+
+    const record = buildAvcDecoderConfigurationRecord(sps, pps);
+    expect(record.length).toBe(11 + sps.length + pps.length);
+
+    const view = new DataView(record.buffer);
+    expect(record[0]).toBe(1); // configurationVersion
+    expect(record[1]).toBe(0x64); // AVCProfileIndication
+    expect(record[2]).toBe(0x00); // profile_compatibility
+    expect(record[3]).toBe(0x28); // AVCLevelIndication
+    expect(record[4]).toBe(0xff); // lengthSizeMinusOne (4-byte NAL length)
+    expect(record[5]).toBe(0xe1); // numOfSequenceParameterSets (1)
+    expect(view.getUint16(6, false)).toBe(sps.length);
+    expect(Array.from(record.slice(8, 8 + sps.length))).toEqual(Array.from(sps));
+
+    const ppsPos = 8 + sps.length;
+    expect(record[ppsPos]).toBe(1); // numOfPictureParameterSets (1)
+    expect(view.getUint16(ppsPos + 1, false)).toBe(pps.length);
+    expect(Array.from(record.slice(ppsPos + 3))).toEqual(Array.from(pps));
+  });
+
+  it('generates a valid fallback AVC description buffer', async () => {
+    const { getFallbackAvcDescription } = await import('../core/export/webcodecsExporter');
+
+    const fallback = getFallbackAvcDescription(1920, 1080);
+    expect(fallback).toBeInstanceOf(Uint8Array);
+    expect(fallback.length).toBeGreaterThan(20);
+    expect(fallback[0]).toBe(1); // configurationVersion
+    expect(fallback[1]).toBe(0x64); // High Profile
+  });
+
+  it('controls encoder backpressure drain with dequeue and safety interval', async () => {
+    const { waitForEncoderDrain } = await import('../core/export/webcodecsExporter');
+
+    // Case 1: queue already within limit
+    const mockEncoderLow = {
+      encodeQueueSize: 2,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as VideoEncoder;
+
+    await expect(waitForEncoderDrain(mockEncoderLow, 3)).resolves.toBeUndefined();
+    expect(mockEncoderLow.addEventListener).not.toHaveBeenCalled();
+
+    // Case 2: queue above limit, then drops
+    let dequeueCallback: (() => void) | null = null;
+    const mockEncoderHigh = {
+      encodeQueueSize: 5,
+      addEventListener: vi.fn((_ev, cb) => {
+        dequeueCallback = cb;
+      }),
+      removeEventListener: vi.fn(),
+    } as unknown as VideoEncoder;
+
+    const drainPromise = waitForEncoderDrain(mockEncoderHigh, 3);
+    expect(mockEncoderHigh.addEventListener).toHaveBeenCalledWith('dequeue', expect.any(Function));
+
+    // Simulate drain
+    (mockEncoderHigh as { encodeQueueSize: number }).encodeQueueSize = 2;
+    if (dequeueCallback) (dequeueCallback as () => void)();
+
+    await expect(drainPromise).resolves.toBeUndefined();
+    expect(mockEncoderHigh.removeEventListener).toHaveBeenCalledWith('dequeue', expect.any(Function));
+  });
+
+  it('successfully finalizes Muxer with sanitized metadata without colorSpace or null object errors', async () => {
+    const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
+    const { sanitizeColorSpace, getFallbackAvcDescription } = await import(
+      '../core/export/webcodecsExporter'
+    );
+
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      video: {
+        codec: 'avc',
+        width: 1920,
+        height: 1080,
+        frameRate: 30,
+      },
+      fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
+    });
+
+    const fallbackDesc = getFallbackAvcDescription(1920, 1080);
+    const sanitizedMeta = {
+      decoderConfig: {
+        codec: 'avc1.640028',
+        codedWidth: 1920,
+        codedHeight: 1080,
+        colorSpace: sanitizeColorSpace(null), // Safari iOS passing null / undefined colorSpace
+        description: fallbackDesc.buffer,
+      },
+    };
+
+    // Add keyframe sample
+    const fakeChunkData = new Uint8Array([0, 0, 0, 4, 0x65, 1, 2, 3]);
+    muxer.addVideoChunkRaw(fakeChunkData, 'key', 0, 33333, sanitizedMeta);
+
+    // Finalize should cleanly create the moov and colr boxes without throwing
+    expect(() => muxer.finalize()).not.toThrow();
+    expect(target.buffer.byteLength).toBeGreaterThan(0);
+  });
+});
+
