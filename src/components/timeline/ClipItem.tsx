@@ -117,7 +117,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   };
 
   // Body Dragging (Move clip in time AND vertically between compatible tracks)
-  const handleBodyMouseDown = (e: React.MouseEvent) => {
+  const handleBodyMouseDown = (e: React.MouseEvent | React.PointerEvent) => {
     if (activeTool === 'split') return;
     if (e.button !== 0) return; // Only primary mouse button
     e.stopPropagation();
@@ -130,7 +130,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     const initialTrackId = clip.trackId;
     let hasMoved = false;
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
+    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
       const deltaX = moveEvent.clientX - startX;
       const deltaY = moveEvent.clientY - startY;
 
@@ -171,10 +171,12 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       moveClip(clip.id, newStart, targetTrackId);
     };
 
-    const onMouseUp = () => {
+    const onUp = () => {
       document.body.style.cursor = '';
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
 
       if (hasMoved) {
         commitClipChange();
@@ -183,12 +185,14 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       }
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   };
 
   // Trim Start (Trim In)
-  const handleTrimStartMouseDown = (e: React.MouseEvent) => {
+  const handleTrimStartMouseDown = (e: React.MouseEvent | React.PointerEvent) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
@@ -198,7 +202,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     const initialStart = clip.start;
     let hasMoved = false;
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
+    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
       const deltaPx = moveEvent.clientX - startX;
       if (!hasMoved && Math.abs(deltaPx) < 3) return;
       hasMoved = true;
@@ -206,9 +210,11 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       trimClipStart(clip.id, initialStart + deltaSec);
     };
 
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
       if (hasMoved) {
         commitClipChange();
       } else {
@@ -216,12 +222,14 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       }
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   };
 
   // Trim End (Trim Out)
-  const handleTrimEndMouseDown = (e: React.MouseEvent) => {
+  const handleTrimEndMouseDown = (e: React.MouseEvent | React.PointerEvent) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
@@ -231,7 +239,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     const initialEnd = clip.start + clip.duration;
     let hasMoved = false;
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
+    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
       const deltaPx = moveEvent.clientX - startX;
       if (!hasMoved && Math.abs(deltaPx) < 3) return;
       hasMoved = true;
@@ -239,9 +247,11 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       trimClipEnd(clip.id, initialEnd + deltaSec);
     };
 
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
       if (hasMoved) {
         commitClipChange();
       } else {
@@ -249,8 +259,10 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       }
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
   };
 
   const getStyleTheme = () => {
@@ -258,28 +270,28 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       case 'video':
         return {
           bg: 'bg-gradient-to-r from-blue-950/90 to-blue-900/70',
-          border: isSelected ? 'border-blue-400 ring-2 ring-blue-500/50' : 'border-blue-600/50 hover:border-blue-400',
+          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-blue-600/50 hover:border-blue-400',
           accent: 'text-blue-400',
           icon: <Film size={12} className="text-blue-400 shrink-0" />,
         };
       case 'audio':
         return {
           bg: 'bg-gradient-to-r from-emerald-950/90 to-emerald-900/70',
-          border: isSelected ? 'border-emerald-400 ring-2 ring-emerald-500/50' : 'border-emerald-600/50 hover:border-emerald-400',
+          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-emerald-600/50 hover:border-emerald-400',
           accent: 'text-emerald-400',
           icon: <Music size={12} className="text-emerald-400 shrink-0" />,
         };
       case 'text':
         return {
           bg: 'bg-gradient-to-r from-purple-950/90 to-purple-900/70',
-          border: isSelected ? 'border-purple-400 ring-2 ring-purple-500/50' : 'border-purple-600/50 hover:border-purple-400',
+          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-purple-600/50 hover:border-purple-400',
           accent: 'text-purple-400',
           icon: <Type size={12} className="text-purple-400 shrink-0" />,
         };
       default:
         return {
           bg: 'bg-dark-800',
-          border: isSelected ? 'border-blue-400 ring-2 ring-blue-500/50' : 'border-dark-700 hover:border-dark-600',
+          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-dark-700 hover:border-dark-600',
           accent: 'text-slate-400',
           icon: <Film size={12} className="shrink-0" />,
         };
@@ -304,11 +316,12 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       ref={clipRef}
       onClick={handleClick}
       onMouseDown={handleBodyMouseDown}
+      onPointerDown={handleBodyMouseDown}
       style={{
         left: `${leftPx}px`,
         width: `${widthPx}px`,
       }}
-      className={`absolute top-1 bottom-1 rounded-md border ${theme.border} ${theme.bg} backdrop-blur-xs flex items-center justify-between overflow-hidden cursor-grab active:cursor-grabbing select-none transition-shadow z-10 group`}
+      className={`absolute top-1 bottom-1 rounded-md border ${theme.border} ${theme.bg} backdrop-blur-xs flex items-center justify-between overflow-hidden cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group`}
     >
       {/* Background Filmstrip for Video clips */}
       {clip.type === 'video' && media?.thumbnails && media.thumbnails.length > 0 && (() => {
@@ -404,13 +417,18 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         </div>
       )}
 
-      {/* Left Trim Handle */}
+      {/* Left Trim Handle (CapCut Style Pill with Expanded Touch Hitbox) */}
       <div
+        onPointerDown={handleTrimStartMouseDown}
         onMouseDown={handleTrimStartMouseDown}
-        className="w-2.5 h-full bg-black/40 hover:bg-blue-400/80 cursor-ew-resize flex items-center justify-center opacity-0 group-hover:opacity-100 transition shrink-0 z-20"
+        className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all ${
+          isSelected
+            ? 'opacity-100 bg-white text-dark-950 shadow-md'
+            : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-blue-400/80 text-white'
+        }`}
         title="Recortar inicio (Trim In)"
       >
-        <div className="w-[1.5px] h-3 bg-white/80 rounded" />
+        <div className={`w-[2px] h-3.5 rounded-full ${isSelected ? 'bg-dark-900' : 'bg-white/80'}`} />
       </div>
 
       {/* Clip Content Label & Badges */}
@@ -440,13 +458,18 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         </span>
       </div>
 
-      {/* Right Trim Handle */}
+      {/* Right Trim Handle (CapCut Style Pill with Expanded Touch Hitbox) */}
       <div
+        onPointerDown={handleTrimEndMouseDown}
         onMouseDown={handleTrimEndMouseDown}
-        className="w-2.5 h-full bg-black/40 hover:bg-blue-400/80 cursor-ew-resize flex items-center justify-center opacity-0 group-hover:opacity-100 transition shrink-0 z-20"
+        className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all ${
+          isSelected
+            ? 'opacity-100 bg-white text-dark-950 shadow-md'
+            : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-blue-400/80 text-white'
+        }`}
         title="Recortar final (Trim Out)"
       >
-        <div className="w-[1.5px] h-3 bg-white/80 rounded" />
+        <div className={`w-[2px] h-3.5 rounded-full ${isSelected ? 'bg-dark-900' : 'bg-white/80'}`} />
       </div>
     </div>
   );

@@ -1,0 +1,300 @@
+import React, { useState } from 'react';
+import { MobileHeader } from './MobileHeader';
+import { MobilePreviewPlayer } from './MobilePreviewPlayer';
+import { Timeline } from '../timeline/Timeline';
+import { MobileBottomBar, MobileSheetType } from './MobileBottomBar';
+import { MobileBottomSheet } from './MobileBottomSheet';
+import { MediaBin } from '../media/MediaBin';
+import { ClipInspector } from '../inspector/ClipInspector';
+import { ExportModal } from '../export/ExportModal';
+import { ShortcutsModal } from '../modals/ShortcutsModal';
+import { useProjectStore } from '../../store/useProjectStore';
+import { TransitionType } from '../../types/project';
+import { Sparkles, Gauge, Volume2, Eye } from 'lucide-react';
+
+export const MobileCapCutLayout: React.FC = () => {
+  const [activeSheet, setActiveSheet] = useState<MobileSheetType>(null);
+
+  const selectedClip = useProjectStore((s) => s.project.clips.find((c) => c.id === s.selectedClipId));
+  const addTextClip = useProjectStore((s) => s.addTextClip);
+  const updateClip = useProjectStore((s) => s.updateClip);
+
+  const getSheetTitle = (): string => {
+    switch (activeSheet) {
+      case 'media':
+        return 'Biblioteca de Medios';
+      case 'text':
+        return 'Capas de Texto';
+      case 'speed':
+        return 'Velocidad de Reproducción';
+      case 'volume':
+        return 'Volumen de Audio';
+      case 'transition':
+        return 'Animaciones y Transiciones';
+      case 'opacity':
+        return 'Opacidad y Transparencia';
+      default:
+        return '';
+    }
+  };
+
+  return (
+    <div className="flex flex-col h-[100dvh] w-screen overflow-hidden bg-dark-950 text-slate-100 select-none">
+      {/* 1. TOP HEADER (48px) */}
+      <MobileHeader />
+
+      {/* 2. VIDEO PREVIEW MONITOR (Canvas + Floating Controls) */}
+      <MobilePreviewPlayer />
+
+      {/* 3. MULTITRACK TOUCH TIMELINE */}
+      <div className="flex-1 min-h-[170px] max-h-[38vh] flex flex-col bg-dark-950 border-t border-dark-850 overflow-hidden">
+        <Timeline />
+      </div>
+
+      {/* 4. CAPCUT BOTTOM ACTION TOOLBAR (60px) */}
+      <MobileBottomBar onOpenSheet={(sheet) => setActiveSheet(sheet)} />
+
+      {/* 5. MODULAR BOTTOM SHEETS (Slide-up Drawers) */}
+      <MobileBottomSheet
+        isOpen={!!activeSheet}
+        onClose={() => setActiveSheet(null)}
+        title={getSheetTitle()}
+      >
+        {/* Media Sheet */}
+        {activeSheet === 'media' && (
+          <div className="h-full">
+            <MediaBin />
+          </div>
+        )}
+
+        {/* Text Sheet */}
+        {activeSheet === 'text' && (
+          <div className="space-y-4">
+            <p className="text-xs text-slate-400">
+              Selecciona un estilo de texto para insertar en la posición actual del cabezal:
+            </p>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  addTextClip('Título Principal');
+                  setActiveSheet(null);
+                }}
+                className="p-3 bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/50 rounded-xl flex flex-col items-center gap-2 text-center transition group active:scale-95"
+              >
+                <div className="w-10 h-10 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-lg">
+                  T
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white group-hover:text-cyan-400">Título Grande</h4>
+                  <p className="text-[10px] text-slate-400">Aperturas y destacados</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  addTextClip('Subtítulo o descripción');
+                  setActiveSheet(null);
+                }}
+                className="p-3 bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/50 rounded-xl flex flex-col items-center gap-2 text-center transition group active:scale-95"
+              >
+                <div className="w-10 h-10 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold text-base">
+                  Aa
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-white group-hover:text-purple-400">Subtítulo / Rótulo</h4>
+                  <p className="text-[10px] text-slate-400">Explicaciones o créditos</p>
+                </div>
+              </button>
+            </div>
+
+            {selectedClip && selectedClip.type === 'text' && (
+              <div className="mt-4 pt-4 border-t border-dark-800">
+                <ClipInspector />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Speed Sheet */}
+        {activeSheet === 'speed' && selectedClip && (
+          <div className="space-y-4 py-2">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <Gauge size={14} className="text-amber-400" />
+                <span>Velocidad actual:</span>
+              </span>
+              <span className="font-mono text-amber-400 font-bold text-sm">
+                {(selectedClip.speed || 1).toFixed(1)}x
+              </span>
+            </div>
+
+            {/* Quick preset buttons */}
+            <div className="grid grid-cols-4 gap-2">
+              {[0.5, 1.0, 1.5, 2.0].map((preset) => (
+                <button
+                  key={preset}
+                  onClick={() => updateClip(selectedClip.id, { speed: preset })}
+                  className={`py-2 rounded-lg text-xs font-bold transition active:scale-95 ${
+                    (selectedClip.speed || 1) === preset
+                      ? 'bg-amber-500 text-dark-950 shadow-md shadow-amber-500/20'
+                      : 'bg-dark-850 text-slate-300 hover:bg-dark-800 border border-dark-750'
+                  }`}
+                >
+                  {preset}x
+                </button>
+              ))}
+            </div>
+
+            <input
+              type="range"
+              min="0.25"
+              max="3"
+              step="0.05"
+              value={selectedClip.speed || 1}
+              onChange={(e) => updateClip(selectedClip.id, { speed: parseFloat(e.target.value) })}
+              className="w-full h-2 bg-dark-750 accent-amber-500 rounded-lg cursor-pointer"
+            />
+          </div>
+        )}
+
+        {/* Volume Sheet */}
+        {activeSheet === 'volume' && selectedClip && (
+          <div className="space-y-4 py-2">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <Volume2 size={14} className="text-emerald-400" />
+                <span>Nivel de Ganancia:</span>
+              </span>
+              <span className="font-mono text-emerald-400 font-bold text-sm">
+                {Math.round((selectedClip.volume ?? 1) * 100)}%
+              </span>
+            </div>
+
+            <input
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={selectedClip.volume ?? 1}
+              onChange={(e) => updateClip(selectedClip.id, { volume: parseFloat(e.target.value) })}
+              className="w-full h-2 bg-dark-750 accent-emerald-500 rounded-lg cursor-pointer"
+            />
+
+            <div className="flex justify-between text-[11px] text-slate-500 font-mono">
+              <span>0% (Silencio)</span>
+              <span>100% (Normal)</span>
+              <span>200% (Amplificado)</span>
+            </div>
+          </div>
+        )}
+
+        {/* Transition Sheet */}
+        {activeSheet === 'transition' && selectedClip && (
+          <div className="space-y-4 py-2">
+            {/* Fade In */}
+            <div>
+              <label className="text-xs font-bold text-slate-200 block mb-2 flex items-center gap-1.5">
+                <Sparkles size={13} className="text-blue-400" />
+                <span>Efecto de Entrada (Fade In):</span>
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: 'none', label: 'Ninguno' },
+                  { id: 'fade-black', label: 'Fundido Negro' },
+                  { id: 'slide-left', label: 'Deslizar' },
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() =>
+                      updateClip(selectedClip.id, {
+                        transition: {
+                          fadeInType: t.id as TransitionType,
+                          fadeInDuration: selectedClip.transition?.fadeInDuration || 0.8,
+                          fadeOutType: selectedClip.transition?.fadeOutType || 'none',
+                          fadeOutDuration: selectedClip.transition?.fadeOutDuration || 0.8,
+                        },
+                      })
+                    }
+                    className={`py-2 px-1 text-center rounded-lg text-xs font-medium border transition active:scale-95 ${
+                      (selectedClip.transition?.fadeInType || 'none') === t.id
+                        ? 'bg-blue-600/30 border-blue-400 text-blue-200 font-bold'
+                        : 'bg-dark-850 border-dark-750 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Fade Out */}
+            <div>
+              <label className="text-xs font-bold text-slate-200 block mb-2 flex items-center gap-1.5">
+                <Sparkles size={13} className="text-amber-400" />
+                <span>Efecto de Salida (Fade Out):</span>
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: 'none', label: 'Ninguno' },
+                  { id: 'fade-black', label: 'Fundido Negro' },
+                  { id: 'wipe-right', label: 'Cortinilla' },
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() =>
+                      updateClip(selectedClip.id, {
+                        transition: {
+                          fadeInType: selectedClip.transition?.fadeInType || 'none',
+                          fadeInDuration: selectedClip.transition?.fadeInDuration || 0.8,
+                          fadeOutType: t.id as TransitionType,
+                          fadeOutDuration: selectedClip.transition?.fadeOutDuration || 0.8,
+                        },
+                      })
+                    }
+                    className={`py-2 px-1 text-center rounded-lg text-xs font-medium border transition active:scale-95 ${
+                      (selectedClip.transition?.fadeOutType || 'none') === t.id
+                        ? 'bg-amber-600/30 border-amber-400 text-amber-200 font-bold'
+                        : 'bg-dark-850 border-dark-750 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Opacity Sheet */}
+        {activeSheet === 'opacity' && selectedClip && (
+          <div className="space-y-4 py-2">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+              <span className="flex items-center gap-1.5">
+                <Eye size={14} className="text-purple-400" />
+                <span>Opacidad:</span>
+              </span>
+              <span className="font-mono text-purple-400 font-bold text-sm">
+                {Math.round((selectedClip.opacity ?? 1) * 100)}%
+              </span>
+            </div>
+
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={selectedClip.opacity ?? 1}
+              onChange={(e) => updateClip(selectedClip.id, { opacity: parseFloat(e.target.value) })}
+              className="w-full h-2 bg-dark-750 accent-purple-500 rounded-lg cursor-pointer"
+            />
+          </div>
+        )}
+      </MobileBottomSheet>
+
+      {/* Global Modals */}
+      <ExportModal />
+      <ShortcutsModal />
+    </div>
+  );
+};

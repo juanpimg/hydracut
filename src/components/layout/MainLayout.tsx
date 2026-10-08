@@ -6,6 +6,8 @@ import { PlayerControls } from '../player/PlayerControls';
 import { Timeline } from '../timeline/Timeline';
 import { ExportModal } from '../export/ExportModal';
 import { ShortcutsModal } from '../modals/ShortcutsModal';
+import { MobileCapCutLayout } from '../mobile/MobileCapCutLayout';
+import { useIsMobile } from '../../hooks/useIsMobile';
 import { useProjectStore } from '../../store/useProjectStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { loadAutosavedProject, rehydrateProjectMedia } from '../../core/storage/projectStorage';
@@ -104,6 +106,12 @@ export const MainLayout: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [splitAtPlayhead, deleteSelectedClip, undo, redo, project.fps]);
 
+  const isMobile = useIsMobile(768);
+
+  if (isMobile) {
+    return <MobileCapCutLayout />;
+  }
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-dark-950 text-slate-100 select-none">
       {/* Top Header */}
@@ -122,7 +130,9 @@ export const MainLayout: React.FC = () => {
       </div>
 
       {/* Bottom: Multitrack Interactive Timeline */}
-      <Timeline />
+      <div className="h-64 sm:h-72 shrink-0">
+        <Timeline />
+      </div>
 
       {/* Modals */}
       <ExportModal />

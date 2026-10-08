@@ -57,6 +57,57 @@ export const Timeline: React.FC = () => {
     };
   }, [setZoom]);
 
+  // Two-finger pinch-to-zoom on touch screens
+  useEffect(() => {
+    const container = lanesContainerRef.current;
+    if (!container) return;
+
+    const activePointers = new Map<number, { x: number; y: number }>();
+    let initialDistance = 0;
+    let initialZoom = 1;
+
+    const onPointerDown = (e: PointerEvent) => {
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activePointers.size === 2) {
+        const [p1, p2] = Array.from(activePointers.values());
+        initialDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        initialZoom = useProjectStore.getState().zoom;
+      }
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!activePointers.has(e.pointerId)) return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (activePointers.size === 2 && initialDistance > 0) {
+        const [p1, p2] = Array.from(activePointers.values());
+        const currentDistance = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+        const scale = currentDistance / initialDistance;
+        const newZoom = Math.max(10, Math.min(250, initialZoom * scale));
+        setZoom(newZoom);
+      }
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      activePointers.delete(e.pointerId);
+      if (activePointers.size < 2) {
+        initialDistance = 0;
+      }
+    };
+
+    container.addEventListener('pointerdown', onPointerDown);
+    container.addEventListener('pointermove', onPointerMove);
+    container.addEventListener('pointerup', onPointerUp);
+    container.addEventListener('pointercancel', onPointerUp);
+
+    return () => {
+      container.removeEventListener('pointerdown', onPointerDown);
+      container.removeEventListener('pointermove', onPointerMove);
+      container.removeEventListener('pointerup', onPointerUp);
+      container.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [setZoom]);
+
   const handleFitToScreen = () => {
     const container = lanesContainerRef.current;
     if (!container) return;
@@ -70,17 +121,18 @@ export const Timeline: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-64 sm:h-72 bg-dark-950 border-t border-dark-800 select-none z-10">
+    <div className="flex flex-col h-full bg-dark-950 border-t border-dark-800 select-none z-10">
       {/* Top Toolbar */}
       <TimelineToolbar onFitToScreen={handleFitToScreen} />
 
       {/* Main Timeline Workspace */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Column: Track Headers */}
-        <div className="w-48 sm:w-56 bg-dark-900 border-r border-dark-800 flex flex-col shrink-0 z-20">
+        <div className="w-12 sm:w-16 md:w-48 lg:w-56 bg-dark-900 border-r border-dark-800 flex flex-col shrink-0 z-20">
           {/* Header spacer aligned with ruler */}
-          <div className="h-7 bg-dark-900 border-b border-dark-800 px-3 flex items-center text-[10px] uppercase font-bold tracking-wider text-slate-500">
-            Pistas
+          <div className="h-7 bg-dark-900 border-b border-dark-800 px-2 sm:px-3 flex items-center text-[10px] uppercase font-bold tracking-wider text-slate-500">
+            <span className="hidden md:inline">Pistas</span>
+            <span className="md:hidden">#</span>
           </div>
 
           {/* Track Headers List */}

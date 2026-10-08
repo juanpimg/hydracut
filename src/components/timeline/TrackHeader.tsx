@@ -27,17 +27,25 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track }) => {
 
   const canDelete = trackCount > 1;
 
+  const getShortName = () => {
+    const num = track.name.match(/\d+/)?.[0] || '1';
+    return `${track.type[0].toUpperCase()}${num}`;
+  };
+
   return (
-    <div className="h-14 px-3 bg-dark-900 border-b border-r border-dark-800 flex items-center justify-between select-none group">
-      <div className="flex items-center gap-2 min-w-0">
+    <div className="h-14 px-2 sm:px-3 bg-dark-900 border-b border-r border-dark-800 flex items-center justify-between select-none group">
+      <div className="flex items-center gap-1.5 min-w-0">
         {getIcon()}
-        <span className="text-xs font-semibold text-slate-300 truncate" title={track.name}>
+        <span className="text-xs font-semibold text-slate-300 truncate hidden md:inline" title={track.name}>
           {track.name}
+        </span>
+        <span className="text-[10px] font-mono font-bold text-slate-400 md:hidden">
+          {getShortName()}
         </span>
       </div>
 
       {/* Action icons */}
-      <div className="flex items-center gap-1 opacity-70 group-hover:opacity-100 transition">
+      <div className="hidden md:flex items-center gap-1 opacity-70 group-hover:opacity-100 transition">
         {/* Visibility */}
         <button
           onClick={() => toggleTrackVisibility(track.id)}
