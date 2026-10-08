@@ -38,6 +38,10 @@ export interface ProjectState {
   // Tracks
   addTrack: (type: TrackType, name?: string) => void;
   removeTrack: (trackId: string) => void;
+  deleteTrack: (trackId: string) => void;
+  duplicateTrack: (trackId: string) => void;
+  reorderTrack: (trackId: string, direction: 'up' | 'down') => void;
+  moveTrack: (trackId: string, direction: 'up' | 'down') => void;
   toggleTrackMute: (trackId: string) => void;
   toggleTrackLock: (trackId: string) => void;
   toggleTrackVisibility: (trackId: string) => void;
@@ -60,6 +64,10 @@ export interface ProjectState {
   undo: () => void;
   redo: () => void;
   pushHistory: () => void;
+  // Gesture-scoped history: call once when a drag/trim gesture starts;
+  // commitClipChange() closes the gesture without pushing.
+  historyGesturePending: boolean;
+  beginClipGesture: () => void;
 
   // Project persistence
   recalculateDuration: () => void;
@@ -98,7 +106,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   snappingGuideTime: null,
   past: [],
   future: [],
+  historyGesturePending: false,
 
+  beginClipGesture: () => {
+    if (get().historyGesturePending) return;
+    get().pushHistory();
+    set({ historyGesturePending: true });
+  },
   setProject: (project) => {
     set({ project });
     autosaveProject(project);
@@ -167,7 +181,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clips: JSON.parse(JSON.stringify(previous.clips)),
       updatedAt: Date.now(),
     };
-    set({ project: updated, past: newPast, future: [currentSnap, ...future], selectedClipId: null });
+    set({ project: updated, past: newPast, future: [currentSnap, ...future], selectedClipId: null, historyGesturePending: false });
     get().recalculateDuration();
     autosaveProject(updated);
   },
@@ -187,7 +201,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clips: JSON.parse(JSON.stringify(next.clips)),
       updatedAt: Date.now(),
     };
-    set({ project: updated, past: [...past, currentSnap], future: newFuture });
+    set({ project: updated, past: [...past, currentSnap], future: newFuture, historyGesturePending: false });
     get().recalculateDuration();
     autosaveProject(updated);
   },
@@ -276,12 +290,80 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     get().recalculateDuration();
   },
 
+  deleteTrack: (trackId) => {
+    get().removeTrack(trackId);
+  },
+
+  duplicateTrack: (trackId) => {
+    get().pushHistory();
+    set((state) => {
+      const sourceTrack = state.project.tracks.find((t) => t.id === trackId);
+      if (!sourceTrack) return state;
+
+      const trackIdx = state.project.tracks.findIndex((t) => t.id === trackId);
+      const newTrackId = `track_${sourceTrack.type}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const newTrack: Track = {
+        ...sourceTrack,
+        id: newTrackId,
+        name: `${sourceTrack.name} (Copia)`,
+      };
+
+      const newTracks = [...state.project.tracks];
+      newTracks.splice(trackIdx + 1, 0, newTrack);
+
+      const sourceClips = state.project.clips.filter((c) => c.trackId === trackId);
+      const duplicatedClips: Clip[] = sourceClips.map((c) => ({
+        ...JSON.parse(JSON.stringify(c)),
+        id: `clip_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        trackId: newTrackId,
+      }));
+
+      const updated: Project = {
+        ...state.project,
+        tracks: newTracks,
+        clips: [...state.project.clips, ...duplicatedClips],
+        updatedAt: Date.now(),
+      };
+      autosaveProject(updated);
+      return { project: updated };
+    });
+    get().recalculateDuration();
+  },
+
+  reorderTrack: (trackId, direction) => {
+    const { project } = get();
+    const currentIndex = project.tracks.findIndex((t) => t.id === trackId);
+    if (currentIndex === -1) return;
+
+    const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    if (targetIndex < 0 || targetIndex >= project.tracks.length) return;
+
+    get().pushHistory();
+    set((state) => {
+      const tracks = [...state.project.tracks];
+      const [movedTrack] = tracks.splice(currentIndex, 1);
+      tracks.splice(targetIndex, 0, movedTrack);
+
+      const updated: Project = {
+        ...state.project,
+        tracks,
+        updatedAt: Date.now(),
+      };
+      autosaveProject(updated);
+      return { project: updated };
+    });
+  },
+
+  moveTrack: (trackId, direction) => {
+    get().reorderTrack(trackId, direction);
+  },
+
   toggleTrackMute: (trackId) => {
     set((state) => {
       const updatedTracks = state.project.tracks.map((t) =>
         t.id === trackId ? { ...t, isMuted: !t.isMuted } : t
       );
-      const updated = { ...state.project, tracks: updatedTracks };
+      const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
       autosaveProject(updated);
       return { project: updated };
     });
@@ -292,7 +374,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const updatedTracks = state.project.tracks.map((t) =>
         t.id === trackId ? { ...t, isLocked: !t.isLocked } : t
       );
-      const updated = { ...state.project, tracks: updatedTracks };
+      const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
       autosaveProject(updated);
       return { project: updated };
     });
@@ -303,7 +385,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const updatedTracks = state.project.tracks.map((t) =>
         t.id === trackId ? { ...t, isVisible: !t.isVisible } : t
       );
-      const updated = { ...state.project, tracks: updatedTracks };
+      const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
       autosaveProject(updated);
       return { project: updated };
     });
@@ -414,6 +496,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   removeClip: (clipId) => {
+    const clip = get().project.clips.find((c) => c.id === clipId);
+    if (clip && get().project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
     get().pushHistory();
     mediaSourcePool.releaseClip(clipId);
     set((state) => {
@@ -432,6 +516,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const { project, snapEnabled, currentTime, zoom } = get();
     const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
+
+    // Locked source track: positional edits are frozen entirely.
+    const sourceTrack = project.tracks.find((t) => t.id === clip.trackId);
+    if (sourceTrack?.isLocked) return;
+
+    // Locked-track guard: never move a clip onto a locked track.
+    // Keep the clip on its current track and only apply the time change.
+    let effectiveTrackId = newTrackId || clip.trackId;
+    if (newTrackId && newTrackId !== clip.trackId) {
+      const target = project.tracks.find((t) => t.id === newTrackId);
+      if (!target || target.isLocked) {
+        effectiveTrackId = clip.trackId;
+      }
+    }
 
     // Calculate snapping with both start AND end:
     const snap = calculateSnapping(
@@ -454,7 +552,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           return {
             ...c,
             start: finalStart,
-            trackId: newTrackId || c.trackId,
+            trackId: effectiveTrackId,
           };
         }
         return c;
@@ -465,16 +563,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   commitClipChange: () => {
-    get().pushHistory();
     get().recalculateDuration();
     autosaveProject(get().project);
-    set({ snappingGuideTime: null });
+    set({ snappingGuideTime: null, historyGesturePending: false });
   },
 
   trimClipStart: (clipId, newStart) => {
     const { project, snapEnabled, currentTime, zoom } = get();
     const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
+    if (project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
 
     const snap = calculateSnapping(
       newStart,
@@ -518,6 +616,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const { project, snapEnabled, currentTime, zoom } = get();
     const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
+    if (project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
 
     const snap = calculateSnapping(
       newEnd,
@@ -552,6 +651,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const { project, currentTime } = get();
     const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
+    if (project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
 
     const cutPoint = splitTime !== undefined ? splitTime : currentTime;
     const clipEnd = clip.start + clip.duration;
@@ -669,6 +769,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       isPlaying: false,
       past: [],
       future: [],
+      historyGesturePending: false,
     });
     autosaveProject(get().project);
   },
@@ -679,6 +780,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       selectedClipId: null,
       currentTime: 0,
       isPlaying: false,
+      past: [],
+      future: [],
+      historyGesturePending: false,
     });
     get().recalculateDuration();
     autosaveProject(loadedProject);

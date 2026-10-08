@@ -148,12 +148,24 @@ export const PreviewPlayer: React.FC = () => {
           width={resolution.width}
           height={resolution.height}
           className="w-full h-full object-contain"
+          role="img"
+          aria-label={clips.length === 0 ? 'Monitor vacío: importa medios para empezar' : `Monitor: ${clips.length} clips en el timeline`}
         />
 
         {/* Resolution Badge */}
-        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-xs px-2 py-0.5 rounded text-[11px] font-mono text-slate-400 pointer-events-none border border-white/5">
+        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded text-[11px] font-mono text-slate-400 pointer-events-none border border-white/5">
           {resolution.width}x{resolution.height} ({aspectRatio})
         </div>
+
+        {/* Empty-state guide */}
+        {clips.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 gap-2 bg-black/40">
+            <p className="text-sm font-bold text-white">Timeline vacío</p>
+            <p className="text-xs text-slate-400 max-w-[32ch]">
+              Importa videos o genera clips de prueba para verlos aquí.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

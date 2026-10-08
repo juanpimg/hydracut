@@ -1,9 +1,19 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { X, Keyboard } from 'lucide-react';
 import { useUIStore } from '../../store/useUIStore';
 
 export const ShortcutsModal: React.FC = () => {
   const { isShortcutsModalOpen, setShortcutsModalOpen } = useUIStore();
+
+  // Close on Escape or backdrop click (effect before early-return: hooks order)
+  useEffect(() => {
+    if (!isShortcutsModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShortcutsModalOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isShortcutsModalOpen, setShortcutsModalOpen]);
 
   if (!isShortcutsModalOpen) return null;
 
@@ -13,13 +23,23 @@ export const ShortcutsModal: React.FC = () => {
     { key: 'Supr / Backspace', desc: 'Eliminar el clip seleccionado' },
     { key: '← / →', desc: 'Retroceder o avanzar 1 fotograma' },
     { key: 'Ctrl + Z', desc: 'Deshacer última acción' },
+    { key: 'Ctrl + Shift + Z', desc: 'Rehacer acción' },
     { key: 'Ctrl + Y', desc: 'Rehacer acción' },
     { key: 'Ctrl + Rueda', desc: 'Zoom in / Zoom out en el timeline' },
     { key: 'Home', desc: 'Ir al inicio del timeline (00:00:00:00)' },
+    { key: 'Esc', desc: 'Cerrar modal / Deseleccionar clip' },
   ];
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Atajos de teclado"
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none animate-fadeIn"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) setShortcutsModalOpen(false);
+      }}
+    >
       <div className="bg-dark-900 border border-dark-800 rounded-xl w-full max-w-sm shadow-2xl overflow-hidden flex flex-col">
         {/* Header */}
         <div className="px-5 py-4 border-b border-dark-800 flex items-center justify-between">
@@ -40,7 +60,7 @@ export const ShortcutsModal: React.FC = () => {
           {shortcuts.map((sc, idx) => (
             <div key={idx} className="flex items-center justify-between text-xs">
               <span className="text-slate-400">{sc.desc}</span>
-              <kbd className="px-2 py-1 bg-dark-950 border border-dark-750 rounded text-slate-200 font-mono text-[11px] shadow-xs">
+              <kbd className="px-2 py-1 bg-dark-950 border border-dark-750 rounded text-slate-200 font-mono text-[11px] shadow-sm">
                 {sc.key}
               </kbd>
             </div>

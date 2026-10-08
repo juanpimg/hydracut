@@ -44,9 +44,16 @@ export const PlayerControls: React.FC = () => {
   const isPlaying = useProjectStore((s) => s.isPlaying);
   const fps = useProjectStore((s) => s.project.fps);
   const duration = useProjectStore((s) => s.project.duration);
+  const clips = useProjectStore((s) => s.project.clips);
+  const currentTime = useProjectStore((s) => s.currentTime);
   const snapEnabled = useProjectStore((s) => s.snapEnabled);
   const toggleSnap = useProjectStore((s) => s.toggleSnap);
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
+
+  // Split only makes sense when the playhead is strictly inside a clip
+  const canSplit = clips.some(
+    (c) => currentTime > c.start + 0.05 && currentTime < c.start + c.duration - 0.05
+  );
 
   const [volume, setVolume] = useState<number>(1);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -102,6 +109,7 @@ export const PlayerControls: React.FC = () => {
           onClick={handleToStart}
           className="p-1.5 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition"
           title="Ir al inicio (Home)"
+          aria-label="Ir al inicio"
         >
           <SkipBack size={15} />
         </button>
@@ -110,6 +118,7 @@ export const PlayerControls: React.FC = () => {
           onClick={handleStepBack}
           className="p-1.5 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition"
           title="Retroceder 1 cuadro (←)"
+          aria-label="Retroceder 1 cuadro"
         >
           <span className="text-xs font-mono font-bold">-1f</span>
         </button>
@@ -122,6 +131,8 @@ export const PlayerControls: React.FC = () => {
               : 'bg-blue-600 hover:bg-blue-500 text-white'
           }`}
           title={isPlaying ? 'Pausar (Espacio)' : 'Reproducir (Espacio)'}
+          aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+          aria-pressed={isPlaying}
         >
           {isPlaying ? <Pause size={17} className="fill-current" /> : <Play size={17} className="fill-current translate-x-0.5" />}
         </button>
@@ -130,14 +141,17 @@ export const PlayerControls: React.FC = () => {
           onClick={handleStepForward}
           className="p-1.5 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition"
           title="Avanzar 1 cuadro (→)"
+          aria-label="Avanzar 1 cuadro"
         >
           <span className="text-xs font-mono font-bold">+1f</span>
         </button>
 
         <button
           onClick={splitAtPlayhead}
-          className="p-1.5 ml-2 text-slate-400 hover:text-blue-400 hover:bg-dark-800 rounded transition"
+          disabled={!canSplit}
+          className="p-1.5 ml-2 text-slate-400 hover:text-blue-400 hover:bg-dark-800 rounded transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:hover:bg-transparent"
           title="Cortar clip en el cabezal (S)"
+          aria-label={canSplit ? 'Cortar clip en el cabezal' : 'Cortar clip en el cabezal (no disponible: coloca el cabezal dentro de un clip)'}
         >
           <Scissors size={15} />
         </button>
@@ -148,6 +162,8 @@ export const PlayerControls: React.FC = () => {
         {/* Snapping Toggle */}
         <button
           onClick={toggleSnap}
+          aria-pressed={snapEnabled}
+          aria-label="Imán: snapping magnético"
           className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition border ${
             snapEnabled
               ? 'bg-blue-600/20 border-blue-500/40 text-blue-400'

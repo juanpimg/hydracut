@@ -19,12 +19,14 @@ export const Sidebar: React.FC = () => {
   return (
     <aside className="w-80 h-full flex bg-dark-900 border-r border-dark-800 select-none z-20">
       {/* Mini Icon Strip on the far left */}
-      <div className="w-14 bg-dark-950 border-r border-dark-800 flex flex-col items-center py-3 gap-3">
+      <div role="tablist" aria-label="Panel lateral" className="w-14 bg-dark-950 border-r border-dark-800 flex flex-col items-center py-3 gap-3">
         {tabs.map((tab) => {
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
+              role="tab"
+              aria-selected={isActive}
               onClick={() => setActiveTab(tab.id)}
               className={`relative p-2.5 rounded-xl transition flex flex-col items-center gap-1 ${
                 isActive

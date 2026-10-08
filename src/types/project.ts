@@ -103,6 +103,17 @@ export interface Project {
   updatedAt: number;
 }
 
+export interface ProjectMetadata {
+  id: string;
+  name: string;
+  aspectRatio: AspectRatio;
+  duration: number;
+  tracksCount: number;
+  clipsCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ExportConfig {
   aspectRatio: AspectRatio;
   width: number;

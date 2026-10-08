@@ -128,17 +128,19 @@ export const Timeline: React.FC = () => {
       {/* Main Timeline Workspace */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Column: Track Headers */}
-        <div className="w-12 sm:w-16 md:w-48 lg:w-56 bg-dark-900 border-r border-dark-800 flex flex-col shrink-0 z-20">
+        <div className="w-40 sm:w-40 md:w-48 lg:w-56 bg-dark-900 border-r border-dark-800 flex flex-col shrink-0 z-20">
           {/* Header spacer aligned with ruler */}
-          <div className="h-7 bg-dark-900 border-b border-dark-800 px-2 sm:px-3 flex items-center text-[10px] uppercase font-bold tracking-wider text-slate-500">
-            <span className="hidden md:inline">Pistas</span>
-            <span className="md:hidden">#</span>
+          <div className="h-7 bg-dark-900 border-b border-dark-800 px-2 sm:px-3 flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-slate-500">
+            <span>Pistas</span>
+            <span className="text-[9px] font-mono font-medium text-slate-400 bg-dark-800 px-1.5 py-0.5 rounded">
+              {project.tracks.length}
+            </span>
           </div>
 
           {/* Track Headers List */}
           <div className="flex-1 overflow-hidden">
-            {project.tracks.map((track) => (
-              <TrackHeader key={track.id} track={track} />
+            {project.tracks.map((track, idx) => (
+              <TrackHeader key={track.id} track={track} index={idx} />
             ))}
           </div>
         </div>

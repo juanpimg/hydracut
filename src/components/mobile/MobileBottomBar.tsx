@@ -21,11 +21,22 @@ interface MobileBottomBarProps {
 
 export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet }) => {
   const selectedClipId = useProjectStore((s) => s.selectedClipId);
+  const clips = useProjectStore((s) => s.project.clips);
+  const currentTime = useProjectStore((s) => s.currentTime);
   const selectClip = useProjectStore((s) => s.selectClip);
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
 
   const hasSelectedClip = !!selectedClipId;
+  const canSplit = clips.some(
+    (c) => currentTime > c.start + 0.05 && currentTime < c.start + c.duration - 0.05
+  );
+
+  const handleDelete = () => {
+    if (confirm('¿Eliminar el clip seleccionado? Puedes deshacer esta acción.')) {
+      deleteSelectedClip();
+    }
+  };
 
   return (
     <nav className="h-16 bg-dark-950/95 border-t border-dark-800/80 px-2 flex items-center justify-between z-30 select-none shrink-0 pb-[env(safe-area-inset-bottom)] overflow-x-auto no-scrollbar">
@@ -45,8 +56,10 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
           {/* Split (Dividir) */}
           <button
             onClick={splitAtPlayhead}
-            className="flex flex-col items-center justify-center w-14 h-12 rounded-xl text-cyan-400 hover:text-cyan-300 active:bg-dark-850 active:scale-95 transition"
+            disabled={!canSplit}
+            className="flex flex-col items-center justify-center w-14 h-12 rounded-xl text-cyan-400 hover:text-cyan-300 active:bg-dark-850 active:scale-95 transition disabled:opacity-30"
             title="Dividir clip"
+            aria-label={canSplit ? 'Dividir clip' : 'Dividir clip (no disponible: coloca el cabezal dentro de un clip)'}
           >
             <Scissors size={18} />
             <span className="text-[10px] mt-0.5 font-bold">Dividir</span>
@@ -94,9 +107,10 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
 
           {/* Delete (Eliminar) */}
           <button
-            onClick={deleteSelectedClip}
+            onClick={handleDelete}
             className="flex flex-col items-center justify-center w-14 h-12 rounded-xl text-red-400 hover:text-red-300 active:bg-dark-850 active:scale-95 transition"
             title="Eliminar clip"
+            aria-label="Eliminar clip seleccionado"
           >
             <Trash2 size={18} />
             <span className="text-[10px] mt-0.5 font-medium">Eliminar</span>
@@ -144,8 +158,10 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
           {/* Quick Split at Playhead */}
           <button
             onClick={splitAtPlayhead}
-            className="flex flex-col items-center justify-center w-16 h-12 rounded-xl text-slate-200 hover:text-white active:bg-dark-850 active:scale-95 transition"
+            disabled={!canSplit}
+            className="flex flex-col items-center justify-center w-16 h-12 rounded-xl text-slate-200 hover:text-white active:bg-dark-850 active:scale-95 transition disabled:opacity-30"
             title="Dividir en cabezal"
+            aria-label={canSplit ? 'Dividir en cabezal' : 'Dividir en cabezal (no disponible: coloca el cabezal dentro de un clip)'}
           >
             <div className="w-6 h-6 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400">
               <Scissors size={15} />

@@ -26,20 +26,35 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
     };
   }, [isOpen]);
 
+  // Close on Escape
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col justify-end">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="fixed inset-0 z-50 flex flex-col justify-end"
+    >
       {/* Backdrop */}
       <div 
-        className="fixed inset-0 bg-black/70 transition-opacity"
+        className="fixed inset-0 bg-black/70 transition-opacity animate-fadeIn"
         onClick={onClose}
       />
 
       {/* Sheet Content */}
       <div 
         data-sheet-content="true"
-        className="relative bg-dark-900 border-t border-dark-750 rounded-t-2xl shadow-2xl flex flex-col max-h-[60vh] h-[52vh] z-10 overflow-hidden pb-[env(safe-area-inset-bottom)]"
+        className="relative bg-dark-900 border-t border-dark-750 rounded-t-2xl shadow-2xl flex flex-col max-h-[60vh] h-[52vh] z-10 overflow-hidden pb-[env(safe-area-inset-bottom)] animate-slideUp"
       >
         {/* Drag handle pill */}
         <div className="w-full flex justify-center pt-2 pb-1">
@@ -53,10 +68,11 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
           </h3>
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-white bg-dark-850 hover:bg-dark-800 rounded-full transition active:scale-95"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white bg-dark-850 hover:bg-dark-800 rounded-full transition active:scale-95"
             title="Cerrar"
+            aria-label="Cerrar panel"
           >
-            <X size={16} />
+            <X size={17} />
           </button>
         </div>
 

@@ -8,6 +8,7 @@ import { MediaBin } from '../media/MediaBin';
 import { ClipInspector } from '../inspector/ClipInspector';
 import { ExportModal } from '../export/ExportModal';
 import { ShortcutsModal } from '../modals/ShortcutsModal';
+import { ProjectsModal } from '../modals/ProjectsModal';
 import { useProjectStore } from '../../store/useProjectStore';
 import { TransitionType } from '../../types/project';
 import { Sparkles, Gauge, Volume2, Eye } from 'lucide-react';
@@ -135,7 +136,7 @@ export const MobileCapCutLayout: React.FC = () => {
                 <button
                   key={preset}
                   onClick={() => updateClip(selectedClip.id, { speed: preset })}
-                  className={`py-2 rounded-lg text-xs font-bold transition active:scale-95 ${
+                  className={`min-h-[44px] px-2 rounded-lg text-xs font-bold transition active:scale-95 ${
                     (selectedClip.speed || 1) === preset
                       ? 'bg-amber-500 text-dark-950 shadow-md shadow-amber-500/20'
                       : 'bg-dark-850 text-slate-300 hover:bg-dark-800 border border-dark-750'
@@ -153,7 +154,7 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.speed || 1}
               onChange={(e) => updateClip(selectedClip.id, { speed: parseFloat(e.target.value) })}
-              className="w-full h-2 bg-dark-750 accent-amber-500 rounded-lg cursor-pointer"
+              className="w-full h-8 bg-dark-750 accent-amber-500 rounded-lg cursor-pointer"
             />
           </div>
         )}
@@ -178,7 +179,7 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.volume ?? 1}
               onChange={(e) => updateClip(selectedClip.id, { volume: parseFloat(e.target.value) })}
-              className="w-full h-2 bg-dark-750 accent-emerald-500 rounded-lg cursor-pointer"
+              className="w-full h-8 bg-dark-750 accent-emerald-500 rounded-lg cursor-pointer"
             />
 
             <div className="flex justify-between text-[11px] text-slate-500 font-mono">
@@ -286,15 +287,37 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.opacity ?? 1}
               onChange={(e) => updateClip(selectedClip.id, { opacity: parseFloat(e.target.value) })}
-              className="w-full h-2 bg-dark-750 accent-purple-500 rounded-lg cursor-pointer"
+              className="w-full h-8 bg-dark-750 accent-purple-500 rounded-lg cursor-pointer"
             />
           </div>
         )}
+
+        {/* Empty guard: clip-dependent sheets opened without a selection */}
+        {activeSheet &&
+          (activeSheet === 'speed' ||
+            activeSheet === 'volume' ||
+            activeSheet === 'transition' ||
+            activeSheet === 'opacity') &&
+          !selectedClip && (
+            <div className="py-8 px-4 flex flex-col items-center justify-center text-center gap-2">
+              <p className="text-sm font-semibold text-slate-200">Ningún clip seleccionado</p>
+              <p className="text-xs text-slate-400 max-w-[26ch]">
+                Toca un clip del timeline para ajustar sus propiedades, o cierra este panel.
+              </p>
+              <button
+                onClick={() => setActiveSheet(null)}
+                className="mt-2 px-4 min-h-[44px] rounded-lg bg-dark-850 hover:bg-dark-800 border border-dark-750 text-slate-200 text-xs font-semibold active:scale-95 transition"
+              >
+                Cerrar panel
+              </button>
+            </div>
+          )}
       </MobileBottomSheet>
 
       {/* Global Modals */}
       <ExportModal />
       <ShortcutsModal />
+      <ProjectsModal />
     </div>
   );
 };

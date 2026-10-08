@@ -42,41 +42,47 @@ export const TimeRuler: React.FC<TimeRulerProps> = () => {
     ticks.push({ time: s, isMajor, label: isMajor ? label : undefined });
   }
 
-  const handleSeek = (e: React.MouseEvent) => {
+  const handleSeekFromClientX = (clientX: number) => {
     if (!rulerRef.current) return;
     const rect = rulerRef.current.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const newTime = pixelsToTime(clickX, zoom);
+    const x = clientX - rect.left;
+    const newTime = pixelsToTime(x, zoom);
     masterClock.seek(newTime);
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    handleSeek(e);
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    handleSeekFromClientX(e.clientX);
+    // Capture so scrubbing keeps working even if the pointer leaves the ruler
+    try {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      // ignore (already released / unsupported)
+    }
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
-      if (!rulerRef.current) return;
-      const rect = rulerRef.current.getBoundingClientRect();
-      const moveX = moveEvent.clientX - rect.left;
-      const newTime = pixelsToTime(moveX, zoom);
-      masterClock.seek(newTime);
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      handleSeekFromClientX(moveEvent.clientX);
     };
 
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+    const onPointerUp = () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   };
 
   return (
     <div
       ref={rulerRef}
       data-testid="time-ruler"
-      onMouseDown={handleMouseDown}
+      onPointerDown={handlePointerDown}
       style={{ width: `${totalWidth}px` }}
-      className="relative h-7 bg-dark-900 border-b border-dark-800 cursor-pointer select-none text-[10px] font-mono text-slate-500 overflow-hidden"
+      className="relative h-7 bg-dark-900 border-b border-dark-800 cursor-pointer select-none text-[10px] font-mono text-slate-500 overflow-hidden touch-none"
     >
       {ticks.map((tick, idx) => {
         const left = tick.time * zoom;

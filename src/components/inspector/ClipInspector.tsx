@@ -55,9 +55,14 @@ export const ClipInspector: React.FC = () => {
           <span className="text-sm font-semibold text-slate-200">Inspector de Clip</span>
         </div>
         <button
-          onClick={() => removeClip(clip.id)}
+          onClick={() => {
+            if (confirm(`¿Eliminar el clip "${clip.name}"? Puedes deshacerlo con Ctrl+Z.`)) {
+              removeClip(clip.id);
+            }
+          }}
           className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition"
           title="Eliminar clip (Supr)"
+          aria-label={`Eliminar clip ${clip.name}`}
         >
           <Trash2 size={15} />
         </button>
@@ -88,20 +93,22 @@ export const ClipInspector: React.FC = () => {
           </div>
 
           <div>
-            <label className="text-[11px] text-slate-400 block mb-1">Texto:</label>
+            <label htmlFor={`clip-text-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">Texto:</label>
             <textarea
+              id={`clip-text-${clip.id}`}
               value={clip.text || ''}
               onChange={(e) => updateClip(clip.id, { text: e.target.value, name: e.target.value.slice(0, 20) || 'Texto' })}
               rows={3}
-              className="w-full bg-dark-950 border border-dark-750 focus:border-blue-500 text-slate-100 rounded p-2 text-xs outline-none resize-none font-medium"
+              className="w-full bg-dark-950 border border-dark-750 focus:border-blue-500 text-slate-100 rounded p-2 text-xs outline-none resize-none font-medium focus-visible:ring-2 focus-visible:ring-blue-500"
             />
           </div>
 
           {/* Font Family & Size */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[11px] text-slate-400 block mb-1">Tipografía:</label>
+              <label htmlFor={`clip-font-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">Tipografía:</label>
               <select
+                id={`clip-font-${clip.id}`}
                 value={clip.textStyle?.fontFamily || 'Inter, sans-serif'}
                 onChange={(e) =>
                   updateClip(clip.id, {

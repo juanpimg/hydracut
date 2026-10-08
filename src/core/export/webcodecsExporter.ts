@@ -298,8 +298,52 @@ export function getFallbackAvcDescription(width = 1920, height = 1080): Uint8Arr
 }
 
 /**
+ * Tries H.264 codecs in order (High → Main → Baseline) validating the FULL
+ * encode configuration (codec + dimensions + bitrate + framerate).
+ * Returns the first fully-supported codec string, or null if the encoder
+ * cannot handle the requested configuration on this device/GPU.
+ *
+ * NOTE: `getSupportedVideoCodec` only checks codec+dimensions. Exporting at
+ * 4K or with a high bitrate can still fail `configure()` on weak GPUs, which
+ * previously surfaced later as the cryptic
+ * "VideoEncoder.encode: Encoder must be configured first". Checking the full
+ * config up-front lets us fall back to MediaRecorder with a clear warning
+ * instead of crashing mid-export.
+ */
+export async function selectSupportedVideoConfig(
+  width = 1920,
+  height = 1080,
+  bitrate = 6_000_000,
+  framerate = 30
+): Promise<string | null> {
+  if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+    return null;
+  }
+  const codecsToTry = ['avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+  for (const codec of codecsToTry) {
+    try {
+      const support = await VideoEncoder.isConfigSupported({
+        codec,
+        width,
+        height,
+        bitrate,
+        framerate,
+      });
+      if (support.supported) {
+        return codec;
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+  return null;
+}
+
+/**
  * Dynamically queries VideoEncoder.isConfigSupported to find the best supported H.264 profile.
  * Prefers High Profile (avc1.640028), falls back to Main (avc1.4d002a) and Baseline (avc1.42001f).
+ * NOTE: only checks codec+dimensions (fast path). For export, prefer
+ * `selectSupportedVideoConfig`, which also validates bitrate+framerate.
  */
 export async function getSupportedVideoCodec(width = 1920, height = 1080): Promise<string | null> {
   if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
@@ -681,14 +725,27 @@ export async function exportVideo(params: ExportParams): Promise<Blob> {
   const totalFrames = Math.max(1, Math.round(params.duration * fps));
   const startTime = performance.now();
 
+  // Fast path: no WebCodecs at all -> MediaRecorder fallback.
   const webCodecsSupported = await isWebCodecsSupported();
 
   if (webCodecsSupported) {
-    return await exportWithWebCodecs(params, totalFrames, startTime);
-  } else {
-    // Fallback: Canvas captureStream + MediaRecorder
-    return await exportWithMediaRecorder(params, totalFrames);
+    // Full-config check with the REAL export dimensions/bitrate/framerate.
+    // The old code only validated 1920x1080 defaults, so e.g. a 4K export on
+    // a GPU that caps at 1080p failed at configure() time and surfaced later
+    // as "VideoEncoder.encode: Encoder must be configured first".
+    const width = params.config.width - (params.config.width % 2);
+    const height = params.config.height - (params.config.height % 2);
+    const bitrate = params.config.bitrate || 6_000_000;
+    const selectedCodec = await selectSupportedVideoConfig(width, height, bitrate, fps);
+    if (selectedCodec) {
+      return await exportWithWebCodecs(params, totalFrames, startTime, selectedCodec);
+    }
+    console.warn(
+      `WebCodecs no soporta ${width}x${height}@${fps}fps en este dispositivo; usando MediaRecorder como respaldo.`
+    );
   }
+  // Fallback: Canvas captureStream + MediaRecorder
+  return await exportWithMediaRecorder(params, totalFrames);
 }
 
 /**
@@ -697,7 +754,8 @@ export async function exportVideo(params: ExportParams): Promise<Blob> {
 async function exportWithWebCodecs(
   params: ExportParams,
   totalFrames: number,
-  renderStartTime: number
+  renderStartTime: number,
+  selectedCodec: string
 ): Promise<Blob> {
   const { config, duration, tracks, clips, mediaPool, onProgress, signal } = params;
   const fps = config.fps || 30;
@@ -751,15 +809,23 @@ async function exportWithWebCodecs(
     firstTimestampBehavior: 'offset',
   });
 
-  // Query best supported H.264 codec string
-  const selectedCodec = (await getSupportedVideoCodec(width, height)) || 'avc1.640028';
+  // Query best supported H.264 codec string (validated up-front in exportVideo
+  // via selectSupportedVideoConfig; re-validate here as last defense because
+  // isConfigSupported is advisory and configure() is authoritative).
+  let activeCodec = selectedCodec;
+  if (!activeCodec) {
+    activeCodec =
+      (await selectSupportedVideoConfig(width, height, config.bitrate || 6_000_000, fps)) ||
+      (await getSupportedVideoCodec(width, height)) ||
+      'avc1.640028';
+  }
 
   // 3. Active video decoder configuration tracking
   // In iOS Safari / WebKit, metadata from VideoEncoder output callback is frequently
   // omitted (undefined) or lacks decoderConfig/colorSpace. We maintain an active, valid
   // decoderConfig so mp4-muxer always receives non-null metadata with valid colorSpace.
   const activeDecoderConfig: VideoDecoderConfig = {
-    codec: selectedCodec,
+    codec: activeCodec,
     codedWidth: width,
     codedHeight: height,
     colorSpace: { ...DEFAULT_COLOR_SPACE },
@@ -833,14 +899,46 @@ async function exportWithWebCodecs(
     },
   });
 
-  videoEncoder.configure({
-    codec: selectedCodec,
-    width,
-    height,
-    bitrate: config.bitrate || 6_000_000,
-    framerate: fps,
-    hardwareAcceleration: 'prefer-hardware',
-  });
+  // Configure with per-codec retry: if the GPU rejects the preferred profile,
+  // fall back through Main/Baseline before giving up. A failed configure()
+  // leaves the encoder unconfigured, and any later encode() would throw the
+  // cryptic "Encoder must be configured first" — so we throw a clear,
+  // actionable error here instead.
+  const codecFallbackChain = [activeCodec, 'avc1.4d002a', 'avc1.42001f'].filter(
+    (c, i, arr) => arr.indexOf(c) === i
+  );
+  let configuredCodec: string | null = null;
+  let configureError: unknown = null;
+  for (const candidate of codecFallbackChain) {
+    try {
+      videoEncoder.configure({
+        codec: candidate,
+        width,
+        height,
+        bitrate: config.bitrate || 6_000_000,
+        framerate: fps,
+        hardwareAcceleration: 'prefer-hardware',
+      });
+      configuredCodec = candidate;
+      break;
+    } catch (err) {
+      configureError = err;
+    }
+  }
+  if (!configuredCodec || videoEncoder.state !== 'configured') {
+    const detail = configureError instanceof Error ? configureError.message : String(configureError);
+    try {
+      if (videoEncoder.state !== 'closed') videoEncoder.close();
+    } catch {
+      // ignore close errors during failed setup
+    }
+    throw new Error(
+      `El codificador de video no pudo inicializarse a ${width}x${height}@${fps}fps en este dispositivo (${detail}). ` +
+        `Prueba con resolución 1080p o 720p, o con 30 FPS.`
+    );
+  }
+  activeCodec = configuredCodec;
+  activeDecoderConfig.codec = configuredCodec;
 
   // 4. Setup AudioEncoder & encode audio in optimized standard frames (2048 samples)
   let audioEncoder: AudioEncoder | null = null;
@@ -975,6 +1073,19 @@ async function exportWithWebCodecs(
       // Control backpressure (allow hardware encoder pipeline depth up to 5)
       await waitForEncoderDrain(videoEncoder, 5);
 
+      // Guard: if a previous async encoding error closed/reset the encoder,
+      // encode() would throw the cryptic "Encoder must be configured first".
+      // Surface the real underlying error instead.
+      if (videoEncoder.state !== 'configured') {
+        throw (
+          encoderError ??
+          new Error(
+            'El codificador de video se cerró inesperadamente durante la exportación. ' +
+              'Prueba con resolución 1080p o 720p, o reintenta la exportación.'
+          )
+        );
+      }
+
       // Create VideoFrame & encode strictly protected with try...finally
       const timestampUs = Math.round(t * 1_000_000);
       const frameDurationUs = Math.round(1_000_000 / fps);
@@ -983,7 +1094,16 @@ async function exportWithWebCodecs(
         duration: frameDurationUs,
       });
       try {
-        videoEncoder.encode(videoFrame, { keyFrame: frameIdx % (fps * 2) === 0 });
+        try {
+          videoEncoder.encode(videoFrame, { keyFrame: frameIdx % (fps * 2) === 0 });
+        } catch (encodeErr) {
+          const msg = encodeErr instanceof Error ? encodeErr.message : String(encodeErr);
+          if (/configured first/i.test(msg) && encoderError) throw encoderError;
+          throw new Error(
+            `Fallo al codificar el cuadro ${frameIdx + 1}/${totalFrames}: ${msg}. ` +
+              `Prueba con resolución 1080p o 720p.`
+          );
+        }
       } finally {
         videoFrame.close();
       }
@@ -1043,7 +1163,8 @@ async function exportWithWebCodecs(
       );
     }
   } finally {
-    if (videoEncoder.state !== 'closed') {
+    const videoState: string = videoEncoder.state;
+    if (videoState !== 'closed') {
       videoEncoder.close();
     }
     if (audioEncoder && audioEncoder.state !== 'closed') {

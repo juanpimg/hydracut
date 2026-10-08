@@ -35,148 +35,189 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
   const handleZoomIn = () => setZoom(zoom * 1.25);
   const handleZoomOut = () => setZoom(zoom / 1.25);
 
+  // Close "add track" menu on Escape
+  React.useEffect(() => {
+    if (!showAddMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowAddMenu(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showAddMenu]);
+
+  // Base touch target: 44px on mobile, compact on sm+ (toolbar is icon-dense)
+  const iconBtn =
+    'min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1.5 flex items-center justify-center rounded transition';
+
   return (
-    <div className="h-10 bg-dark-900 border-b border-dark-800 px-3 flex items-center justify-between select-none">
+    <div className="min-h-[48px] sm:h-10 bg-dark-900 border-b border-dark-800 px-1.5 sm:px-3 py-1 flex items-center justify-between gap-1 select-none overflow-x-auto no-scrollbar">
       {/* Left: Tools */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0">
         {/* Select Tool */}
         <button
           onClick={() => setActiveTool('select')}
-          className={`p-1.5 rounded transition ${
+          aria-pressed={activeTool === 'select'}
+          aria-label="Herramienta selección"
+          className={`${iconBtn} ${
             activeTool === 'select'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-slate-400 hover:text-white hover:bg-dark-800'
           }`}
-          title="Herramienta Selección (V)"
+          title="Herramienta Selección"
         >
-          <MousePointer size={15} />
+          <MousePointer size={16} />
         </button>
 
         {/* Razor / Split Tool */}
         <button
-          onClick={() => setActiveTool('split')}
-          className={`p-1.5 rounded transition ${
+          onClick={() => setActiveTool(activeTool === 'split' ? 'select' : 'split')}
+          aria-pressed={activeTool === 'split'}
+          aria-label="Herramienta cuchilla"
+          className={`${iconBtn} ${
             activeTool === 'split'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-slate-400 hover:text-white hover:bg-dark-800'
           }`}
-          title="Herramienta Cortar / Cuchilla (C)"
+          title="Herramienta Cortar / Cuchilla"
         >
-          <Scissors size={15} />
+          <Scissors size={16} />
         </button>
 
-        <div className="h-4 w-[1px] bg-dark-750 mx-1" />
+        <div className="h-4 w-[1px] bg-dark-750 mx-0.5 sm:mx-1 shrink-0" />
 
         {/* Quick Split at Playhead */}
         <button
           onClick={splitAtPlayhead}
-          className="flex items-center gap-1.5 px-2.5 py-1 text-xs text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 border border-dark-750 rounded transition"
+          aria-label="Dividir clip en el cabezal"
+          className={`${iconBtn} gap-1.5 sm:px-2.5 sm:py-1 text-xs text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 border border-dark-750 sm:rounded transition`}
           title="Dividir clip en el cabezal (S)"
         >
-          <Scissors size={13} className="text-blue-400" />
-          <span>Dividir (S)</span>
+          <Scissors size={14} className="text-blue-400" />
+          <span className="hidden min-[480px]:inline">Dividir (S)</span>
         </button>
 
         {/* Delete Selected Clip */}
         <button
           onClick={deleteSelectedClip}
           disabled={!selectedClipId}
-          className={`flex items-center gap-1.5 px-2.5 py-1 text-xs rounded transition border ${
+          aria-label="Eliminar clip seleccionado"
+          className={`min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1.5 flex items-center justify-center gap-1.5 sm:px-2.5 sm:py-1 text-xs rounded transition border ${
             selectedClipId
               ? 'text-red-300 hover:text-red-200 bg-red-950/40 border-red-800/60 hover:bg-red-900/50'
               : 'text-slate-600 border-transparent cursor-not-allowed'
           }`}
           title="Eliminar clip seleccionado (Supr)"
         >
-          <Trash2 size={13} />
-          <span>Borrar</span>
+          <Trash2 size={14} />
+          <span className="hidden min-[480px]:inline">Borrar</span>
         </button>
 
         {/* Snapping Toggle */}
         <button
           onClick={toggleSnap}
-          className={`p-1.5 rounded transition border ${
+          aria-pressed={snapEnabled}
+          aria-label="Imán: snapping magnético"
+          className={`${iconBtn} border ${
             snapEnabled
               ? 'bg-blue-600/20 text-blue-400 border-blue-500/30'
               : 'text-slate-500 border-transparent hover:bg-dark-800'
           }`}
           title="Imán / Snapping magnético"
         >
-          <Magnet size={15} />
+          <Magnet size={16} />
         </button>
       </div>
 
       {/* Right: Add Track & Zoom Controls */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-1 sm:gap-3 shrink-0">
         {/* Add Track Dropdown */}
         <div className="relative">
           <button
             onClick={() => setShowAddMenu(!showAddMenu)}
-            className="flex items-center gap-1 px-2.5 py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition"
+            aria-expanded={showAddMenu}
+            aria-haspopup="true"
+            aria-label="Añadir pista"
+            className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center gap-1 sm:px-2.5 sm:py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition"
           >
-            <Plus size={13} />
-            <span>Pista</span>
+            <Plus size={15} />
+            <span className="hidden min-[480px]:inline">Pista</span>
           </button>
 
           {showAddMenu && (
-            <div className="absolute right-0 bottom-full mb-1 w-36 bg-dark-850 border border-dark-750 rounded-lg shadow-xl p-1 z-50">
-              <button
-                onClick={() => {
-                  addTrack('video');
-                  setShowAddMenu(false);
-                }}
-                className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left"
+            <>
+              <div
+                className="fixed inset-0 z-40"
+                onClick={() => setShowAddMenu(false)}
+                aria-hidden="true"
+              />
+              <div
+                role="menu"
+                aria-label="Añadir pista"
+                className="absolute right-0 top-full mt-1 w-44 bg-dark-900 border border-dark-750 rounded-lg shadow-xl p-1 z-50 animate-scaleUp"
               >
-                <Film size={14} className="text-blue-400" />
-                <span>+ Pista Video</span>
-              </button>
-              <button
-                onClick={() => {
-                  addTrack('audio');
-                  setShowAddMenu(false);
-                }}
-                className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left"
-              >
-                <Music size={14} className="text-emerald-400" />
-                <span>+ Pista Audio</span>
-              </button>
-              <button
-                onClick={() => {
-                  addTrack('text');
-                  setShowAddMenu(false);
-                }}
-                className="w-full flex items-center gap-2 px-2.5 py-1.5 text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left"
-              >
-                <Type size={14} className="text-purple-400" />
-                <span>+ Pista Texto</span>
-              </button>
-            </div>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    addTrack('video');
+                    setShowAddMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 min-h-[44px] text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left"
+                >
+                  <Film size={15} className="text-blue-400" />
+                  <span>+ Pista Video</span>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    addTrack('audio');
+                    setShowAddMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 min-h-[44px] text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left"
+                >
+                  <Music size={15} className="text-emerald-400" />
+                  <span>+ Pista Audio</span>
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    addTrack('text');
+                    setShowAddMenu(false);
+                  }}
+                  className="w-full flex items-center gap-2 px-2.5 min-h-[44px] text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left"
+                >
+                  <Type size={15} className="text-purple-400" />
+                  <span>+ Pista Texto</span>
+                </button>
+              </div>
+            </>
           )}
         </div>
 
-        <div className="h-4 w-[1px] bg-dark-750" />
+        <div className="h-4 w-[1px] bg-dark-750 shrink-0" />
 
         {/* Zoom Controls */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-0.5 sm:gap-1.5">
           {onFitToScreen && (
             <button
               onClick={onFitToScreen}
               data-testid="fit-to-screen-btn"
-              className="flex items-center gap-1 px-2 py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition"
+              aria-label="Ajustar timeline a pantalla"
+              className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center gap-1 sm:px-2 sm:py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition"
               title="Ajustar a Pantalla (Fit to Screen)"
             >
-              <Maximize2 size={13} className="text-blue-400" />
-              <span>Ajustar</span>
+              <Maximize2 size={14} className="text-blue-400" />
+              <span className="hidden min-[480px]:inline">Ajustar</span>
             </button>
           )}
 
           <button
             onClick={handleZoomOut}
             data-testid="zoom-out-btn"
-            className="p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono"
+            aria-label="Alejar zoom"
+            className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono"
             title="Alejar Zoom (-)"
           >
-            <ZoomOut size={15} />
+            <ZoomOut size={16} />
             <span className="sr-only">-</span>
           </button>
 
@@ -185,18 +226,20 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
             min="10"
             max="250"
             value={zoom}
+            aria-label="Nivel de zoom del timeline"
             onChange={(e) => setZoom(parseFloat(e.target.value))}
-            className="w-20 h-1 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+            className="w-14 min-[400px]:w-20 h-8 bg-dark-750 accent-blue-500 rounded cursor-pointer"
             title="Nivel de zoom"
           />
 
           <button
             onClick={handleZoomIn}
             data-testid="zoom-in-btn"
-            className="p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono"
+            aria-label="Acercar zoom"
+            className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono"
             title="Acercar Zoom (+)"
           >
-            <ZoomIn size={15} />
+            <ZoomIn size={16} />
             <span className="sr-only">+</span>
           </button>
         </div>

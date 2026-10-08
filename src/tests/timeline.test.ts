@@ -329,3 +329,268 @@ describe('Project Store Operations', () => {
     expect(updated.duration).toBe(7);
   });
 });
+
+describe('Track Duplication, Reordering & Management', () => {
+  beforeEach(() => {
+    useProjectStore.getState().resetProject();
+  });
+
+  it('duplicateTrack clones a track with new ID and (Copia) suffix immediately following the source track', () => {
+    const store = useProjectStore.getState();
+    const initialTracks = store.project.tracks;
+    const sourceTrack = initialTracks[1]; // track_video_2
+    const sourceIndex = 1;
+
+    store.duplicateTrack(sourceTrack.id);
+
+    const updatedTracks = useProjectStore.getState().project.tracks;
+    expect(updatedTracks.length).toBe(initialTracks.length + 1);
+
+    // Verify insertion immediately following the source track
+    const newTrack = updatedTracks[sourceIndex + 1];
+    expect(newTrack.id).not.toBe(sourceTrack.id);
+    expect(newTrack.name).toBe(`${sourceTrack.name} (Copia)`);
+    expect(newTrack.type).toBe(sourceTrack.type);
+    expect(newTrack.isVisible).toBe(sourceTrack.isVisible);
+    expect(newTrack.isMuted).toBe(sourceTrack.isMuted);
+    expect(newTrack.isLocked).toBe(sourceTrack.isLocked);
+    expect(updatedTracks[sourceIndex].id).toBe(sourceTrack.id);
+  });
+
+  it('duplicateTrack duplicates all clips belonging to the track with unique IDs and remapped trackId', () => {
+    const store = useProjectStore.getState();
+    const videoTrack = store.project.tracks.find((t) => t.type === 'video')!;
+    const otherTrack = store.project.tracks.find((t) => t.id !== videoTrack.id)!;
+
+    const clip1: Clip = {
+      id: 'clip_v_1',
+      trackId: videoTrack.id,
+      mediaId: 'm1',
+      name: 'Video Clip 1',
+      type: 'video',
+      start: 2,
+      duration: 5,
+      sourceStart: 0,
+      sourceDuration: 10,
+      volume: 1,
+      opacity: 0.9,
+      scale: 1.2,
+      positionX: 10,
+      positionY: 20,
+      muted: false,
+    };
+
+    const clip2: Clip = {
+      id: 'clip_v_2',
+      trackId: videoTrack.id,
+      mediaId: 'm2',
+      name: 'Video Clip 2',
+      type: 'video',
+      start: 10,
+      duration: 4,
+      sourceStart: 1,
+      sourceDuration: 15,
+      volume: 0.8,
+      opacity: 1,
+      scale: 1,
+      positionX: 0,
+      positionY: 0,
+      muted: true,
+    };
+
+    const unrelatedClip: Clip = {
+      id: 'clip_other',
+      trackId: otherTrack.id,
+      mediaId: 'm3',
+      name: 'Unrelated Clip',
+      type: 'audio',
+      start: 0,
+      duration: 10,
+      sourceStart: 0,
+      sourceDuration: 20,
+      volume: 1,
+      opacity: 1,
+      scale: 1,
+      positionX: 0,
+      positionY: 0,
+      muted: false,
+    };
+
+    store.addClip(clip1);
+    store.addClip(clip2);
+    store.addClip(unrelatedClip);
+
+    expect(useProjectStore.getState().project.clips.length).toBe(3);
+
+    // Duplicate videoTrack
+    store.duplicateTrack(videoTrack.id);
+
+    const project = useProjectStore.getState().project;
+    expect(project.clips.length).toBe(5); // 3 original + 2 duplicated
+
+    const originalIdx = project.tracks.findIndex((t) => t.id === videoTrack.id);
+    const duplicatedTrack = project.tracks[originalIdx + 1];
+
+    const duplicatedClips = project.clips.filter((c) => c.trackId === duplicatedTrack.id);
+    expect(duplicatedClips.length).toBe(2);
+
+    // Verify IDs are distinct and not equal to originals
+    expect(duplicatedClips.some((c) => c.id === 'clip_v_1')).toBe(false);
+    expect(duplicatedClips.some((c) => c.id === 'clip_v_2')).toBe(false);
+    expect(duplicatedClips[0].id).not.toBe(duplicatedClips[1].id);
+
+    // Verify properties match
+    const dup1 = duplicatedClips.find((c) => c.name === 'Video Clip 1')!;
+    expect(dup1).toBeDefined();
+    expect(dup1.start).toBe(2);
+    expect(dup1.duration).toBe(5);
+    expect(dup1.scale).toBe(1.2);
+    expect(dup1.positionX).toBe(10);
+    expect(dup1.trackId).toBe(duplicatedTrack.id);
+
+    const dup2 = duplicatedClips.find((c) => c.name === 'Video Clip 2')!;
+    expect(dup2).toBeDefined();
+    expect(dup2.start).toBe(10);
+    expect(dup2.duration).toBe(4);
+    expect(dup2.muted).toBe(true);
+    expect(dup2.trackId).toBe(duplicatedTrack.id);
+
+    // Unrelated clip remains intact
+    const remainingUnrelated = project.clips.find((c) => c.id === 'clip_other')!;
+    expect(remainingUnrelated.trackId).toBe(otherTrack.id);
+  });
+
+  it('duplicateTrack handles track with no clips cleanly', () => {
+    const store = useProjectStore.getState();
+    const targetTrack = store.project.tracks[0];
+    const initialClipsCount = store.project.clips.length;
+    expect(initialClipsCount).toBe(0);
+
+    store.duplicateTrack(targetTrack.id);
+
+    const project = useProjectStore.getState().project;
+    expect(project.tracks.length).toBe(5);
+    expect(project.clips.length).toBe(0);
+    expect(project.tracks[1].name).toBe(`${targetTrack.name} (Copia)`);
+  });
+
+  it('duplicateTrack safely ignores nonexistent track ID', () => {
+    const store = useProjectStore.getState();
+    const tracksBefore = store.project.tracks.length;
+
+    store.duplicateTrack('nonexistent_track_999');
+
+    expect(useProjectStore.getState().project.tracks.length).toBe(tracksBefore);
+  });
+
+  it('duplicateTrack supports undo and redo', () => {
+    const store = useProjectStore.getState();
+    const targetTrack = store.project.tracks[1];
+    const initialCount = store.project.tracks.length;
+
+    store.duplicateTrack(targetTrack.id);
+    expect(useProjectStore.getState().project.tracks.length).toBe(initialCount + 1);
+
+    store.undo();
+    expect(useProjectStore.getState().project.tracks.length).toBe(initialCount);
+
+    store.redo();
+    expect(useProjectStore.getState().project.tracks.length).toBe(initialCount + 1);
+  });
+
+  it('reorderTrack moves a track up towards index 0', () => {
+    const store = useProjectStore.getState();
+    const tracks = store.project.tracks;
+    const targetTrackId = tracks[2].id;
+    const trackAboveId = tracks[1].id;
+
+    store.reorderTrack(targetTrackId, 'up');
+
+    const updatedTracks = useProjectStore.getState().project.tracks;
+    expect(updatedTracks[1].id).toBe(targetTrackId);
+    expect(updatedTracks[2].id).toBe(trackAboveId);
+  });
+
+  it('reorderTrack moves a track down towards end of array', () => {
+    const store = useProjectStore.getState();
+    const tracks = store.project.tracks;
+    const targetTrackId = tracks[1].id;
+    const trackBelowId = tracks[2].id;
+
+    store.reorderTrack(targetTrackId, 'down');
+
+    const updatedTracks = useProjectStore.getState().project.tracks;
+    expect(updatedTracks[2].id).toBe(targetTrackId);
+    expect(updatedTracks[1].id).toBe(trackBelowId);
+  });
+
+  it('reorderTrack clamps at top boundary (cannot move up from index 0)', () => {
+    const store = useProjectStore.getState();
+    const topTrackId = store.project.tracks[0].id;
+
+    store.reorderTrack(topTrackId, 'up');
+
+    const updatedTracks = useProjectStore.getState().project.tracks;
+    expect(updatedTracks[0].id).toBe(topTrackId);
+  });
+
+  it('reorderTrack clamps at bottom boundary (cannot move down from last index)', () => {
+    const store = useProjectStore.getState();
+    const lastIndex = store.project.tracks.length - 1;
+    const bottomTrackId = store.project.tracks[lastIndex].id;
+
+    store.reorderTrack(bottomTrackId, 'down');
+
+    const updatedTracks = useProjectStore.getState().project.tracks;
+    expect(updatedTracks[lastIndex].id).toBe(bottomTrackId);
+  });
+
+  it('reorderTrack safely ignores nonexistent track ID', () => {
+    const store = useProjectStore.getState();
+    const initialOrder = store.project.tracks.map((t) => t.id);
+
+    store.reorderTrack('nonexistent_track_999', 'up');
+
+    const updatedOrder = useProjectStore.getState().project.tracks.map((t) => t.id);
+    expect(updatedOrder).toEqual(initialOrder);
+  });
+
+  it('reorderTrack supports undo and redo', () => {
+    const store = useProjectStore.getState();
+    const initialOrder = store.project.tracks.map((t) => t.id);
+    const targetTrackId = initialOrder[2];
+
+    store.reorderTrack(targetTrackId, 'up');
+    const movedOrder = useProjectStore.getState().project.tracks.map((t) => t.id);
+    expect(movedOrder[1]).toBe(targetTrackId);
+
+    store.undo();
+    expect(useProjectStore.getState().project.tracks.map((t) => t.id)).toEqual(initialOrder);
+
+    store.redo();
+    expect(useProjectStore.getState().project.tracks.map((t) => t.id)).toEqual(movedOrder);
+  });
+
+  it('moveTrack alias works identically to reorderTrack', () => {
+    const store = useProjectStore.getState();
+    const tracks = store.project.tracks;
+    const targetTrackId = tracks[2].id;
+
+    store.moveTrack(targetTrackId, 'up');
+
+    const updatedTracks = useProjectStore.getState().project.tracks;
+    expect(updatedTracks[1].id).toBe(targetTrackId);
+  });
+
+  it('deleteTrack alias removes track and associated clips', () => {
+    const store = useProjectStore.getState();
+    const targetTrack = store.project.tracks[0];
+    const initialCount = store.project.tracks.length;
+
+    store.deleteTrack(targetTrack.id);
+
+    const updatedTracks = useProjectStore.getState().project.tracks;
+    expect(updatedTracks.length).toBe(initialCount - 1);
+    expect(updatedTracks.some((t) => t.id === targetTrack.id)).toBe(false);
+  });
+});

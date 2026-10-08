@@ -9,7 +9,8 @@ import {
   Smartphone, 
   Tv, 
   Square,
-  Sparkles
+  Sparkles,
+  FolderKanban
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -32,6 +33,7 @@ export const Header: React.FC = () => {
   const { 
     setExportModalOpen, 
     setShortcutsModalOpen,
+    setProjectsModalOpen,
   } = useUIStore();
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -63,10 +65,18 @@ export const Header: React.FC = () => {
     <header className="h-14 bg-dark-900 border-b border-dark-800 px-4 flex items-center justify-between z-30 select-none">
       {/* Brand & Project Name */}
       <div className="flex items-center gap-3">
-        <a 
-          href="/"
+        <button
+          onClick={() => {
+            const hasWork = project.clips.length > 0;
+            if (
+              !hasWork ||
+              confirm('Volver al Hub de HydraApps? Tu proyecto está autoguardado en este navegador.')
+            ) {
+              window.location.href = '/';
+            }
+          }}
           className="flex items-center gap-2 px-2.5 py-1 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded-lg text-white font-bold text-sm transition group"
-          title="HydraCut — HydraApps Suite"
+          title="HydraCut — HydraApps Suite (volver al Hub)"
         >
           <div className="w-5 h-5 rounded bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-[11px] font-black shadow-sm text-white">
             H
@@ -75,15 +85,24 @@ export const Header: React.FC = () => {
           <span className="text-[9px] uppercase font-mono px-1 py-0.5 rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/60 font-semibold tracking-wider hidden sm:inline">
             Studio
           </span>
-        </a>
+        </button>
 
         <div className="h-5 w-[1px] bg-dark-750" />
+
+        <button
+          onClick={() => setProjectsModalOpen(true)}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-dark-800 hover:bg-dark-750 text-slate-200 hover:text-white rounded-lg border border-dark-700 hover:border-cyan-500/40 text-xs font-semibold transition"
+          title="Gestor de Proyectos"
+        >
+          <FolderKanban size={15} className="text-cyan-400" />
+          <span className="hidden sm:inline">Proyectos</span>
+        </button>
 
         <input
           type="text"
           value={projectName}
           onChange={(e) => setProjectName(e.target.value)}
-          className="bg-transparent hover:bg-dark-800 focus:bg-dark-800 text-slate-200 focus:text-white px-2 py-1 rounded text-sm font-medium border border-transparent focus:border-dark-700 outline-none transition w-56 truncate"
+          className="bg-transparent hover:bg-dark-800 focus:bg-dark-800 text-slate-200 focus:text-white px-2 py-1 rounded text-sm font-medium border border-transparent focus:border-dark-700 outline-none transition w-40 sm:w-52 truncate"
           title="Renombrar proyecto"
         />
       </div>

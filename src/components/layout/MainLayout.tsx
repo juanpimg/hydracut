@@ -6,9 +6,11 @@ import { PlayerControls } from '../player/PlayerControls';
 import { Timeline } from '../timeline/Timeline';
 import { ExportModal } from '../export/ExportModal';
 import { ShortcutsModal } from '../modals/ShortcutsModal';
+import { ProjectsModal } from '../modals/ProjectsModal';
 import { MobileCapCutLayout } from '../mobile/MobileCapCutLayout';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useProjectStore } from '../../store/useProjectStore';
+import { useUIStore } from '../../store/useUIStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { loadAutosavedProject, rehydrateProjectMedia } from '../../core/storage/projectStorage';
 
@@ -36,8 +38,38 @@ export const MainLayout: React.FC = () => {
       // Ignore if user is typing in an input, textarea or select
       const activeTag = document.activeElement?.tagName.toLowerCase();
       if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') {
+        // Still allow Escape to blur out of fields
+        if (e.key === 'Escape') {
+          (document.activeElement as HTMLElement)?.blur();
+        }
         return;
       }
+
+      const ui = useUIStore.getState();
+      const anyModalOpen =
+        ui.isExportModalOpen || ui.isProjectsModalOpen || ui.isShortcutsModalOpen;
+
+      // Escape: ProjectsModal and ExportModal own their staged dismissal
+      // (confirm steps / render guard) via their local handlers — only the
+      // shortcuts modal is closed from here. Local overlays (track ⋮ menu,
+      // aspect menu, bottom sheets) also own their Escape: if one is in the
+      // DOM, let it close without also wiping tool/selection in the same press.
+      if (e.key === 'Escape') {
+        if (ui.isShortcutsModalOpen) ui.setShortcutsModalOpen(false);
+        else if (!anyModalOpen) {
+          const localOverlayOpen =
+            typeof document !== 'undefined' &&
+            !!document.querySelector('[role="menu"], [data-sheet-content="true"]');
+          if (!localOverlayOpen) {
+            if (ui.activeTool === 'split') ui.setActiveTool('select');
+            else useProjectStore.getState().selectClip(null);
+          }
+        }
+        return;
+      }
+
+      // Never trigger editing shortcuts while a modal is open
+      if (anyModalOpen) return;
 
       // Space: Play / Pause
       if (e.code === 'Space') {
@@ -135,6 +167,7 @@ export const MainLayout: React.FC = () => {
       {/* Modals */}
       <ExportModal />
       <ShortcutsModal />
+      <ProjectsModal />
     </div>
   );
 };

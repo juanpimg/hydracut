@@ -208,52 +208,59 @@ export const MobilePreviewPlayer: React.FC = () => {
         {/* Fullscreen Button */}
         <button
           onClick={handleFullscreen}
-          className="absolute top-2 right-2 p-1.5 bg-black/60 backdrop-blur-md rounded-full text-slate-300 hover:text-white border border-white/10 active:scale-95 transition"
+          className="absolute top-2 right-2 min-w-[44px] min-h-[44px] flex items-center justify-center bg-black/60 backdrop-blur-md rounded-full text-slate-300 hover:text-white border border-white/10 active:scale-95 transition"
           title="Pantalla Completa"
+          aria-label="Pantalla completa"
         >
-          <Maximize2 size={13} />
+          <Maximize2 size={15} />
         </button>
 
         {/* Floating Quick Play Overlay (Center tap) */}
         <button
           onClick={handleTogglePlay}
-          className="absolute inset-0 m-auto w-12 h-12 rounded-full bg-black/50 hover:bg-black/70 backdrop-blur-sm flex items-center justify-center text-white border border-white/20 shadow-lg active:scale-90 transition opacity-0 hover:opacity-100 focus:opacity-100 focus:outline-none"
+          className={`absolute inset-0 m-auto w-14 h-14 rounded-full bg-black/50 hover:bg-black/70 backdrop-blur-sm flex items-center justify-center text-white border border-white/20 shadow-lg active:scale-90 transition focus:outline-none ${
+            isPlaying ? 'opacity-0 hover:opacity-100 focus:opacity-100' : 'opacity-100'
+          }`}
           title={isPlaying ? "Pausar" : "Reproducir"}
+          aria-label={isPlaying ? "Pausar" : "Reproducir"}
         >
-          {isPlaying ? <Pause size={20} /> : <Play size={20} className="ml-0.5" />}
+          {isPlaying ? <Pause size={22} /> : <Play size={22} className="ml-0.5" />}
         </button>
       </div>
 
       {/* Floating Bottom Minimal Controls Bar */}
-      <div className="w-full max-w-sm flex items-center justify-between px-3 pt-2">
+      <div className="w-full max-w-sm flex items-center justify-between px-3 pt-2 gap-2">
         <button
           onClick={handleToStart}
-          className="p-1.5 text-slate-400 hover:text-white rounded-lg active:scale-90 transition"
+          className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white rounded-lg active:scale-90 transition"
           title="Ir al inicio"
+          aria-label="Ir al inicio"
         >
-          <SkipBack size={16} />
+          <SkipBack size={17} />
         </button>
 
         {/* Play/Pause Button */}
         <button
           onClick={handleTogglePlay}
-          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-full font-bold text-xs shadow-md active:scale-95 transition ${
+          aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+          className={`flex items-center gap-1.5 px-5 min-h-[44px] rounded-full font-bold text-xs shadow-md active:scale-95 transition ${
             isPlaying 
               ? 'bg-amber-500 text-dark-950 shadow-amber-500/20' 
               : 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-cyan-500/20'
           }`}
         >
-          {isPlaying ? <Pause size={14} /> : <Play size={14} className="fill-white" />}
+          {isPlaying ? <Pause size={15} /> : <Play size={15} className="fill-white" />}
           <span>{isPlaying ? 'Pausar' : 'Reproducir'}</span>
         </button>
 
         {/* Quick Split Button */}
         <button
           onClick={splitAtPlayhead}
-          className="flex items-center gap-1 px-2.5 py-1 text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg text-xs font-medium active:scale-90 transition"
+          className="flex items-center gap-1 px-3 min-h-[44px] text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg text-xs font-medium active:scale-90 transition"
           title="Cortar clip aquí"
+          aria-label="Dividir clip en el cabezal"
         >
-          <Scissors size={14} className="text-cyan-400" />
+          <Scissors size={15} className="text-cyan-400" />
           <span>Dividir</span>
         </button>
       </div>

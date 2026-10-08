@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { UploadCloud, Sparkles, FolderOpen, Film, AlertCircle, Loader2 } from 'lucide-react';
+import { UploadCloud, Sparkles, FolderOpen, Film, AlertCircle, Loader2, X } from 'lucide-react';
 import { MediaItem, MediaType } from '../../types/project';
 import { useProjectStore } from '../../store/useProjectStore';
 import { generateVideoThumbnail, createPlaceholderThumbnail, generateFilmstrip, generatePlaceholderFilmstrip } from '../../core/utils/thumbnails';
@@ -204,9 +204,16 @@ export const MediaBin: React.FC = () => {
 
       {/* Error alert */}
       {errorMessage && (
-        <div className="mb-2 p-2 bg-red-900/30 border border-red-700/50 rounded text-red-300 text-xs flex items-center gap-2">
+        <div role="alert" className="mb-2 p-2 bg-red-900/30 border border-red-700/50 rounded text-red-300 text-xs flex items-center gap-2">
           <AlertCircle size={14} />
-          <span>{errorMessage}</span>
+          <span className="flex-1">{errorMessage}</span>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="p-1 hover:bg-red-900/50 rounded transition"
+            aria-label="Descartar error"
+          >
+            <X size={13} />
+          </button>
         </div>
       )}
 
@@ -229,11 +236,15 @@ export const MediaBin: React.FC = () => {
         )}
 
         {mediaPool.length === 0 && !isProcessing ? (
-          <div className="flex flex-col items-center justify-center h-full text-center p-4 text-slate-500">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full flex flex-col items-center justify-center h-full text-center p-4 text-slate-500 hover:text-slate-300 hover:border-blue-500/40 rounded-lg transition focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none"
+          >
             <UploadCloud size={32} className="mb-2 text-slate-600 stroke-1" />
             <p className="text-xs font-medium text-slate-400">Arrastra videos, audios o fotos aquí</p>
+            <p className="text-xs text-blue-400 font-semibold mt-1.5 underline underline-offset-2">o haz clic para importar</p>
             <p className="text-[11px] text-slate-600 mt-1">100% privado en tu navegador (OPFS local)</p>
-          </div>
+          </button>
         ) : (
           <div className="grid grid-cols-2 gap-2">
             {mediaPool.map((item) => (

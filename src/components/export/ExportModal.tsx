@@ -22,7 +22,6 @@ export const ExportModal: React.FC = () => {
   const [resolutionPreset, setResolutionPreset] = useState<'1080p' | '720p' | '4k'>('1080p');
   const [fps, setFps] = useState<number>(30);
   const [bitrateMbps, setBitrateMbps] = useState<number>(8);
-
   const [progressState, setProgressState] = useState<ExportProgress>({
     state: 'idle',
     progress: 0,
@@ -33,9 +32,23 @@ export const ExportModal: React.FC = () => {
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const isEmptyProject = project.clips.length === 0;
+
   useEffect(() => {
     isWebCodecsSupported().then(setHasWebCodecs);
   }, []);
+
+  // Close on Escape (unless an export is actively rendering)
+  useEffect(() => {
+    if (!isExportModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && progressState.state !== 'rendering') {
+        setExportModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isExportModalOpen, progressState.state, setExportModalOpen]);
 
   if (!isExportModalOpen) return null;
 
@@ -146,7 +159,17 @@ export const ExportModal: React.FC = () => {
   const dims = getDimensions();
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none">
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Exportar video"
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none animate-fadeIn"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && progressState.state !== 'rendering') {
+          setExportModalOpen(false);
+        }
+      }}
+    >
       <div className="bg-dark-900 border border-dark-800 rounded-xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
         {/* Modal Header */}
         <div className="px-5 py-4 border-b border-dark-800 flex items-center justify-between">
@@ -272,7 +295,16 @@ export const ExportModal: React.FC = () => {
                   <span>Total de fotogramas:</span>
                   <span className="font-mono text-slate-200">{Math.round(project.duration * fps)}</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Clips en el timeline:</span>
+                  <span className="font-mono text-slate-200">{project.clips.length}</span>
+                </div>
               </div>
+              {isEmptyProject && (
+                <div role="alert" className="p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-xs">
+                  Añade al menos un clip al timeline antes de exportar.
+                </div>
+              )}
             </>
           ) : (
             /* Progress view */
@@ -340,7 +372,9 @@ export const ExportModal: React.FC = () => {
               </button>
               <button
                 onClick={handleStartExport}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs rounded-lg shadow-lg shadow-blue-500/20 active:scale-95 transition"
+                disabled={isEmptyProject}
+                title={isEmptyProject ? 'Añade clips al timeline primero' : 'Comenzar exportación'}
+                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs rounded-lg shadow-lg shadow-blue-500/20 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
               >
                 <Download size={14} />
                 <span>Comenzar Exportación</span>

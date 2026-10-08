@@ -32,7 +32,16 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
     <div
       draggable
       onDragStart={handleDragStart}
-      className="group relative bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-dark-600 rounded-lg p-2 flex flex-col gap-2 transition cursor-grab active:cursor-grabbing select-none"
+      tabIndex={0}
+      role="button"
+      aria-label={`${item.name}: pulsa Enter para añadir a la línea de tiempo`}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          addClipFromMedia(item);
+        }
+      }}
+      className="group relative bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-dark-600 rounded-lg p-2 flex flex-col gap-2 transition cursor-grab active:cursor-grabbing select-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:outline-none"
     >
       {/* Thumbnail or Icon Box */}
       <div className="relative w-full aspect-video bg-dark-900 rounded overflow-hidden flex items-center justify-center border border-dark-750">
@@ -47,25 +56,27 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
 
         {/* Duration badge */}
         {item.duration > 0 && (
-          <div className="absolute bottom-1 right-1 bg-black/80 backdrop-blur-xs text-white text-[10px] font-mono px-1.5 py-0.5 rounded flex items-center gap-1">
+          <div className="absolute bottom-1 right-1 bg-black/80 backdrop-blur-sm text-white text-[10px] font-mono px-1.5 py-0.5 rounded flex items-center gap-1">
             <Clock size={9} />
             <span>{formatDuration(item.duration)}</span>
           </div>
         )}
 
         {/* Hover Quick Actions */}
-        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-2">
+        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition flex items-center justify-center gap-2">
           <button
             onClick={() => addClipFromMedia(item)}
-            className="p-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md shadow-md transition"
+            className="p-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md shadow-md transition focus-visible:ring-2 focus-visible:ring-white"
             title="Añadir a la línea de tiempo"
+            aria-label={`Añadir ${item.name} a la línea de tiempo`}
           >
             <Plus size={16} />
           </button>
           <button
             onClick={() => removeMediaItem(item.id)}
-            className="p-1.5 bg-red-600/80 hover:bg-red-500 text-white rounded-md shadow-md transition"
+            className="p-1.5 bg-red-600/80 hover:bg-red-500 text-white rounded-md shadow-md transition focus-visible:ring-2 focus-visible:ring-white"
             title="Eliminar archivo"
+            aria-label={`Eliminar ${item.name} de la biblioteca`}
           >
             <Trash2 size={16} />
           </button>

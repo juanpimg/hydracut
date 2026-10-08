@@ -81,6 +81,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const selectClip = useProjectStore((s) => s.selectClip);
   const moveClip = useProjectStore((s) => s.moveClip);
   const commitClipChange = useProjectStore((s) => s.commitClipChange);
+  const beginClipGesture = useProjectStore((s) => s.beginClipGesture);
   const trimClipStart = useProjectStore((s) => s.trimClipStart);
   const trimClipEnd = useProjectStore((s) => s.trimClipEnd);
   const splitClip = useProjectStore((s) => s.splitClip);
@@ -90,9 +91,15 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const { activeTool, setActiveTab } = useUIStore();
   const clipRef = useRef<HTMLDivElement>(null);
 
+  const isTrackLocked =
+    useProjectStore((s) => s.project.tracks.find((t) => t.id === clip.trackId)?.isLocked) ??
+    false;
+
   const isSelected = selectedClipId === clip.id;
   const leftPx = clip.start * zoom;
-  const widthPx = Math.max(12, clip.duration * zoom);
+  // Minimum 28px so both trim handles (14px each) never overlap on tiny clips
+  const widthPx = Math.max(28, clip.duration * zoom);
+  const showHandles = isSelected || widthPx < 40 || zoom > 80;
 
   const media = mediaPool.find((m) => m.id === clip.mediaId);
 
@@ -115,12 +122,17 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   };
 
   // Body Dragging (Move clip in time AND vertically between compatible tracks)
-  const handleBodyMouseDown = (e: React.MouseEvent | React.PointerEvent) => {
+  // Pointer-events only: pointermove/pointerup already cover mouse, touch and
+  // pen. Registering mousemove+pointermove in parallel used to dispatch every
+  // moveClip twice per frame.
+  const handleBodyMouseDown = (e: React.PointerEvent) => {
     if (activeTool === 'split') return;
-    if (e.button !== 0) return; // Only primary mouse button
+    if (e.button !== 0) return; // Only primary button / touch contact
     e.stopPropagation();
     e.preventDefault();
     selectClip(clip.id);
+    // Locked track: select only, never start a drag gesture
+    if (isTrackLocked) return;
 
     const startX = e.clientX;
     const startY = e.clientY;
@@ -128,7 +140,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     const initialTrackId = clip.trackId;
     let hasMoved = false;
 
-    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
+    const onMove = (moveEvent: PointerEvent) => {
       const deltaX = moveEvent.clientX - startX;
       const deltaY = moveEvent.clientY - startY;
 
@@ -139,6 +151,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
 
       if (!hasMoved) {
         hasMoved = true;
+        beginClipGesture();
         document.body.style.cursor = 'grabbing';
       }
 
@@ -171,10 +184,9 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
 
     const onUp = () => {
       document.body.style.cursor = '';
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
 
       if (hasMoved) {
         commitClipChange();
@@ -183,36 +195,38 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       }
     };
 
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   };
 
   // Trim Start (Trim In)
-  const handleTrimStartMouseDown = (e: React.MouseEvent | React.PointerEvent) => {
+  const handleTrimStartMouseDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
     selectClip(clip.id);
+    if (isTrackLocked) return;
 
     const startX = e.clientX;
     const initialStart = clip.start;
     let hasMoved = false;
 
-    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
+    const onMove = (moveEvent: PointerEvent) => {
       const deltaPx = moveEvent.clientX - startX;
       if (!hasMoved && Math.abs(deltaPx) < 3) return;
-      hasMoved = true;
+      if (!hasMoved) {
+        hasMoved = true;
+        beginClipGesture();
+      }
       const deltaSec = pixelsToTime(deltaPx, zoom);
       trimClipStart(clip.id, initialStart + deltaSec);
     };
 
     const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
       if (hasMoved) {
         commitClipChange();
       } else {
@@ -220,36 +234,38 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       }
     };
 
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   };
 
   // Trim End (Trim Out)
-  const handleTrimEndMouseDown = (e: React.MouseEvent | React.PointerEvent) => {
+  const handleTrimEndMouseDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
     selectClip(clip.id);
+    if (isTrackLocked) return;
 
     const startX = e.clientX;
     const initialEnd = clip.start + clip.duration;
     let hasMoved = false;
 
-    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
+    const onMove = (moveEvent: PointerEvent) => {
       const deltaPx = moveEvent.clientX - startX;
       if (!hasMoved && Math.abs(deltaPx) < 3) return;
-      hasMoved = true;
+      if (!hasMoved) {
+        hasMoved = true;
+        beginClipGesture();
+      }
       const deltaSec = pixelsToTime(deltaPx, zoom);
       trimClipEnd(clip.id, initialEnd + deltaSec);
     };
 
     const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
       if (hasMoved) {
         commitClipChange();
       } else {
@@ -257,10 +273,9 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       }
     };
 
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   };
 
   const getStyleTheme = () => {
@@ -313,13 +328,12 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     <div
       ref={clipRef}
       onClick={handleClick}
-      onMouseDown={handleBodyMouseDown}
       onPointerDown={handleBodyMouseDown}
       style={{
         left: `${leftPx}px`,
         width: `${widthPx}px`,
       }}
-      className={`absolute top-1 bottom-1 rounded-md border ${theme.border} ${theme.bg} backdrop-blur-xs flex items-center justify-between overflow-hidden cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group`}
+      className={`absolute top-1 bottom-1 rounded-md border ${theme.border} ${theme.bg} backdrop-blur-sm flex items-center justify-between overflow-hidden cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group`}
     >
       {/* Background Filmstrip for Video clips */}
       {clip.type === 'video' && media?.thumbnails && media.thumbnails.length > 0 && (() => {
@@ -418,9 +432,8 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       {/* Left Trim Handle (CapCut Style Pill with Expanded Touch Hitbox) */}
       <div
         onPointerDown={handleTrimStartMouseDown}
-        onMouseDown={handleTrimStartMouseDown}
         className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all ${
-          isSelected
+          showHandles
             ? 'opacity-100 bg-white text-dark-950 shadow-md'
             : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-blue-400/80 text-white'
         }`}
@@ -438,7 +451,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
 
         {/* Speed indicator */}
         {clip.speed && clip.speed !== 1 && (
-          <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-blue-500/30 text-blue-300 border border-blue-500/40 font-bold shrink-0">
+          <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-blue-500/30 text-blue-300 border border-blue-500/40 font-bold shrink-0">
             {clip.speed}x
           </span>
         )}
@@ -459,9 +472,8 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       {/* Right Trim Handle (CapCut Style Pill with Expanded Touch Hitbox) */}
       <div
         onPointerDown={handleTrimEndMouseDown}
-        onMouseDown={handleTrimEndMouseDown}
         className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all ${
-          isSelected
+          showHandles
             ? 'opacity-100 bg-white text-dark-950 shadow-md'
             : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-blue-400/80 text-white'
         }`}
