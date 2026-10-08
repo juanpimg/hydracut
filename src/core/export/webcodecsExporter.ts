@@ -718,6 +718,43 @@ export function safeAddAudioChunk(
 }
 
 /**
+ * Translates raw platform encoder errors (which vary by browser/GPU/driver)
+ * into an actionable Spanish message. Returns the original error untouched
+ * when it doesn't look encoder-related, so real bugs stay visible.
+ *
+ * Covered raw shapes:
+ * - EncodingError / NotSupportedError from VideoEncoder.configure/encode/flush
+ *   (Chrome/Edge report e.g. "Operation is not supported" when the GPU
+ *   rejects the stream mid-export).
+ * - InvalidStateError "Encoder must be configured first" (stale symptom of
+ *   a failed configure / closed encoder; the underlying `encoderError` or
+ *   the resolution guidance is far more useful).
+ */
+export function toActionableExportError(
+  err: unknown,
+  opts: { width: number; height: number; fps: number },
+  encoderError?: Error | null
+): Error {
+  if (encoderError) return encoderError;
+  const name = err instanceof DOMException ? err.name : (err as Error)?.name;
+  const msg = err instanceof Error ? err.message : String(err);
+  const looksEncoderRelated =
+    name === 'NotSupportedError' ||
+    name === 'EncodingError' ||
+    name === 'InvalidStateError' ||
+    /operation is not supported|not supported|configured first|encoder/i.test(msg);
+  if (!looksEncoderRelated) {
+    return err instanceof Error ? err : new Error(String(err));
+  }
+  const { width, height, fps } = opts;
+  return new Error(
+    `El codificador de video de este dispositivo rechazó la exportación ` +
+      `(${width}x${height}@${fps}fps): ${msg} ` +
+      `Prueba con resolución 1080p o 720p a 30 FPS, o con otro navegador (Chrome/Edge).`
+  );
+}
+
+/**
  * Main export function using WebCodecs + mp4-muxer with MediaRecorder fallback.
  */
 export async function exportVideo(params: ExportParams): Promise<Blob> {
@@ -1036,7 +1073,7 @@ async function exportWithWebCodecs(
         throw new Error('Exportación cancelada por el usuario');
       }
       if (encoderError) {
-        throw encoderError;
+        throw toActionableExportError(encoderError, { width, height, fps });
       }
 
       const t = frameIdx / fps;
@@ -1138,7 +1175,14 @@ async function exportWithWebCodecs(
       etaSeconds: 1,
     });
 
-    await videoEncoder.flush();
+    try {
+      await videoEncoder.flush();
+    } catch (flushErr) {
+      // flush() rejects with the raw platform error when the GPU/driver
+      // fails mid-export (e.g. EncodingError "Operation is not supported").
+      // Prefer the error-callback cause when present, else translate.
+      throw toActionableExportError(flushErr, { width, height, fps }, encoderError);
+    }
     if (audioEncoder && audioEncoder.state !== 'closed') {
       try {
         await audioEncoder.flush();
@@ -1148,7 +1192,7 @@ async function exportWithWebCodecs(
     }
 
     if (encoderError) {
-      throw encoderError;
+      throw toActionableExportError(encoderError, { width, height, fps });
     }
 
     if (videoChunksEncoded === 0) {
@@ -1228,21 +1272,49 @@ async function exportWithMediaRecorder(
   }
 
   let mimeType = 'video/mp4';
-  if (!MediaRecorder.isTypeSupported('video/mp4')) {
+  if (
+    typeof MediaRecorder === 'undefined' ||
+    !MediaRecorder.isTypeSupported('video/mp4')
+  ) {
     mimeType = 'video/webm;codecs=vp9';
   }
-  if (!MediaRecorder.isTypeSupported(mimeType)) {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported(mimeType)) {
     mimeType = 'video/webm';
   }
 
-  const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: config.bitrate });
+  // The constructor throws NotSupportedError when the mimeType is rejected;
+  // retry with browser defaults before giving a clear error.
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: config.bitrate });
+  } catch (err) {
+    try {
+      recorder = new MediaRecorder(stream);
+      mimeType = recorder.mimeType || 'video/webm';
+    } catch {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Este navegador no soporta grabación de video (MediaRecorder: ${detail}). ` +
+          `Prueba con Chrome o Edge actualizados.`
+      );
+    }
+  }
   const chunks: Blob[] = [];
 
   recorder.ondataavailable = (e) => {
     if (e.data && e.data.size > 0) chunks.push(e.data);
   };
 
-  recorder.start();
+  recorder.onerror = (ev) => {
+    console.error('MediaRecorder error:', (ev as ErrorEvent).error ?? ev);
+  };
+
+  try {
+    recorder.start();
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`No se pudo iniciar la grabación de respaldo: ${detail}`);
+  }
 
   return new Promise<Blob>((resolve, reject) => {
     let frameIdx = 0;

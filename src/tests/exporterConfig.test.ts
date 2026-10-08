@@ -66,8 +66,7 @@ describe('selectSupportedVideoConfig (export encoder guard)', () => {
     await expect(selectSupportedVideoConfig(3840, 2160, 20_000_000, 60)).resolves.toBeNull();
   });
 
-  it('tolera rechazos (throw) de isConfigSupported y sigue con el siguiente candidato', async () => {
-    (globalThis as Record<string, unknown>).VideoFrame = class {};
+  it('tolera rechazos (throw) de isConfigSupported y sigue con el siguiente candidato', async () => {    (globalThis as Record<string, unknown>).VideoFrame = class {};
     (globalThis as Record<string, unknown>).VideoEncoder = {
       isConfigSupported: vi.fn(async (cfg: unknown) => {
         const codec = (cfg as { codec: string }).codec;
@@ -76,5 +75,44 @@ describe('selectSupportedVideoConfig (export encoder guard)', () => {
       }),
     };
     await expect(selectSupportedVideoConfig(1920, 1080)).resolves.toBe('avc1.4d002a');
+  });
+});
+
+describe('toActionableExportError (traductor de errores de encoder)', () => {
+  const dims = { width: 3840, height: 2160, fps: 60 };
+
+  it('traduce "Operation is not supported" a mensaje accionable en español', async () => {
+    const { toActionableExportError } = await import('../core/export/webcodecsExporter');
+    const raw = new DOMException('Operation is not supported', 'EncodingError');
+    const out = toActionableExportError(raw, dims);
+    expect(out.message).toContain('3840x2160@60fps');
+    expect(out.message).toContain('1080p');
+    expect(out.message).toContain('Operation is not supported');
+  });
+
+  it('traduce "Encoder must be configured first" en vez del síntoma críptico', async () => {
+    const { toActionableExportError } = await import('../core/export/webcodecsExporter');
+    const raw = new DOMException(
+      "Failed to execute 'encode' on 'VideoEncoder': Encoder must be configured first.",
+      'InvalidStateError'
+    );
+    const out = toActionableExportError(raw, dims);
+    expect(out.message).toContain('codificador');
+    expect(out.message).toContain('720p');
+  });
+
+  it('prioriza la causa del error-callback cuando existe', async () => {
+    const { toActionableExportError } = await import('../core/export/webcodecsExporter');
+    const cause = new Error('plataforma: bitrate no soportado por el driver');
+    const out = toActionableExportError(new Error('flush failed'), dims, cause);
+    expect(out).toBe(cause);
+  });
+
+  it('deja intactos los errores no relacionados con el encoder', async () => {
+    const { toActionableExportError } = await import('../core/export/webcodecsExporter');
+    const raw = new Error('Exportación cancelada por el usuario');
+    expect(toActionableExportError(raw, dims)).toBe(raw);
+    const typeRaw = new TypeError('Cannot read properties of null');
+    expect(toActionableExportError(typeRaw, dims)).toBe(typeRaw);
   });
 });
