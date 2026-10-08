@@ -21,10 +21,10 @@ export const PreviewPlayer: React.FC = () => {
     masterClock.setDuration(duration);
   }, [duration]);
 
-  // Pre-warm video elements for active timeline clips so decoders are ready in advance
+  // Pre-warm video elements for clips in initial playback window so decoders are ready without hitting browser decoder limits
   useEffect(() => {
     for (const clip of clips) {
-      if (clip.type === 'video') {
+      if (clip.type === 'video' && clip.start <= 5) {
         const media = mediaPool.find((m) => m.id === clip.mediaId);
         if (media) {
           mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);

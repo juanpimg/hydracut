@@ -12,6 +12,8 @@ export class MediaSourcePool {
   private startingPlayMap: Set<HTMLVideoElement> = new Set();
   private lastHardSeekTimeMap: Map<HTMLVideoElement, number> = new Map();
   private lastFrameMap: Map<string, HTMLCanvasElement | OffscreenCanvas> = new Map();
+  private lastStoredFrameTimeMap: Map<string, number> = new Map();
+  private lastPrewarmTime = 0;
   private frameReadyListeners: Set<() => void> = new Set();
   private frameReadyScheduled = false;
 
@@ -103,12 +105,23 @@ export class MediaSourcePool {
   /**
    * Stores the current video frame into an offscreen canvas cache to prevent black
    * flashes during temporary seeks or buffering periods. Caches by both clipId and mediaId.
+   * Throttled during continuous playback to avoid copying 8.3MB full-res frames 60 times a second.
    */
-  public storeVideoFrame(clipId: string, video: HTMLVideoElement, mediaId?: string): void {
+  public storeVideoFrame(clipId: string, video: HTMLVideoElement, mediaId?: string, force = false): void {
     if (video.readyState < 2) return;
     const w = video.videoWidth || 640;
     const h = video.videoHeight || 360;
     if (w <= 0 || h <= 0) return;
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const lastStored = this.lastStoredFrameTimeMap.get(clipId) || 0;
+    if (!force && now - lastStored < 300) {
+      return;
+    }
+    this.lastStoredFrameTimeMap.set(clipId, now);
+    if (mediaId) {
+      this.lastStoredFrameTimeMap.set(mediaId, now);
+    }
 
     const saveToCanvas = (key: string) => {
       let canvas = this.lastFrameMap.get(key);
@@ -187,8 +200,8 @@ export class MediaSourcePool {
   /**
    * Syncs video element time with source offset smoothly without stuttering or seek loops.
    * Tolerates minor jitter (< 120ms) naturally without altering playback rate.
-   * Micro-adjusts rate smoothly for moderate drift (120ms - 1.5s).
-   * Only hard-seeks for massive desync (> 1.5s) with a 1s cooldown to prevent seek loops.
+   * Micro-adjusts rate smoothly for moderate drift (120ms - 1.5s) without frame-by-frame rate thrashing.
+   * Only hard-seeks for massive desync (> 1.5s) with a 1.5s cooldown to prevent seek loops.
    */
   public syncVideoTime(
     video: HTMLVideoElement,
@@ -205,17 +218,26 @@ export class MediaSourcePool {
       if (video.paused) {
         // Guard against continuous seek-loops while play promise is pending
         if (!video.seeking && !this.startingPlayMap.has(video)) {
-          if (Math.abs(video.currentTime - targetTime) > 0.15) {
+          // If already close to target time (<= 0.8s), DO NOT hard-seek:
+          // Seeking stalls the hardware decoder right as the clip begins playing!
+          // Let playback start instantly, and the drift controller will gently nudge the rate.
+          if (Math.abs(video.currentTime - targetTime) > 0.8) {
             video.currentTime = targetTime;
           }
-          video.playbackRate = speed;
+          if (Math.abs(video.playbackRate - speed) > 0.01) {
+            video.playbackRate = speed;
+          }
           this.startingPlayMap.add(video);
-          video
-            .play()
-            .catch(() => {})
-            .finally(() => {
-              this.startingPlayMap.delete(video);
-            });
+          if (typeof video.play === 'function') {
+            video
+              .play()
+              .catch(() => {})
+              .finally(() => {
+                this.startingPlayMap.delete(video);
+              });
+          } else {
+            this.startingPlayMap.delete(video);
+          }
         }
         return;
       }
@@ -235,25 +257,23 @@ export class MediaSourcePool {
           video.playbackRate = speed;
         }
       } else if (absDrift <= 0.50) {
-        // Zone 2: Minor drift (120ms - 500ms) - gentle 5% micro-adjustment
-        if (drift < -0.12) {
-          video.playbackRate = speed * 1.05;
-        } else {
-          video.playbackRate = Math.max(0.5, speed * 0.95);
+        // Zone 2: Minor drift (120ms - 500ms) - gentle 6% micro-adjustment
+        const targetRate = drift < 0 ? speed * 1.06 : Math.max(0.25, speed * 0.94);
+        if (Math.abs(video.playbackRate - targetRate) > 0.01) {
+          video.playbackRate = targetRate;
         }
       } else if (absDrift <= 1.50) {
-        // Zone 3: Moderate drift (500ms - 1.5s) - 15% rate adjustment
-        if (drift < -0.50) {
-          video.playbackRate = speed * 1.15;
-        } else {
-          video.playbackRate = Math.max(0.2, speed * 0.85);
+        // Zone 3: Moderate drift (500ms - 1.5s) - 20% rate adjustment
+        const targetRate = drift < 0 ? speed * 1.20 : Math.max(0.25, speed * 0.80);
+        if (Math.abs(video.playbackRate - targetRate) > 0.01) {
+          video.playbackRate = targetRate;
         }
       } else {
         // Zone 4: Severe drift (> 1.5s) - forced seek with cooldown to prevent stutter loops
         if (!video.seeking) {
           const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
           const lastSeek = this.lastHardSeekTimeMap.get(video) || 0;
-          if (now - lastSeek > 1000) {
+          if (now - lastSeek > 1500) {
             this.lastHardSeekTimeMap.set(video, now);
             video.currentTime = targetTime;
           }
@@ -279,7 +299,13 @@ export class MediaSourcePool {
    * Pre-warms video decoders and pre-seeks upcoming clips within a 2.5s window
    * so clip transitions happen instantaneously with zero latency or black flashes.
    */
-  public prewarmUpcomingClips(time: number, clips: Clip[], mediaPool: MediaItem[]): void {
+  public prewarmUpcomingClips(time: number, clips: Clip[], mediaPool: MediaItem[], force = false): void {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!force && now - this.lastPrewarmTime < 250) {
+      return;
+    }
+    this.lastPrewarmTime = now;
+
     const mediaMap = new Map<string, MediaItem>();
     for (const m of mediaPool) {
       mediaMap.set(m.id, m);
@@ -294,7 +320,7 @@ export class MediaSourcePool {
         const video = this.getVideoElement(media, clip.id, clip.sourceStart);
         if (video.readyState >= 1 && !video.seeking) {
           const expectedStart = clip.sourceStart;
-          if (Math.abs(video.currentTime - expectedStart) > 0.08) {
+          if (Math.abs(video.currentTime - expectedStart) > 0.15) {
             video.currentTime = expectedStart;
           }
         }

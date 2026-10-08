@@ -59,7 +59,7 @@ export const MobilePreviewPlayer: React.FC = () => {
 
   useEffect(() => {
     for (const clip of clips) {
-      if (clip.type === 'video') {
+      if (clip.type === 'video' && clip.start <= 5) {
         const media = mediaPool.find((m) => m.id === clip.mediaId);
         if (media) {
           mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);

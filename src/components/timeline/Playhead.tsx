@@ -30,14 +30,14 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
     return unsub;
   }, [zoom]);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handleDragStart = (e: React.MouseEvent | React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
 
     const startX = e.clientX;
     const initialTime = masterClock.getTime();
 
-    const onMouseMove = (moveEvent: MouseEvent) => {
+    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
       const deltaX = moveEvent.clientX - startX;
       const deltaTime = pixelsToTime(deltaX, zoomRef.current);
       const newTime = Math.max(0, initialTime + deltaTime);
@@ -45,13 +45,19 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
       useProjectStore.getState().setCurrentTime(newTime);
     };
 
-    const onMouseUp = () => {
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
     };
 
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
   };
 
   return (
@@ -63,10 +69,11 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
       }}
       className="absolute top-0 left-0 z-30 pointer-events-none will-change-transform"
     >
-      {/* Triangular / Pill Head */}
+      {/* Triangular / Pill Head with Touch Hitbox */}
       <div
-        onMouseDown={handleMouseDown}
-        className="relative -left-[7px] w-[15px] h-[18px] bg-red-500 rounded-b cursor-ew-resize pointer-events-auto flex items-center justify-center shadow-lg group hover:bg-red-400 transition"
+        onMouseDown={handleDragStart}
+        onPointerDown={handleDragStart}
+        className="relative -left-[7px] w-[15px] h-[18px] bg-red-500 rounded-b cursor-ew-resize pointer-events-auto flex items-center justify-center shadow-lg group hover:bg-red-400 touch-none transition select-none before:absolute before:-inset-2 before:z-30"
       >
         <div className="w-[1px] h-[8px] bg-white/70" />
       </div>

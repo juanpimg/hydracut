@@ -94,8 +94,8 @@ describe('Compositor Layer Ordering (Painters Algorithm)', () => {
     } as unknown as HTMLCanvasElement;
 
     const { mediaSourcePool } = await import('../core/engine/MediaSourcePool');
-    vi.spyOn(mediaSourcePool, 'getVideoElement').mockReturnValue({} as HTMLVideoElement);
-    vi.spyOn(mediaSourcePool, 'syncVideoTime').mockImplementation(() => {});
+    const getElSpy = vi.spyOn(mediaSourcePool, 'getVideoElement').mockReturnValue({} as HTMLVideoElement);
+    const syncSpy = vi.spyOn(mediaSourcePool, 'syncVideoTime').mockImplementation(() => {});
 
     compositor.renderFrame({
       time: 2,
@@ -108,6 +108,9 @@ describe('Compositor Layer Ordering (Painters Algorithm)', () => {
       ],
       isPlaying: false,
     });
+
+    getElSpy.mockRestore();
+    syncSpy.mockRestore();
 
     // Base video V1 must be rendered first, then overlay V2, then Text on top!
     expect(renderedOrder).toEqual(['c_v1', 'c_v2', 'c_text']);
@@ -303,8 +306,8 @@ describe('Compositor Visibility & Opacity Edge Cases', () => {
     } as unknown as HTMLCanvasElement;
 
     const { mediaSourcePool } = await import('../core/engine/MediaSourcePool');
-    vi.spyOn(mediaSourcePool, 'getVideoElement').mockReturnValue({} as HTMLVideoElement);
-    vi.spyOn(mediaSourcePool, 'syncVideoTime').mockImplementation(() => {});
+    const getElSpy = vi.spyOn(mediaSourcePool, 'getVideoElement').mockReturnValue({} as HTMLVideoElement);
+    const syncSpy = vi.spyOn(mediaSourcePool, 'syncVideoTime').mockImplementation(() => {});
 
     compositor.renderFrame({
       time: 1,
@@ -316,6 +319,9 @@ describe('Compositor Visibility & Opacity Edge Cases', () => {
       ],
       isPlaying: false,
     });
+
+    getElSpy.mockRestore();
+    syncSpy.mockRestore();
 
     // Only c_active should be drawn
     expect(renderedClips).toEqual(['c_active']);
@@ -568,6 +574,136 @@ describe('Video Frame Caching & Solid Playback (Anti-Flicker)', () => {
 
     expect(listener).toHaveBeenCalled();
     unsub();
+  });
+
+  it('syncVideoTime starts playback without hard seek when paused and drift is <= 0.8s', async () => {
+    const { mediaSourcePool } = await import('../core/engine/MediaSourcePool');
+    const playMock = vi.fn().mockResolvedValue(undefined);
+    let currentTime = 1.0;
+    const fakeVideo = {
+      readyState: 4,
+      paused: true,
+      seeking: false,
+      playbackRate: 1.0,
+      get currentTime() { return currentTime; },
+      set currentTime(v: number) { currentTime = v; },
+      play: playMock,
+    } as unknown as HTMLVideoElement;
+
+    // Target time is 1.15s (150ms drift) - must NOT hard seek
+    mediaSourcePool.syncVideoTime(fakeVideo, 1.15, true, 1.0);
+
+    expect(currentTime).toBe(1.0); // Not changed by hard seek
+    expect(playMock).toHaveBeenCalled();
+  });
+
+  it('syncVideoTime performs smooth rate adjustment without redundant playbackRate mutations', async () => {
+    const { mediaSourcePool } = await import('../core/engine/MediaSourcePool');
+    let playbackRate = 1.0;
+    let rateSetterCalls = 0;
+    const fakeVideo = {
+      readyState: 4,
+      paused: false,
+      seeking: false,
+      currentTime: 1.0,
+      get playbackRate() { return playbackRate; },
+      set playbackRate(v: number) {
+        rateSetterCalls++;
+        playbackRate = v;
+      },
+    } as unknown as HTMLVideoElement;
+
+    // In deadband (< 120ms): targetTime = 1.05s -> drift = -50ms
+    mediaSourcePool.syncVideoTime(fakeVideo, 1.05, true, 1.0);
+    expect(playbackRate).toBe(1.0);
+    expect(rateSetterCalls).toBe(0); // Did not redundantly set
+
+    // Minor drift: targetTime = 1.25s -> drift = -250ms -> nudge to 1.06x
+    mediaSourcePool.syncVideoTime(fakeVideo, 1.25, true, 1.0);
+    expect(playbackRate).toBeCloseTo(1.06, 2);
+    expect(rateSetterCalls).toBe(1);
+
+    // Call again with same drift: should NOT mutate playbackRate again
+    mediaSourcePool.syncVideoTime(fakeVideo, 1.25, true, 1.0);
+    expect(rateSetterCalls).toBe(1); // Still 1, no thrashing
+  });
+
+  it('Compositor bridges with lastCompositedCanvas instead of wiping canvas with black when video is unready', async () => {
+    const compositor = new Compositor();
+    const fillRectMock = vi.fn();
+    const drawImageMock = vi.fn();
+
+    const fakeCanvas = {
+      width: 1920,
+      height: 1080,
+      getContext: () => ({
+        fillStyle: '',
+        fillRect: fillRectMock,
+        drawImage: drawImageMock,
+        save: vi.fn(),
+        restore: vi.fn(),
+      }),
+    } as unknown as HTMLCanvasElement;
+
+    // Setup an initial lastCompositedCanvas on compositor
+    const fakeOffscreen = {
+      width: 1920,
+      height: 1080,
+      getContext: () => ({ drawImage: vi.fn() }),
+    } as unknown as HTMLCanvasElement;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (compositor as any).lastCompositedCanvas = fakeOffscreen;
+
+    const tracks: Track[] = [
+      { id: 't_v1', name: 'Video Track', type: 'video', isMuted: false, isLocked: false, isVisible: true },
+    ];
+    const clips: Clip[] = [
+      {
+        id: 'clip_unready',
+        trackId: 't_v1',
+        mediaId: 'm_unready',
+        name: 'Unready Clip',
+        type: 'video',
+        start: 0,
+        duration: 5,
+        sourceStart: 0,
+        sourceDuration: 5,
+        volume: 1,
+        opacity: 1,
+        scale: 1,
+        positionX: 0,
+        positionY: 0,
+        muted: false,
+      },
+    ];
+
+    const { mediaSourcePool } = await import('../core/engine/MediaSourcePool');
+    // Unready video element (readyState = 1, e.g. HAVE_METADATA only)
+    const unreadyVideo = {
+      readyState: 1,
+      currentTime: 0,
+      paused: true,
+      seeking: false,
+      play: vi.fn().mockResolvedValue(undefined),
+    } as unknown as HTMLVideoElement;
+    const getElSpy = vi.spyOn(mediaSourcePool, 'getVideoElement').mockReturnValue(unreadyVideo);
+    const getFrameSpy = vi.spyOn(mediaSourcePool, 'getLastFrame').mockReturnValue(null);
+
+    compositor.renderFrame({
+      time: 0.5,
+      canvas: fakeCanvas,
+      tracks,
+      clips,
+      mediaPool: [{ id: 'm_unready', name: 'M', type: 'video', url: 'blob:1', duration: 10, width: 1920, height: 1080, fps: 30, thumbnailUrl: '', size: 100, createdAt: 0 }],
+      isPlaying: true,
+    });
+
+    getElSpy.mockRestore();
+    getFrameSpy.mockRestore();
+
+    // Instead of fillRect(0, 0, 1920, 1080) with black, it should have drawn the last composited frame!
+    expect(drawImageMock).toHaveBeenCalledWith(fakeOffscreen, 0, 0, 1920, 1080);
+    expect(fillRectMock).not.toHaveBeenCalled();
   });
 });
 

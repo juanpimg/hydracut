@@ -76,6 +76,7 @@ export function calculateTransition(clip: Clip, time: number, canvasWidth: numbe
 
 export class Compositor {
   private lastCompositedCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
+  private lastCompositedTime = 0;
 
   /**
    * Renders a frame at timeline time `time` onto the target canvas.
@@ -87,10 +88,6 @@ export class Compositor {
 
     const width = canvas.width;
     const height = canvas.height;
-
-    // 1. Clear background
-    ctx.fillStyle = '#0a0a0c';
-    ctx.fillRect(0, 0, width, height);
 
     // Map media items by id for fast lookup
     const mediaMap = new Map<string, MediaItem>();
@@ -119,6 +116,51 @@ export class Compositor {
     let hasActiveVisualClip = false;
     let hasDrawnVisualFrame = false;
 
+    // Pre-check active visual clips and video decoder readiness
+    let hasUnreadyVideo = false;
+    for (const track of renderOrder) {
+      if (!track.isVisible) continue;
+      const tClips = clips.filter(
+        (c) => c.trackId === track.id && time >= c.start && time < c.start + c.duration && c.opacity > 0
+      );
+      for (const clip of tClips) {
+        if (clip.type === 'video' || clip.type === 'image') {
+          hasActiveVisualClip = true;
+          if (clip.type === 'video') {
+            const media = mediaMap.get(clip.mediaId);
+            if (media) {
+              const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
+              if (videoEl.readyState < 2 && !mediaSourcePool.getLastFrame(clip.id) && !mediaSourcePool.getLastFrame(media.id)) {
+                hasUnreadyVideo = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Canvas Background Management:
+    // If an active video is still decoding (readyState < 2 and no cached frame),
+    // AVOID clearing with black #0a0a0c to eliminate black flashes!
+    // Instead bridge with lastCompositedCanvas if available.
+    if (hasActiveVisualClip && hasUnreadyVideo && this.lastCompositedCanvas) {
+      try {
+        ctx.drawImage(this.lastCompositedCanvas, 0, 0, width, height);
+      } catch {
+        ctx.fillStyle = '#0a0a0c';
+        ctx.fillRect(0, 0, width, height);
+      }
+    } else if (!hasActiveVisualClip) {
+      // Empty gap on timeline: black canvas
+      ctx.fillStyle = '#0a0a0c';
+      ctx.fillRect(0, 0, width, height);
+      this.lastCompositedCanvas = null;
+    } else {
+      // Normal clear
+      ctx.fillStyle = '#0a0a0c';
+      ctx.fillRect(0, 0, width, height);
+    }
+
     for (const track of renderOrder) {
       if (!track.isVisible) continue;
 
@@ -131,7 +173,6 @@ export class Compositor {
         if (clip.opacity <= 0) continue;
 
         if (clip.type === 'video' || clip.type === 'image') {
-          hasActiveVisualClip = true;
           const media = mediaMap.get(clip.mediaId);
           if (!media) continue;
 
@@ -182,28 +223,32 @@ export class Compositor {
         // Ignored
       }
     } else if (hasDrawnVisualFrame) {
-      // Save valid rendered visual frame into lastCompositedCanvas
-      if (!this.lastCompositedCanvas) {
-        if (typeof OffscreenCanvas !== 'undefined') {
-          this.lastCompositedCanvas = new OffscreenCanvas(width, height);
-        } else if (typeof document !== 'undefined') {
-          const c = document.createElement('canvas');
-          c.width = width;
-          c.height = height;
-          this.lastCompositedCanvas = c;
-        }
-      } else if (this.lastCompositedCanvas.width !== width || this.lastCompositedCanvas.height !== height) {
-        this.lastCompositedCanvas.width = width;
-        this.lastCompositedCanvas.height = height;
-      }
-      if (this.lastCompositedCanvas) {
-        try {
-          const bCtx = this.lastCompositedCanvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
-          if (bCtx) {
-            bCtx.drawImage(canvas, 0, 0, width, height);
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      // Throttle copying to lastCompositedCanvas during continuous playback to avoid 60fps duplicate canvas blitting
+      if (!isPlaying || now - this.lastCompositedTime >= 100) {
+        this.lastCompositedTime = now;
+        if (!this.lastCompositedCanvas) {
+          if (typeof OffscreenCanvas !== 'undefined') {
+            this.lastCompositedCanvas = new OffscreenCanvas(width, height);
+          } else if (typeof document !== 'undefined') {
+            const c = document.createElement('canvas');
+            c.width = width;
+            c.height = height;
+            this.lastCompositedCanvas = c;
           }
-        } catch {
-          // Ignored
+        } else if (this.lastCompositedCanvas.width !== width || this.lastCompositedCanvas.height !== height) {
+          this.lastCompositedCanvas.width = width;
+          this.lastCompositedCanvas.height = height;
+        }
+        if (this.lastCompositedCanvas) {
+          try {
+            const bCtx = this.lastCompositedCanvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+            if (bCtx) {
+              bCtx.drawImage(canvas, 0, 0, width, height);
+            }
+          } catch {
+            // Ignored
+          }
         }
       }
     } else if (!hasActiveVisualClip) {
@@ -224,7 +269,7 @@ export class Compositor {
     sourceHeight: number,
     time: number = 0,
     media?: MediaItem,
-    _isPlaying: boolean = false
+    isPlaying: boolean = false
   ): boolean {
     const transition = calculateTransition(clip, time, canvasWidth);
 
@@ -275,7 +320,7 @@ export class Compositor {
       if (mediaElement instanceof HTMLVideoElement) {
         if (mediaElement.readyState >= 2) {
           ctx.drawImage(mediaElement, x, y, drawWidth, drawHeight);
-          mediaSourcePool.storeVideoFrame(clip.id, mediaElement, media?.id);
+          mediaSourcePool.storeVideoFrame(clip.id, mediaElement, media?.id, !isPlaying);
           hasDrawn = true;
         } else {
           // Video element has not decoded this frame yet (temporary seek or buffer):
