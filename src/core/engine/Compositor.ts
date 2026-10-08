@@ -162,14 +162,20 @@ export class Compositor {
     }
 
     if (isPlaying) {
-      mediaSourcePool.pauseInactiveVideos(activeVideoKeys);
+      const prewarmKeys = new Set<string>();
+      for (const c of clips) {
+        if (c.type === 'video' && c.start > time && c.start <= time + 2.5) {
+          prewarmKeys.add(`${c.mediaId}_${c.id}`);
+        }
+      }
+      mediaSourcePool.pauseInactiveVideos(activeVideoKeys, prewarmKeys);
     }
 
     // Anti-flicker protection:
-    // If an active visual clip was scheduled to be visible, but produced no frames yet during active playback
-    // (e.g. temporary asynchronous seek/decode latency across clip cuts), bridge with the last composited frame
+    // If an active visual clip was scheduled to be visible, but produced no frames yet
+    // (e.g. temporary asynchronous seek/decode latency across clip cuts or scrubbing), bridge with the last composited frame
     // instead of flashing black #0a0a0c!
-    if (hasActiveVisualClip && !hasDrawnVisualFrame && isPlaying && this.lastCompositedCanvas) {
+    if (hasActiveVisualClip && !hasDrawnVisualFrame && this.lastCompositedCanvas) {
       try {
         ctx.drawImage(this.lastCompositedCanvas, 0, 0, width, height);
       } catch {
@@ -218,7 +224,7 @@ export class Compositor {
     sourceHeight: number,
     time: number = 0,
     media?: MediaItem,
-    isPlaying: boolean = false
+    _isPlaying: boolean = false
   ): boolean {
     const transition = calculateTransition(clip, time, canvasWidth);
 
@@ -278,7 +284,7 @@ export class Compositor {
           if (cachedFrame) {
             ctx.drawImage(cachedFrame, x, y, drawWidth, drawHeight);
             hasDrawn = true;
-          } else if (!isPlaying && media?.thumbnailUrl) {
+          } else if (media?.thumbnailUrl) {
             // ONLY on cold start while paused before any video frames have ever been rendered:
             const thumbImg = mediaSourcePool.getImageElement({ ...media, url: media.thumbnailUrl }, 'fallback_' + clip.id);
             if (thumbImg.complete && thumbImg.naturalWidth > 0) {

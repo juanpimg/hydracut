@@ -7,7 +7,8 @@ import { ClipInspector } from '../inspector/ClipInspector';
 
 export const Sidebar: React.FC = () => {
   const { activeTab, setActiveTab } = useUIStore();
-  const { selectedClipId, addTextClip } = useProjectStore();
+  const selectedClipId = useProjectStore((s) => s.selectedClipId);
+  const addTextClip = useProjectStore((s) => s.addTextClip);
 
   const tabs: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
     { id: 'media', label: 'Medios', icon: <Film size={18} /> },

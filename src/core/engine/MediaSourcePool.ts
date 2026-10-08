@@ -1,4 +1,4 @@
-import { MediaItem } from '../../types/project';
+import { Clip, MediaItem } from '../../types/project';
 
 /**
  * Manages reusable HTMLVideoElement and HTMLImageElement instances
@@ -10,6 +10,7 @@ export class MediaSourcePool {
   private imageElements: Map<string, HTMLImageElement> = new Map();
   private audioElements: Map<string, HTMLAudioElement> = new Map();
   private startingPlayMap: Set<HTMLVideoElement> = new Set();
+  private lastHardSeekTimeMap: Map<HTMLVideoElement, number> = new Map();
   private lastFrameMap: Map<string, HTMLCanvasElement | OffscreenCanvas> = new Map();
   private frameReadyListeners: Set<() => void> = new Set();
   private frameReadyScheduled = false;
@@ -38,15 +39,21 @@ export class MediaSourcePool {
         el.addEventListener('canplay', () => this.notifyFrameReady());
 
         if (sourceStart !== undefined && sourceStart > 0) {
-          el.addEventListener(
-            'loadedmetadata',
-            () => {
-              if (el && Math.abs(el.currentTime - sourceStart) > 0.05) {
-                el.currentTime = sourceStart;
-              }
-            },
-            { once: true }
-          );
+          if (el.readyState >= 1) {
+            if (Math.abs(el.currentTime - sourceStart) > 0.05) {
+              el.currentTime = sourceStart;
+            }
+          } else {
+            el.addEventListener(
+              'loadedmetadata',
+              () => {
+                if (el && Math.abs(el.currentTime - sourceStart) > 0.05) {
+                  el.currentTime = sourceStart;
+                }
+              },
+              { once: true }
+            );
+          }
         }
       } else {
         // Headless Node mock fallback
@@ -179,6 +186,9 @@ export class MediaSourcePool {
 
   /**
    * Syncs video element time with source offset smoothly without stuttering or seek loops.
+   * Tolerates minor jitter (< 120ms) naturally without altering playback rate.
+   * Micro-adjusts rate smoothly for moderate drift (120ms - 1.5s).
+   * Only hard-seeks for massive desync (> 1.5s) with a 1s cooldown to prevent seek loops.
    */
   public syncVideoTime(
     video: HTMLVideoElement,
@@ -216,22 +226,37 @@ export class MediaSourcePool {
       }
 
       // Smooth drift correction during active playback:
-      // NEVER hard-seek unless there is a huge jump (e.g. user clicked ruler)
       const drift = video.currentTime - targetTime;
-      if (Math.abs(drift) > 0.8) {
-        if (!video.seeking) {
-          video.currentTime = targetTime;
-        }
-      } else if (Math.abs(drift) > 0.04) {
-        // Micro-adjust playbackRate smoothly without interrupting hardware decode
-        if (drift < -0.04) {
-          video.playbackRate = speed * 1.08;
-        } else {
-          video.playbackRate = Math.max(0.2, speed * 0.92);
-        }
-      } else {
+      const absDrift = Math.abs(drift);
+
+      // Zone 1: In-sync tolerance deadband (< 120ms) - let video play naturally at 1.0x
+      if (absDrift <= 0.12) {
         if (Math.abs(video.playbackRate - speed) > 0.01) {
           video.playbackRate = speed;
+        }
+      } else if (absDrift <= 0.50) {
+        // Zone 2: Minor drift (120ms - 500ms) - gentle 5% micro-adjustment
+        if (drift < -0.12) {
+          video.playbackRate = speed * 1.05;
+        } else {
+          video.playbackRate = Math.max(0.5, speed * 0.95);
+        }
+      } else if (absDrift <= 1.50) {
+        // Zone 3: Moderate drift (500ms - 1.5s) - 15% rate adjustment
+        if (drift < -0.50) {
+          video.playbackRate = speed * 1.15;
+        } else {
+          video.playbackRate = Math.max(0.2, speed * 0.85);
+        }
+      } else {
+        // Zone 4: Severe drift (> 1.5s) - forced seek with cooldown to prevent stutter loops
+        if (!video.seeking) {
+          const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+          const lastSeek = this.lastHardSeekTimeMap.get(video) || 0;
+          if (now - lastSeek > 1000) {
+            this.lastHardSeekTimeMap.set(video, now);
+            video.currentTime = targetTime;
+          }
         }
       }
     } else {
@@ -239,6 +264,9 @@ export class MediaSourcePool {
       this.startingPlayMap.delete(video);
       if (!video.paused) {
         video.pause();
+      }
+      if (Math.abs(video.playbackRate - speed) > 0.01) {
+        video.playbackRate = speed;
       }
       const diff = Math.abs(video.currentTime - targetTime);
       if (diff > 0.03 && !video.seeking) {
@@ -248,12 +276,39 @@ export class MediaSourcePool {
   }
 
   /**
-   * Pauses video elements that are not currently active on the timeline,
+   * Pre-warms video decoders and pre-seeks upcoming clips within a 2.5s window
+   * so clip transitions happen instantaneously with zero latency or black flashes.
+   */
+  public prewarmUpcomingClips(time: number, clips: Clip[], mediaPool: MediaItem[]): void {
+    const mediaMap = new Map<string, MediaItem>();
+    for (const m of mediaPool) {
+      mediaMap.set(m.id, m);
+    }
+
+    for (const clip of clips) {
+      if (clip.type !== 'video') continue;
+      // If clip starts within the next 2.5 seconds:
+      if (clip.start > time && clip.start <= time + 2.5) {
+        const media = mediaMap.get(clip.mediaId);
+        if (!media) continue;
+        const video = this.getVideoElement(media, clip.id, clip.sourceStart);
+        if (video.readyState >= 1 && !video.seeking) {
+          const expectedStart = clip.sourceStart;
+          if (Math.abs(video.currentTime - expectedStart) > 0.08) {
+            video.currentTime = expectedStart;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Pauses video elements that are not currently active or pre-warming on the timeline,
    * avoiding wasted GPU/CPU decoding resources in the background.
    */
-  public pauseInactiveVideos(activeKeys: Set<string>): void {
+  public pauseInactiveVideos(activeKeys: Set<string>, prewarmKeys?: Set<string>): void {
     for (const [key, v] of this.videoElements.entries()) {
-      if (!activeKeys.has(key) && !v.paused) {
+      if (!activeKeys.has(key) && (!prewarmKeys || !prewarmKeys.has(key)) && !v.paused) {
         v.pause();
       }
     }

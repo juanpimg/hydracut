@@ -20,16 +20,14 @@ interface TimelineToolbarProps {
 }
 
 export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen }) => {
-  const { 
-    zoom, 
-    setZoom, 
-    snapEnabled, 
-    toggleSnap, 
-    splitAtPlayhead, 
-    deleteSelectedClip, 
-    selectedClipId,
-    addTrack 
-  } = useProjectStore();
+  const zoom = useProjectStore((s) => s.zoom);
+  const setZoom = useProjectStore((s) => s.setZoom);
+  const snapEnabled = useProjectStore((s) => s.snapEnabled);
+  const toggleSnap = useProjectStore((s) => s.toggleSnap);
+  const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
+  const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
+  const selectedClipId = useProjectStore((s) => s.selectedClipId);
+  const addTrack = useProjectStore((s) => s.addTrack);
 
   const { activeTool, setActiveTool } = useUIStore();
   const [showAddMenu, setShowAddMenu] = useState(false);

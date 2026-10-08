@@ -15,7 +15,7 @@ import { ExportConfig, ExportProgress } from '../../types/project';
 import { exportVideo, isWebCodecsSupported } from '../../core/export/webcodecsExporter';
 
 export const ExportModal: React.FC = () => {
-  const { project } = useProjectStore();
+  const project = useProjectStore((s) => s.project);
   const { isExportModalOpen, setExportModalOpen } = useUIStore();
 
   const [hasWebCodecs, setHasWebCodecs] = useState<boolean>(true);

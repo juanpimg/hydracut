@@ -68,6 +68,14 @@ export class MasterClock {
     this.timelineStart = this.timelineTime;
     this.isPlaying = true;
 
+    if (ctx.state === 'suspended') {
+      ctx.resume().then(() => {
+        if (this.isPlaying) {
+          this.audioCtxStart = ctx.currentTime;
+        }
+      }).catch(() => {});
+    }
+
     this.notifyState(true);
     this.startTickLoop();
   }

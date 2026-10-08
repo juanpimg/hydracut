@@ -13,6 +13,32 @@ import { audioEngine } from '../../core/engine/AudioEngine';
 import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
 import { formatTimecode } from '../../core/utils/time';
 
+const MobileTimecodeDisplay: React.FC<{ fps: number; duration: number }> = ({ fps, duration }) => {
+  const currentSpanRef = useRef<HTMLSpanElement>(null);
+  const fpsRef = useRef(fps);
+  fpsRef.current = fps;
+
+  useEffect(() => {
+    if (currentSpanRef.current) {
+      currentSpanRef.current.textContent = formatTimecode(masterClock.getTime(), fps);
+    }
+    const unsub = masterClock.subscribeTime((t) => {
+      if (currentSpanRef.current) {
+        currentSpanRef.current.textContent = formatTimecode(t, fpsRef.current);
+      }
+    });
+    return unsub;
+  }, [fps]);
+
+  return (
+    <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md px-2 py-0.5 rounded-full text-[10px] font-mono text-cyan-300 font-bold border border-cyan-500/20 shadow pointer-events-none flex items-center gap-1 z-10">
+      <span ref={currentSpanRef}>{formatTimecode(masterClock.getTime(), fps)}</span>
+      <span className="text-slate-500">/</span>
+      <span className="text-slate-400">{formatTimecode(duration, fps)}</span>
+    </div>
+  );
+};
+
 export const MobilePreviewPlayer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -23,7 +49,6 @@ export const MobilePreviewPlayer: React.FC = () => {
   const tracks = useProjectStore((s) => s.project.tracks);
   const clips = useProjectStore((s) => s.project.clips);
   const mediaPool = useProjectStore((s) => s.project.mediaPool);
-  const currentTime = useProjectStore((s) => s.currentTime);
   const isPlaying = useProjectStore((s) => s.isPlaying);
   const fps = useProjectStore((s) => s.project.fps);
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
@@ -45,10 +70,18 @@ export const MobilePreviewPlayer: React.FC = () => {
 
   // Sync clock time and render
   useEffect(() => {
+    let lastStoreSyncTime = 0;
     const unsubTime = masterClock.subscribeTime((t) => {
-      useProjectStore.getState().setCurrentTime(t);
-      const currProject = useProjectStore.getState().project;
       const isCurrentlyPlaying = masterClock.getIsPlaying();
+
+      // Throttle store sync during playback
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (!isCurrentlyPlaying || now - lastStoreSyncTime >= 100) {
+        lastStoreSyncTime = now;
+        useProjectStore.getState().setCurrentTime(t);
+      }
+
+      const currProject = useProjectStore.getState().project;
 
       if (canvasRef.current) {
         compositor.renderFrame({
@@ -67,11 +100,15 @@ export const MobilePreviewPlayer: React.FC = () => {
         currProject.clips,
         currProject.mediaPool
       );
+      if (isCurrentlyPlaying) {
+        mediaSourcePool.prewarmUpcomingClips(t, currProject.clips, currProject.mediaPool);
+      }
     });
 
     const unsubState = masterClock.subscribeState((playing) => {
       useProjectStore.getState().setIsPlaying(playing);
       if (!playing) {
+        useProjectStore.getState().setCurrentTime(masterClock.getTime());
         audioEngine.stopAll();
       }
     });
@@ -166,11 +203,7 @@ export const MobilePreviewPlayer: React.FC = () => {
         />
 
         {/* Floating Timecode Pill */}
-        <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md px-2 py-0.5 rounded-full text-[10px] font-mono text-cyan-300 font-bold border border-cyan-500/20 shadow pointer-events-none flex items-center gap-1">
-          <span>{formatTimecode(currentTime, fps)}</span>
-          <span className="text-slate-500">/</span>
-          <span className="text-slate-400">{formatTimecode(duration, fps)}</span>
-        </div>
+        <MobileTimecodeDisplay fps={fps} duration={duration} />
 
         {/* Fullscreen Button */}
         <button

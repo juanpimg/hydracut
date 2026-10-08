@@ -13,14 +13,12 @@ import { masterClock } from '../../core/engine/MasterClock';
 import { loadAutosavedProject, rehydrateProjectMedia } from '../../core/storage/projectStorage';
 
 export const MainLayout: React.FC = () => {
-  const { 
-    splitAtPlayhead, 
-    deleteSelectedClip, 
-    undo, 
-    redo, 
-    project,
-    loadProject 
-  } = useProjectStore();
+  const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
+  const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
+  const undo = useProjectStore((s) => s.undo);
+  const redo = useProjectStore((s) => s.redo);
+  const fps = useProjectStore((s) => s.project.fps);
+  const loadProject = useProjectStore((s) => s.loadProject);
 
   // Load autosaved project on startup
   useEffect(() => {
@@ -65,14 +63,14 @@ export const MainLayout: React.FC = () => {
       // ArrowLeft: Step back 1 frame
       if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        masterClock.stepFrame(-1, project.fps);
+        masterClock.stepFrame(-1, fps);
         return;
       }
 
       // ArrowRight: Step forward 1 frame
       if (e.key === 'ArrowRight') {
         e.preventDefault();
-        masterClock.stepFrame(1, project.fps);
+        masterClock.stepFrame(1, fps);
         return;
       }
 
@@ -104,7 +102,7 @@ export const MainLayout: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [splitAtPlayhead, deleteSelectedClip, undo, redo, project.fps]);
+  }, [splitAtPlayhead, deleteSelectedClip, undo, redo, fps]);
 
   const isMobile = useIsMobile(768);
 

@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { pixelsToTime } from '../../core/utils/time';
@@ -8,22 +8,41 @@ interface PlayheadProps {
 }
 
 export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
-  const { currentTime, zoom } = useProjectStore();
+  const zoom = useProjectStore((s) => s.zoom);
   const playheadRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
 
-  const leftPosition = currentTime * zoom;
+  // Direct 60 FPS update via MasterClock subscription: ZERO React re-renders
+  useEffect(() => {
+    // Initial sync
+    const initialTime = masterClock.getTime();
+    if (playheadRef.current) {
+      playheadRef.current.style.transform = `translateX(${initialTime * zoom}px)`;
+    }
+
+    const unsub = masterClock.subscribeTime((t) => {
+      if (playheadRef.current) {
+        playheadRef.current.style.transform = `translateX(${t * zoomRef.current}px)`;
+      }
+    });
+
+    return unsub;
+  }, [zoom]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
 
     const startX = e.clientX;
-    const initialTime = currentTime;
+    const initialTime = masterClock.getTime();
 
     const onMouseMove = (moveEvent: MouseEvent) => {
       const deltaX = moveEvent.clientX - startX;
-      const deltaTime = pixelsToTime(deltaX, zoom);
-      masterClock.seek(initialTime + deltaTime);
+      const deltaTime = pixelsToTime(deltaX, zoomRef.current);
+      const newTime = Math.max(0, initialTime + deltaTime);
+      masterClock.seek(newTime);
+      useProjectStore.getState().setCurrentTime(newTime);
     };
 
     const onMouseUp = () => {
@@ -39,7 +58,7 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
     <div
       ref={playheadRef}
       style={{
-        transform: `translateX(${leftPosition}px)`,
+        transform: `translateX(${masterClock.getTime() * zoom}px)`,
         height: `${timelineHeight}px`,
       }}
       className="absolute top-0 left-0 z-30 pointer-events-none will-change-transform"

@@ -35,10 +35,18 @@ export const PreviewPlayer: React.FC = () => {
 
   // Sync MasterClock time with store & render frame
   useEffect(() => {
+    let lastStoreSyncTime = 0;
     const unsubTime = masterClock.subscribeTime((t) => {
-      useProjectStore.getState().setCurrentTime(t);
-      const currProject = useProjectStore.getState().project;
       const isCurrentlyPlaying = masterClock.getIsPlaying();
+
+      // Throttle store state sync during continuous playback to avoid choking the main thread
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (!isCurrentlyPlaying || now - lastStoreSyncTime >= 100) {
+        lastStoreSyncTime = now;
+        useProjectStore.getState().setCurrentTime(t);
+      }
+
+      const currProject = useProjectStore.getState().project;
 
       if (canvasRef.current) {
         compositor.renderFrame({
@@ -57,11 +65,15 @@ export const PreviewPlayer: React.FC = () => {
         currProject.clips,
         currProject.mediaPool
       );
+      if (isCurrentlyPlaying) {
+        mediaSourcePool.prewarmUpcomingClips(t, currProject.clips, currProject.mediaPool);
+      }
     });
 
     const unsubState = masterClock.subscribeState((playing) => {
       useProjectStore.getState().setIsPlaying(playing);
       if (!playing) {
+        useProjectStore.getState().setCurrentTime(masterClock.getTime());
         audioEngine.stopAll();
       }
     });

@@ -9,7 +9,8 @@ interface MediaItemCardProps {
 }
 
 export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
-  const { addClipFromMedia, removeMediaItem } = useProjectStore();
+  const addClipFromMedia = useProjectStore((s) => s.addClipFromMedia);
+  const removeMediaItem = useProjectStore((s) => s.removeMediaItem);
 
   const getIcon = () => {
     switch (item.type) {

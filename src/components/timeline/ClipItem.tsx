@@ -76,18 +76,16 @@ const AudioWaveform: React.FC<{
 };
 
 export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
-  const { 
-    zoom, 
-    selectedClipId, 
-    selectClip, 
-    moveClip, 
-    commitClipChange,
-    trimClipStart, 
-    trimClipEnd, 
-    splitClip,
-    setSnappingGuideTime,
-    project 
-  } = useProjectStore();
+  const zoom = useProjectStore((s) => s.zoom);
+  const selectedClipId = useProjectStore((s) => s.selectedClipId);
+  const selectClip = useProjectStore((s) => s.selectClip);
+  const moveClip = useProjectStore((s) => s.moveClip);
+  const commitClipChange = useProjectStore((s) => s.commitClipChange);
+  const trimClipStart = useProjectStore((s) => s.trimClipStart);
+  const trimClipEnd = useProjectStore((s) => s.trimClipEnd);
+  const splitClip = useProjectStore((s) => s.splitClip);
+  const setSnappingGuideTime = useProjectStore((s) => s.setSnappingGuideTime);
+  const mediaPool = useProjectStore((s) => s.project.mediaPool);
 
   const { activeTool, setActiveTab } = useUIStore();
   const clipRef = useRef<HTMLDivElement>(null);
@@ -96,7 +94,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const leftPx = clip.start * zoom;
   const widthPx = Math.max(12, clip.duration * zoom);
 
-  const media = project.mediaPool.find((m) => m.id === clip.mediaId);
+  const media = mediaPool.find((m) => m.id === clip.mediaId);
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();

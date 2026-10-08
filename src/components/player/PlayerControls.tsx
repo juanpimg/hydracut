@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Play, 
   Pause, 
@@ -13,15 +13,40 @@ import { masterClock } from '../../core/engine/MasterClock';
 import { formatTimecode } from '../../core/utils/time';
 import { audioEngine } from '../../core/engine/AudioEngine';
 
+const TimecodeCurrentDisplay: React.FC<{ fps: number }> = ({ fps }) => {
+  const spanRef = useRef<HTMLDivElement>(null);
+  const fpsRef = useRef(fps);
+  fpsRef.current = fps;
+
+  useEffect(() => {
+    if (spanRef.current) {
+      spanRef.current.textContent = formatTimecode(masterClock.getTime(), fps);
+    }
+    const unsub = masterClock.subscribeTime((t) => {
+      if (spanRef.current) {
+        spanRef.current.textContent = formatTimecode(t, fpsRef.current);
+      }
+    });
+    return unsub;
+  }, [fps]);
+
+  return (
+    <div
+      ref={spanRef}
+      className="font-mono text-sm font-semibold tracking-wider bg-dark-950 px-2.5 py-1 rounded border border-dark-800 text-blue-400"
+    >
+      {formatTimecode(masterClock.getTime(), fps)}
+    </div>
+  );
+};
+
 export const PlayerControls: React.FC = () => {
-  const { 
-    project, 
-    currentTime, 
-    isPlaying, 
-    snapEnabled, 
-    toggleSnap, 
-    splitAtPlayhead 
-  } = useProjectStore();
+  const isPlaying = useProjectStore((s) => s.isPlaying);
+  const fps = useProjectStore((s) => s.project.fps);
+  const duration = useProjectStore((s) => s.project.duration);
+  const snapEnabled = useProjectStore((s) => s.snapEnabled);
+  const toggleSnap = useProjectStore((s) => s.toggleSnap);
+  const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
 
   const [volume, setVolume] = useState<number>(1);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -31,11 +56,11 @@ export const PlayerControls: React.FC = () => {
   };
 
   const handleStepBack = () => {
-    masterClock.stepFrame(-1, project.fps);
+    masterClock.stepFrame(-1, fps);
   };
 
   const handleStepForward = () => {
-    masterClock.stepFrame(1, project.fps);
+    masterClock.stepFrame(1, fps);
   };
 
   const handleToStart = () => {
@@ -64,12 +89,10 @@ export const PlayerControls: React.FC = () => {
     <div className="h-11 bg-dark-900 border-t border-b border-dark-800 px-4 flex items-center justify-between select-none">
       {/* Left: Timecode Display */}
       <div className="flex items-center gap-2">
-        <div className="font-mono text-sm font-semibold tracking-wider bg-dark-950 px-2.5 py-1 rounded border border-dark-800 text-blue-400">
-          {formatTimecode(currentTime, project.fps)}
-        </div>
+        <TimecodeCurrentDisplay fps={fps} />
         <span className="text-slate-500 text-xs">/</span>
         <div className="font-mono text-xs text-slate-400">
-          {formatTimecode(project.duration, project.fps)}
+          {formatTimecode(duration, fps)}
         </div>
       </div>
 

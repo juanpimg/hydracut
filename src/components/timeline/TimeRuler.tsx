@@ -8,7 +8,8 @@ interface TimeRulerProps {
 }
 
 export const TimeRuler: React.FC<TimeRulerProps> = () => {
-  const { project, zoom } = useProjectStore();
+  const duration = useProjectStore((s) => s.project.duration);
+  const zoom = useProjectStore((s) => s.zoom);
   const rulerRef = useRef<HTMLDivElement>(null);
 
   // Determine tick interval in seconds based on zoom level
@@ -26,7 +27,7 @@ export const TimeRuler: React.FC<TimeRulerProps> = () => {
     minorTicks = 5;
   }
 
-  const totalWidth = Math.max(1200, project.duration * zoom + 300);
+  const totalWidth = Math.max(1200, duration * zoom + 300);
   const totalSeconds = Math.ceil(totalWidth / zoom);
 
   const ticks: { time: number; isMajor: boolean; label?: string }[] = [];
