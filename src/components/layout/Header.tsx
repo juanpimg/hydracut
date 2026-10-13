@@ -10,7 +10,8 @@ import {
   Tv, 
   Square,
   Sparkles,
-  FolderKanban
+  FolderKanban,
+  Github
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -204,6 +205,18 @@ export const Header: React.FC = () => {
         >
           <HelpCircle size={17} />
         </button>
+
+        {/* GitHub */}
+        <a
+          href="https://github.com/juanpimg/hydracut"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="p-2 text-slate-400 hover:text-white hover:bg-dark-800 rounded-lg transition"
+          title="Ver código en GitHub — ¡contribuye!"
+          aria-label="Ver HydraCut en GitHub (pestaña nueva)"
+        >
+          <Github size={17} />
+        </a>
 
         {/* Export Button */}
         <button
