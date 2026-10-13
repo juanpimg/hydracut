@@ -345,6 +345,12 @@ en el repo (`.env*` ignorado en `.gitignore`).
 
 ---
 
+## ⚖️ Aviso legal
+
+Edita únicamente material del que poseas los derechos o que la ley te permita usar, respetando la normativa de propiedad intelectual de tu jurisdicción. Software "tal cual" (licencia MIT), sin garantías: el autor no responde de daños directos o indirectos ni del uso que hagas de él.
+
+---
+
 ## 📜 Licencia
 
 MIT © 2026 [HydraApps](https://github.com/juanpimg). Edición audiovisual de alto rendimiento para la web moderna.
