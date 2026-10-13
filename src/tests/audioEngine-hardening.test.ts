@@ -71,12 +71,10 @@ describe('MasterClock & AudioEngine Web Audio API Hardening', () => {
     });
 
     it('falls back to performance.now when AudioContext is in suspended state', () => {
-      let isResumed = false;
       class MockSuspendedAudioContext {
         state: AudioContextState = 'suspended';
         currentTime = 0;
         resume = vi.fn(async () => {
-          isResumed = true;
           this.state = 'running';
         });
       }

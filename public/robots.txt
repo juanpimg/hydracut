@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://hydracut.pages.dev/sitemap.xml
