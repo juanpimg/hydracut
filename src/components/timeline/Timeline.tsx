@@ -121,14 +121,14 @@ export const Timeline: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full bg-dark-950 border-t border-dark-800 select-none z-10">
+    <div className="flex flex-col h-full w-full max-w-full min-w-0 bg-dark-950 border-t border-dark-800 select-none z-10 overflow-hidden">
       {/* Top Toolbar */}
       <TimelineToolbar onFitToScreen={handleFitToScreen} />
 
       {/* Main Timeline Workspace */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex w-full max-w-full min-w-0 overflow-hidden">
         {/* Left Column: Track Headers */}
-        <div className="w-40 sm:w-40 md:w-48 lg:w-56 bg-dark-900 border-r border-dark-800 flex flex-col shrink-0 z-20">
+        <div className="w-28 min-[400px]:w-36 sm:w-40 md:w-48 lg:w-56 bg-dark-900 border-r border-dark-800 flex flex-col shrink-0 z-20">
           {/* Header spacer aligned with ruler */}
           <div className="h-7 bg-dark-900 border-b border-dark-800 px-2 sm:px-3 flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-slate-500">
             <span>Pistas</span>
@@ -150,7 +150,7 @@ export const Timeline: React.FC = () => {
           ref={lanesContainerRef}
           onScroll={handleScroll}
           onClick={() => selectClip(null)}
-          className="flex-1 overflow-x-auto overflow-y-hidden relative bg-dark-950/80"
+          className="flex-1 overflow-x-auto overflow-y-hidden relative bg-dark-950/80 min-w-0"
         >
           {/* Draggable Playhead */}
           <Playhead timelineHeight={totalTimelineHeight} />

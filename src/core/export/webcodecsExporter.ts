@@ -1390,7 +1390,21 @@ async function exportWithMediaRecorder(
   canvas.height = height;
   const compositor = new Compositor();
 
-  const stream = canvas.captureStream(fps);
+  const hasCaptureStream =
+    typeof canvas.captureStream === 'function' ||
+    typeof (canvas as unknown as { webkitCaptureStream?: unknown }).webkitCaptureStream === 'function';
+
+  if (!hasCaptureStream) {
+    throw new Error(
+      'Tu navegador o entorno webview no soporta la captura de canvas en tiempo real (HTMLCanvasElement.captureStream). ' +
+      'Para exportar videos, utiliza un navegador compatible como Google Chrome, Microsoft Edge, Firefox o Safari actualizado.'
+    );
+  }
+
+  const stream: MediaStream =
+    typeof canvas.captureStream === 'function'
+      ? canvas.captureStream(fps)
+      : (canvas as unknown as { webkitCaptureStream: (fps: number) => MediaStream }).webkitCaptureStream(fps);
 
   // Render offline audio if available and attach to MediaStream
   let offlineAudioCtx: AudioContext | null = null;
@@ -1414,22 +1428,39 @@ async function exportWithMediaRecorder(
     console.warn('Could not attach audio to MediaRecorder stream:', err);
   }
 
-  let mimeType = 'video/mp4';
-  if (
-    typeof MediaRecorder === 'undefined' ||
-    !MediaRecorder.isTypeSupported('video/mp4')
-  ) {
-    mimeType = 'video/webm;codecs=vp9';
+  if (typeof MediaRecorder === 'undefined') {
+    throw new Error(
+      'Tu navegador o entorno webview no soporta la API MediaRecorder necesaria para exportar video. ' +
+      'Para exportar videos, utiliza un navegador compatible como Google Chrome, Microsoft Edge, Firefox o Safari actualizado.'
+    );
   }
-  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported(mimeType)) {
-    mimeType = 'video/webm';
+
+  const mimeCandidates = [
+    'video/mp4;codecs=avc1',
+    'video/mp4',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+  let mimeType = '';
+  if (typeof MediaRecorder.isTypeSupported === 'function') {
+    mimeType =
+      mimeCandidates.find((m) => {
+        try {
+          return MediaRecorder.isTypeSupported(m);
+        } catch {
+          return false;
+        }
+      }) || '';
   }
 
   // The constructor throws NotSupportedError when the mimeType is rejected;
   // retry with browser defaults before giving a clear error.
   let recorder: MediaRecorder;
   try {
-    recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: config.bitrate });
+    recorder = mimeType
+      ? new MediaRecorder(stream, { mimeType, videoBitsPerSecond: config.bitrate })
+      : new MediaRecorder(stream, { videoBitsPerSecond: config.bitrate });
   } catch (err) {
     try {
       recorder = new MediaRecorder(stream);

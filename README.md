@@ -338,6 +338,13 @@ apps/hydra-cut/src/
 
 ---
 
+## 🔒 Seguridad
+
+100% client-side: tus medios nunca salen del dispositivo. Sin backend ni credenciales
+en el repo (`.env*` ignorado en `.gitignore`).
+
+---
+
 ## 📜 Licencia
 
 MIT © 2026 [HydraApps](https://github.com/juanpimg). Edición audiovisual de alto rendimiento para la web moderna.

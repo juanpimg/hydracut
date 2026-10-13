@@ -18,3 +18,15 @@ dist-ssr
 
 # Test artifacts
 test-artifacts
+
+.code-review-graph/
+
+# secrets / env — nunca subir claves ni certificados locales
+.env*
+!.env.example
+.certs/
+*.pem
+*.key
+
+# herramientas locales de agentes (contienen rutas absolutas)
+.agents/

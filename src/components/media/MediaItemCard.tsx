@@ -32,16 +32,17 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
     <div
       draggable
       onDragStart={handleDragStart}
+      onClick={() => addClipFromMedia(item)}
       tabIndex={0}
       role="button"
-      aria-label={`${item.name}: pulsa Enter para añadir a la línea de tiempo`}
+      aria-label={`${item.name}: pulsa para añadir a la línea de tiempo`}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           addClipFromMedia(item);
         }
       }}
-      className="group relative bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-dark-600 rounded-lg p-2 flex flex-col gap-2 transition cursor-grab active:cursor-grabbing select-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:outline-none"
+      className="group relative bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-dark-600 rounded-lg p-2 flex flex-col gap-2 transition cursor-pointer select-none focus-visible:ring-2 focus-visible:ring-cyan-500 focus-visible:outline-none"
     >
       {/* Thumbnail or Icon Box */}
       <div className="relative w-full aspect-video bg-dark-900 rounded overflow-hidden flex items-center justify-center border border-dark-750">
@@ -65,7 +66,10 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
         {/* Hover Quick Actions */}
         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 transition flex items-center justify-center gap-2">
           <button
-            onClick={() => addClipFromMedia(item)}
+            onClick={(e) => {
+              e.stopPropagation();
+              addClipFromMedia(item);
+            }}
             className="p-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-md shadow-md transition focus-visible:ring-2 focus-visible:ring-white"
             title="Añadir a la línea de tiempo"
             aria-label={`Añadir ${item.name} a la línea de tiempo`}
@@ -73,7 +77,10 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
             <Plus size={16} />
           </button>
           <button
-            onClick={() => removeMediaItem(item.id)}
+            onClick={(e) => {
+              e.stopPropagation();
+              removeMediaItem(item.id);
+            }}
             className="p-1.5 bg-red-600/80 hover:bg-red-500 text-white rounded-md shadow-md transition focus-visible:ring-2 focus-visible:ring-white"
             title="Eliminar archivo"
             aria-label={`Eliminar ${item.name} de la biblioteca`}
@@ -91,6 +98,20 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
             {item.name}
           </span>
         </div>
+
+        {/* Dedicated mobile touch-friendly Add button (always visible on mobile viewports) */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            addClipFromMedia(item);
+          }}
+          className="md:hidden flex items-center gap-1 px-2 py-1 bg-blue-600/30 hover:bg-blue-600 text-blue-300 hover:text-white rounded border border-blue-500/30 text-[11px] font-semibold active:scale-95 transition shrink-0"
+          title={`Añadir ${item.name}`}
+          aria-label={`Añadir ${item.name} a la línea de tiempo`}
+        >
+          <Plus size={13} />
+          <span>Añadir</span>
+        </button>
       </div>
     </div>
   );

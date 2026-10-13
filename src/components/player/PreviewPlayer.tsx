@@ -97,6 +97,10 @@ export const PreviewPlayer: React.FC = () => {
       unsubTime();
       unsubState();
       unsubFrame();
+      if (masterClock.getIsPlaying()) {
+        masterClock.pause();
+      }
+      audioEngine.stopAll();
     };
   }, []);
 

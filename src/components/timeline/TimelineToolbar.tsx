@@ -45,20 +45,20 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
     return () => window.removeEventListener('keydown', onKey);
   }, [showAddMenu]);
 
-  // Base touch target: 44px on mobile, compact on sm+ (toolbar is icon-dense)
+  // Base touch target: 36px on narrow mobile (<480px), compact on sm+ (toolbar is icon-dense)
   const iconBtn =
-    'min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1.5 flex items-center justify-center rounded transition';
+    'min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 sm:p-1.5 flex items-center justify-center rounded transition shrink-0';
 
   return (
-    <div className="min-h-[48px] sm:h-10 bg-dark-900 border-b border-dark-800 px-1.5 sm:px-3 py-1 flex items-center justify-between gap-1 select-none overflow-x-auto no-scrollbar">
+    <div className="w-full max-w-full min-w-0 min-h-[44px] sm:h-10 bg-dark-900 border-b border-dark-800 px-1.5 sm:px-3 py-1 flex items-center justify-between gap-1 select-none overflow-x-auto no-scrollbar">
       {/* Left: Tools */}
       <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0">
-        {/* Select Tool */}
+        {/* Select Tool (Mouse/desktop tool: hidden on narrow mobile < 480px) */}
         <button
           onClick={() => setActiveTool('select')}
           aria-pressed={activeTool === 'select'}
           aria-label="Herramienta selección"
-          className={`${iconBtn} ${
+          className={`hidden min-[480px]:flex ${iconBtn} ${
             activeTool === 'select'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-slate-400 hover:text-white hover:bg-dark-800'
@@ -68,12 +68,12 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
           <MousePointer size={16} />
         </button>
 
-        {/* Razor / Split Tool */}
+        {/* Razor / Split Tool (Desktop tool: hidden on narrow mobile < 480px) */}
         <button
           onClick={() => setActiveTool(activeTool === 'split' ? 'select' : 'split')}
           aria-pressed={activeTool === 'split'}
           aria-label="Herramienta cuchilla"
-          className={`${iconBtn} ${
+          className={`hidden min-[480px]:flex ${iconBtn} ${
             activeTool === 'split'
               ? 'bg-blue-600 text-white shadow-sm'
               : 'text-slate-400 hover:text-white hover:bg-dark-800'
@@ -83,25 +83,25 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
           <Scissors size={16} />
         </button>
 
-        <div className="h-4 w-[1px] bg-dark-750 mx-0.5 sm:mx-1 shrink-0" />
+        <div className="hidden min-[480px]:block h-4 w-[1px] bg-dark-750 mx-0.5 sm:mx-1 shrink-0" />
 
-        {/* Quick Split at Playhead */}
+        {/* Quick Split at Playhead (Duplicated by mobile bottom bar on narrow mobile) */}
         <button
           onClick={splitAtPlayhead}
           aria-label="Dividir clip en el cabezal"
-          className={`${iconBtn} gap-1.5 sm:px-2.5 sm:py-1 text-xs text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 border border-dark-750 sm:rounded transition`}
+          className={`hidden min-[480px]:flex ${iconBtn} gap-1.5 sm:px-2.5 sm:py-1 text-xs text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 border border-dark-750 sm:rounded transition`}
           title="Dividir clip en el cabezal (S)"
         >
           <Scissors size={14} className="text-blue-400" />
-          <span className="hidden min-[480px]:inline">Dividir (S)</span>
+          <span className="hidden sm:inline">Dividir (S)</span>
         </button>
 
-        {/* Delete Selected Clip */}
+        {/* Delete Selected Clip (Duplicated by mobile bottom bar on narrow mobile) */}
         <button
           onClick={deleteSelectedClip}
           disabled={!selectedClipId}
           aria-label="Eliminar clip seleccionado"
-          className={`min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1.5 flex items-center justify-center gap-1.5 sm:px-2.5 sm:py-1 text-xs rounded transition border ${
+          className={`hidden min-[480px]:flex min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 sm:p-1.5 items-center justify-center gap-1.5 sm:px-2.5 sm:py-1 text-xs rounded transition border shrink-0 ${
             selectedClipId
               ? 'text-red-300 hover:text-red-200 bg-red-950/40 border-red-800/60 hover:bg-red-900/50'
               : 'text-slate-600 border-transparent cursor-not-allowed'
@@ -109,7 +109,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
           title="Eliminar clip seleccionado (Supr)"
         >
           <Trash2 size={14} />
-          <span className="hidden min-[480px]:inline">Borrar</span>
+          <span className="hidden sm:inline">Borrar</span>
         </button>
 
         {/* Snapping Toggle */}
@@ -129,15 +129,15 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
       </div>
 
       {/* Right: Add Track & Zoom Controls */}
-      <div className="flex items-center gap-1 sm:gap-3 shrink-0">
+      <div className="flex items-center gap-1 sm:gap-2.5 shrink-0">
         {/* Add Track Dropdown */}
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             onClick={() => setShowAddMenu(!showAddMenu)}
             aria-expanded={showAddMenu}
             aria-haspopup="true"
             aria-label="Añadir pista"
-            className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center gap-1 sm:px-2.5 sm:py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition"
+            className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center gap-1 px-2 sm:px-2.5 sm:py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition shrink-0"
           >
             <Plus size={15} />
             <span className="hidden min-[480px]:inline">Pista</span>
@@ -196,13 +196,13 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
         <div className="h-4 w-[1px] bg-dark-750 shrink-0" />
 
         {/* Zoom Controls */}
-        <div className="flex items-center gap-0.5 sm:gap-1.5">
+        <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0">
           {onFitToScreen && (
             <button
               onClick={onFitToScreen}
               data-testid="fit-to-screen-btn"
               aria-label="Ajustar timeline a pantalla"
-              className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center gap-1 sm:px-2 sm:py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition"
+              className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 flex items-center justify-center gap-1 p-1.5 sm:px-2 sm:py-1 text-xs bg-dark-850 hover:bg-dark-800 text-slate-300 hover:text-white border border-dark-750 rounded transition shrink-0"
               title="Ajustar a Pantalla (Fit to Screen)"
             >
               <Maximize2 size={14} className="text-blue-400" />
@@ -214,7 +214,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
             onClick={handleZoomOut}
             data-testid="zoom-out-btn"
             aria-label="Alejar zoom"
-            className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono"
+            className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 sm:p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono shrink-0"
             title="Alejar Zoom (-)"
           >
             <ZoomOut size={16} />
@@ -228,7 +228,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
             value={zoom}
             aria-label="Nivel de zoom del timeline"
             onChange={(e) => setZoom(parseFloat(e.target.value))}
-            className="w-14 min-[400px]:w-20 h-8 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+            className="hidden min-[480px]:block w-14 min-[560px]:w-20 h-8 bg-dark-750 accent-blue-500 rounded cursor-pointer shrink-0"
             title="Nivel de zoom"
           />
 
@@ -236,7 +236,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
             onClick={handleZoomIn}
             data-testid="zoom-in-btn"
             aria-label="Acercar zoom"
-            className="min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 sm:p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono"
+            className="min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 p-1.5 sm:p-1 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center gap-0.5 text-xs font-mono shrink-0"
             title="Acercar Zoom (+)"
           >
             <ZoomIn size={16} />

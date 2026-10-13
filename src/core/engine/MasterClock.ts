@@ -10,6 +10,7 @@ export class MasterClock {
   private isPlaying: boolean = false;
   private timelineTime: number = 0;
   private audioCtxStart: number = 0;
+  private perfStart: number = 0;
   private timelineStart: number = 0;
   private duration: number = 30; // Timeline max duration
   private animFrameId: number | null = null;
@@ -21,13 +22,32 @@ export class MasterClock {
     // AudioContext will be initialized on first user interaction to comply with autoplay policies
   }
 
-  public getAudioContext(): AudioContext {
+  public getAudioContext(): AudioContext | null {
     if (!this.audioCtx) {
-      const AudioCtxClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
+      try {
+        const AudioCtxClass =
+          (typeof window !== 'undefined'
+            ? window.AudioContext ||
+              (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+            : undefined) ||
+          (typeof globalThis !== 'undefined'
+            ? (globalThis as unknown as { AudioContext?: typeof AudioContext }).AudioContext ||
+              (globalThis as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+            : undefined);
+
+        if (AudioCtxClass) {
+          this.audioCtx = new AudioCtxClass();
+        }
+      } catch {
+        this.audioCtx = null;
+      }
     }
-    if (this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume();
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      try {
+        this.audioCtx.resume().catch(() => {});
+      } catch {
+        // ignore resume errors
+      }
     }
     return this.audioCtx;
   }
@@ -40,8 +60,14 @@ export class MasterClock {
     if (!this.isPlaying) {
       return this.timelineTime;
     }
-    if (!this.audioCtx) return this.timelineTime;
-    const elapsed = this.audioCtx.currentTime - this.audioCtxStart;
+    let elapsed: number;
+    if (this.audioCtx && this.audioCtx.state === 'running') {
+      elapsed = this.audioCtx.currentTime - this.audioCtxStart;
+    } else {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      elapsed = (now - this.perfStart) / 1000;
+    }
+    if (elapsed < 0) elapsed = 0;
     const t = this.timelineStart + elapsed;
     if (t >= this.duration) {
       this.seek(this.duration);
@@ -64,14 +90,18 @@ export class MasterClock {
       this.timelineTime = 0;
     }
 
-    this.audioCtxStart = ctx.currentTime;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    this.perfStart = now;
+    this.audioCtxStart = ctx ? ctx.currentTime : 0;
     this.timelineStart = this.timelineTime;
     this.isPlaying = true;
 
-    if (ctx.state === 'suspended') {
+    if (ctx && ctx.state === 'suspended') {
       ctx.resume().then(() => {
-        if (this.isPlaying) {
-          this.audioCtxStart = ctx.currentTime;
+        if (this.isPlaying && this.audioCtx) {
+          this.audioCtxStart = this.audioCtx.currentTime;
+          this.timelineStart = this.getTime();
+          this.perfStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
         }
       }).catch(() => {});
     }
@@ -85,7 +115,7 @@ export class MasterClock {
     this.timelineTime = this.getTime();
     this.isPlaying = false;
 
-    if (this.animFrameId !== null) {
+    if (this.animFrameId !== null && typeof cancelAnimationFrame !== 'undefined') {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
     }
@@ -106,8 +136,11 @@ export class MasterClock {
     const clamped = Math.max(0, Math.min(targetTime, this.duration));
     this.timelineTime = clamped;
 
-    if (this.isPlaying && this.audioCtx) {
-      this.audioCtxStart = this.audioCtx.currentTime;
+    if (this.isPlaying) {
+      if (this.audioCtx) {
+        this.audioCtxStart = this.audioCtx.currentTime;
+      }
+      this.perfStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
       this.timelineStart = clamped;
     }
 
@@ -143,12 +176,15 @@ export class MasterClock {
   }
 
   private startTickLoop(): void {
+    if (typeof requestAnimationFrame === 'undefined') {
+      return;
+    }
     const tick = () => {
       if (!this.isPlaying) return;
       const current = this.getTime();
       this.timelineTime = current;
       this.notifyTime(current);
-      if (current < this.duration && this.isPlaying) {
+      if (current < this.duration && this.isPlaying && typeof requestAnimationFrame !== 'undefined') {
         this.animFrameId = requestAnimationFrame(tick);
       }
     };

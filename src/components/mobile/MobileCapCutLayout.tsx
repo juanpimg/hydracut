@@ -11,11 +11,13 @@ import { ShortcutsModal } from '../modals/ShortcutsModal';
 import { ProjectsModal } from '../modals/ProjectsModal';
 import { WelcomeModal } from '../modals/WelcomeModal';
 import { useProjectStore } from '../../store/useProjectStore';
+import { useIsCompactHeight } from '../../hooks/useIsMobile';
 import { TransitionType } from '../../types/project';
 import { Sparkles, Gauge, Volume2, Eye } from 'lucide-react';
 
 export const MobileCapCutLayout: React.FC = () => {
   const [activeSheet, setActiveSheet] = useState<MobileSheetType>(null);
+  const isCompact = useIsCompactHeight(500);
 
   const selectedClip = useProjectStore((s) => s.project.clips.find((c) => c.id === s.selectedClipId));
   const addTextClip = useProjectStore((s) => s.addTextClip);
@@ -42,19 +44,31 @@ export const MobileCapCutLayout: React.FC = () => {
 
   return (
     <div className="flex flex-col h-[100dvh] w-screen overflow-hidden bg-dark-950 text-slate-100 select-none">
-      {/* 1. TOP HEADER (48px) */}
-      <MobileHeader />
+      {/* 1. TOP HEADER (compact ~32px in landscape / height <= 500px, 48px in portrait) */}
+      <div className={isCompact ? "h-8 shrink-0 overflow-hidden [&>header]:!h-8 [&>header]:!py-0 [&>header]:!pt-0 [&_button]:!min-h-0 [&_button]:!h-6 [&_a]:!h-6 [&_input]:!h-6" : "shrink-0"}>
+        <MobileHeader />
+      </div>
 
-      {/* 2. VIDEO PREVIEW MONITOR (Canvas + Floating Controls) */}
-      <MobilePreviewPlayer />
+      {/* 2. VIDEO PREVIEW MONITOR (Canvas + Floating Controls, ensuring canvas >= 150px and > 120px) */}
+      <div className={isCompact 
+        ? "flex-1 min-h-[140px] flex flex-col overflow-hidden [&>div]:!min-h-0 [&>div]:!p-1 [&_.max-w-sm]:!pt-0.5 [&_.max-w-sm]:!gap-1 [&_.max-w-sm_button]:!min-h-0 [&_.max-w-sm_button]:!h-7 [&_.max-w-sm_button]:!py-0.5" 
+        : "flex-1 min-h-[180px] max-h-[46vh] flex flex-col overflow-hidden"
+      }>
+        <MobilePreviewPlayer />
+      </div>
 
-      {/* 3. MULTITRACK TOUCH TIMELINE */}
-      <div className="flex-1 min-h-[170px] max-h-[38vh] flex flex-col bg-dark-950 border-t border-dark-850 overflow-hidden">
+      {/* 3. MULTITRACK TOUCH TIMELINE (compact ~80-88px in landscape / height <= 500px) */}
+      <div className={isCompact 
+        ? "h-[88px] min-h-[80px] max-h-[90px] shrink-0 flex flex-col bg-dark-950 border-t border-dark-850 overflow-hidden" 
+        : "flex-1 min-h-[170px] max-h-[38vh] flex flex-col bg-dark-950 border-t border-dark-850 overflow-hidden"
+      }>
         <Timeline />
       </div>
 
-      {/* 4. CAPCUT BOTTOM ACTION TOOLBAR (60px) */}
-      <MobileBottomBar onOpenSheet={(sheet) => setActiveSheet(sheet)} />
+      {/* 4. CAPCUT BOTTOM ACTION TOOLBAR (compact ~40px in landscape / height <= 500px) */}
+      <div className={isCompact ? "h-10 shrink-0 overflow-hidden [&>nav]:!h-10 [&>nav]:!py-0 [&>nav]:!pb-0 [&_button]:!h-8 [&_button]:!py-0" : "shrink-0"}>
+        <MobileBottomBar onOpenSheet={(sheet) => setActiveSheet(sheet)} />
+      </div>
 
       {/* 5. MODULAR BOTTOM SHEETS (Slide-up Drawers) */}
       <MobileBottomSheet

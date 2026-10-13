@@ -161,7 +161,7 @@ export const MainLayout: React.FC = () => {
       </div>
 
       {/* Bottom: Multitrack Interactive Timeline */}
-      <div className="h-64 sm:h-72 shrink-0">
+      <div className="h-60 sm:h-64 md:h-72 max-h-[40vh] w-full min-w-0 shrink-0">
         <Timeline />
       </div>
 

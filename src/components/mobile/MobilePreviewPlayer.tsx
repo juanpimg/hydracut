@@ -132,6 +132,10 @@ export const MobilePreviewPlayer: React.FC = () => {
       unsubTime();
       unsubState();
       unsubFrame();
+      if (masterClock.getIsPlaying()) {
+        masterClock.pause();
+      }
+      audioEngine.stopAll();
     };
   }, []);
 

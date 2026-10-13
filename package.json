@@ -2,6 +2,7 @@
   "name": "hydra-cut",
   "private": true,
   "version": "1.0.0",
+  "description": "HydraCut Studio — editor de vídeo multitrack 100% local (WebCodecs, sin servidor)",
   "type": "module",
   "scripts": {
     "dev": "vite",
