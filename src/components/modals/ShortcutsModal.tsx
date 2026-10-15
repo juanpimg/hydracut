@@ -49,7 +49,8 @@ export const ShortcutsModal: React.FC = () => {
           </div>
           <button
             onClick={() => setShortcutsModalOpen(false)}
-            className="text-slate-400 hover:text-white p-1 rounded-lg transition"
+            aria-label="Cerrar modal de atajos"
+            className="text-slate-400 hover:text-white p-1 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             <X size={18} />
           </button>

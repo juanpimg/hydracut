@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Film, Music, Type, VolumeX, Sparkles } from 'lucide-react';
+import { Film, Music, Type, VolumeX } from 'lucide-react';
 import { Clip } from '../../types/project';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -282,30 +282,34 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     switch (clip.type) {
       case 'video':
         return {
-          bg: 'bg-gradient-to-r from-blue-950/90 to-blue-900/70',
-          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-blue-600/50 hover:border-blue-400',
-          accent: 'text-blue-400',
+          bg: 'bg-dark-900/95',
+          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-blue-500/40 hover:border-blue-400/80',
+          accent: 'text-blue-300',
+          badge: 'bg-blue-950/80 text-blue-300 border-blue-700/60',
           icon: <Film size={12} className="text-blue-400 shrink-0" />,
         };
       case 'audio':
         return {
-          bg: 'bg-gradient-to-r from-emerald-950/90 to-emerald-900/70',
-          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-emerald-600/50 hover:border-emerald-400',
-          accent: 'text-emerald-400',
+          bg: 'bg-dark-900/95',
+          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-emerald-500/40 hover:border-emerald-400/80',
+          accent: 'text-emerald-300',
+          badge: 'bg-emerald-950/80 text-emerald-300 border-emerald-700/60',
           icon: <Music size={12} className="text-emerald-400 shrink-0" />,
         };
       case 'text':
         return {
-          bg: 'bg-gradient-to-r from-purple-950/90 to-purple-900/70',
-          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-purple-600/50 hover:border-purple-400',
-          accent: 'text-purple-400',
-          icon: <Type size={12} className="text-purple-400 shrink-0" />,
+          bg: 'bg-dark-900/95',
+          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-amber-500/40 hover:border-amber-400/80',
+          accent: 'text-amber-300',
+          badge: 'bg-amber-950/80 text-amber-300 border-amber-700/60',
+          icon: <Type size={12} className="text-amber-400 shrink-0" />,
         };
       default:
         return {
-          bg: 'bg-dark-800',
-          border: isSelected ? 'border-white ring-2 ring-white shadow-xl z-20' : 'border-dark-700 hover:border-dark-600',
-          accent: 'text-slate-400',
+          bg: 'bg-dark-900/95',
+          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-dark-700 hover:border-dark-600',
+          accent: 'text-slate-300',
+          badge: 'bg-dark-800 text-slate-300 border-dark-700',
           icon: <Film size={12} className="shrink-0" />,
         };
     }
@@ -327,13 +331,23 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   return (
     <div
       ref={clipRef}
+      role="button"
+      tabIndex={0}
+      aria-label={`Clip ${clip.name}, duración ${formatDuration(clip.duration)}`}
+      aria-selected={isSelected}
       onClick={handleClick}
       onPointerDown={handleBodyMouseDown}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          selectClip(clip.id);
+        }
+      }}
       style={{
         left: `${leftPx}px`,
         width: `${widthPx}px`,
       }}
-      className={`absolute top-1 bottom-1 rounded-md border ${theme.border} ${theme.bg} backdrop-blur-sm flex items-center justify-between overflow-hidden cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group`}
+      className={`absolute top-1 bottom-1 rounded-md border ${theme.border} ${theme.bg} flex items-center justify-between overflow-hidden cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none`}
     >
       {/* Background Filmstrip for Video clips */}
       {clip.type === 'video' && media?.thumbnails && media.thumbnails.length > 0 && (() => {
@@ -445,26 +459,26 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       {/* Clip Content Label & Badges */}
       <div className="flex-1 px-2 flex items-center gap-1.5 min-w-0 overflow-hidden pointer-events-none z-10">
         {theme.icon}
-        <span className="text-xs font-medium text-slate-200 truncate drop-shadow-sm">
+        <span className="text-xs font-semibold text-slate-100 truncate">
           {clip.name}
         </span>
 
         {/* Speed indicator */}
         {clip.speed && clip.speed !== 1 && (
-          <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-blue-500/30 text-blue-300 border border-blue-500/40 font-bold shrink-0">
+          <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 font-bold shrink-0">
             {clip.speed}x
           </span>
         )}
 
-        {/* Transition active icon */}
+        {/* Transition active indicator */}
         {(hasFadeIn || hasFadeOut) && (
-          <span title="Transición activa" className="flex items-center">
-            <Sparkles size={11} className="text-amber-400 shrink-0" />
+          <span title="Transición activa" className="text-[9px] font-mono font-semibold px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+            FADE
           </span>
         )}
 
-        {clip.muted && <VolumeX size={11} className="text-red-400 shrink-0 ml-1" />}
-        <span className="text-[10px] font-mono text-slate-300 drop-shadow-sm shrink-0 ml-auto">
+        {clip.muted && <VolumeX size={11} className="text-rose-400 shrink-0 ml-1" />}
+        <span className="text-[10px] font-mono text-slate-400 shrink-0 ml-auto font-medium">
           {formatDuration(clip.duration)}
         </span>
       </div>

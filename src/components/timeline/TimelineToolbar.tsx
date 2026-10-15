@@ -6,14 +6,12 @@ import {
   ZoomIn, 
   ZoomOut, 
   Plus, 
-  MousePointer, 
   Film, 
   Music, 
   Type,
   Maximize2 
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
-import { useUIStore } from '../../store/useUIStore';
 
 interface TimelineToolbarProps {
   onFitToScreen?: () => void;
@@ -29,7 +27,6 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
   const selectedClipId = useProjectStore((s) => s.selectedClipId);
   const addTrack = useProjectStore((s) => s.addTrack);
 
-  const { activeTool, setActiveTool } = useUIStore();
   const [showAddMenu, setShowAddMenu] = useState(false);
 
   const handleZoomIn = () => setZoom(zoom * 1.25);
@@ -45,86 +42,57 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
     return () => window.removeEventListener('keydown', onKey);
   }, [showAddMenu]);
 
-  // Base touch target: 36px on narrow mobile (<480px), compact on sm+ (toolbar is icon-dense)
+  // Base touch target: accessible 36px on compact desktop, 40px on touch
   const iconBtn =
-    'min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 sm:p-1.5 flex items-center justify-center rounded transition shrink-0';
+    'min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center rounded transition shrink-0 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none';
 
   return (
     <div className="w-full max-w-full min-w-0 min-h-[44px] sm:h-10 bg-dark-900 border-b border-dark-800 px-1.5 sm:px-3 py-1 flex items-center justify-between gap-1 select-none overflow-x-auto no-scrollbar">
-      {/* Left: Tools */}
-      <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0">
-        {/* Select Tool (Mouse/desktop tool: hidden on narrow mobile < 480px) */}
-        <button
-          onClick={() => setActiveTool('select')}
-          aria-pressed={activeTool === 'select'}
-          aria-label="Herramienta selección"
-          className={`hidden min-[480px]:flex ${iconBtn} ${
-            activeTool === 'select'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-white hover:bg-dark-800'
-          }`}
-          title="Herramienta Selección"
-        >
-          <MousePointer size={16} />
-        </button>
-
-        {/* Razor / Split Tool (Desktop tool: hidden on narrow mobile < 480px) */}
-        <button
-          onClick={() => setActiveTool(activeTool === 'split' ? 'select' : 'split')}
-          aria-pressed={activeTool === 'split'}
-          aria-label="Herramienta cuchilla"
-          className={`hidden min-[480px]:flex ${iconBtn} ${
-            activeTool === 'split'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-400 hover:text-white hover:bg-dark-800'
-          }`}
-          title="Herramienta Cortar / Cuchilla"
-        >
-          <Scissors size={16} />
-        </button>
-
-        <div className="hidden min-[480px]:block h-4 w-[1px] bg-dark-750 mx-0.5 sm:mx-1 shrink-0" />
-
-        {/* Quick Split at Playhead (Duplicated by mobile bottom bar on narrow mobile) */}
+      {/* Left: Primary Editing Tools */}
+      <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+        {/* Split at Playhead */}
         <button
           onClick={splitAtPlayhead}
-          aria-label="Dividir clip en el cabezal"
-          className={`hidden min-[480px]:flex ${iconBtn} gap-1.5 sm:px-2.5 sm:py-1 text-xs text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 border border-dark-750 sm:rounded transition`}
+          aria-label="Dividir clip en el cabezal (S)"
+          className={`${iconBtn} gap-1.5 px-2.5 py-1 text-xs text-slate-200 hover:text-white bg-dark-850 hover:bg-dark-800 border border-dark-750 rounded`}
           title="Dividir clip en el cabezal (S)"
         >
-          <Scissors size={14} className="text-blue-400" />
-          <span className="hidden sm:inline">Dividir (S)</span>
+          <Scissors size={14} className="text-cyan-400" />
+          <span className="hidden sm:inline font-medium">Dividir (S)</span>
         </button>
 
-        {/* Delete Selected Clip (Duplicated by mobile bottom bar on narrow mobile) */}
+        {/* Delete Selected Clip */}
         <button
           onClick={deleteSelectedClip}
           disabled={!selectedClipId}
-          aria-label="Eliminar clip seleccionado"
-          className={`hidden min-[480px]:flex min-w-[36px] min-h-[36px] sm:min-w-0 sm:min-h-0 sm:p-1.5 items-center justify-center gap-1.5 sm:px-2.5 sm:py-1 text-xs rounded transition border shrink-0 ${
+          aria-label="Eliminar clip seleccionado (Supr)"
+          className={`${iconBtn} gap-1.5 px-2.5 py-1 text-xs rounded border ${
             selectedClipId
-              ? 'text-red-300 hover:text-red-200 bg-red-950/40 border-red-800/60 hover:bg-red-900/50'
-              : 'text-slate-600 border-transparent cursor-not-allowed'
+              ? 'text-rose-200 hover:text-white bg-rose-950/40 border-rose-800/60 hover:bg-rose-900/50'
+              : 'text-slate-600 border-transparent cursor-not-allowed opacity-40'
           }`}
           title="Eliminar clip seleccionado (Supr)"
         >
           <Trash2 size={14} />
-          <span className="hidden sm:inline">Borrar</span>
+          <span className="hidden sm:inline font-medium">Borrar</span>
         </button>
 
-        {/* Snapping Toggle */}
+        <div className="h-4 w-[1px] bg-dark-750 mx-1 shrink-0" />
+
+        {/* Snapping Magnet */}
         <button
           onClick={toggleSnap}
           aria-pressed={snapEnabled}
           aria-label="Imán: snapping magnético"
-          className={`${iconBtn} border ${
+          className={`${iconBtn} border gap-1.5 px-2 sm:px-2.5 text-xs ${
             snapEnabled
-              ? 'bg-blue-600/20 text-blue-400 border-blue-500/30'
-              : 'text-slate-500 border-transparent hover:bg-dark-800'
+              ? 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30'
+              : 'text-slate-400 border-dark-800 hover:text-slate-200 hover:bg-dark-800'
           }`}
           title="Imán / Snapping magnético"
         >
-          <Magnet size={16} />
+          <Magnet size={14} />
+          <span className="hidden sm:inline font-medium">Imán</span>
         </button>
       </div>
 
@@ -183,9 +151,9 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen 
                     addTrack('text');
                     setShowAddMenu(false);
                   }}
-                  className="w-full flex items-center gap-2 px-2.5 min-h-[44px] text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left"
+                  className="w-full flex items-center gap-2 px-2.5 min-h-[44px] text-xs text-slate-300 hover:text-white hover:bg-dark-750 rounded transition text-left focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                 >
-                  <Type size={15} className="text-purple-400" />
+                  <Type size={15} className="text-amber-400" />
                   <span>+ Pista Texto</span>
                 </button>
               </div>

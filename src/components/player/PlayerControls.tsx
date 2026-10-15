@@ -4,9 +4,7 @@ import {
   Pause, 
   SkipBack, 
   Volume2, 
-  VolumeX, 
-  Magnet, 
-  Scissors 
+  VolumeX 
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { masterClock } from '../../core/engine/MasterClock';
@@ -33,7 +31,7 @@ const TimecodeCurrentDisplay: React.FC<{ fps: number }> = ({ fps }) => {
   return (
     <div
       ref={spanRef}
-      className="font-mono text-sm font-semibold tracking-wider bg-dark-950 px-2.5 py-1 rounded border border-dark-800 text-blue-400"
+      className="font-mono text-sm font-semibold tracking-wider bg-dark-950 px-2.5 py-1 rounded border border-dark-800 text-cyan-400"
     >
       {formatTimecode(masterClock.getTime(), fps)}
     </div>
@@ -44,16 +42,6 @@ export const PlayerControls: React.FC = () => {
   const isPlaying = useProjectStore((s) => s.isPlaying);
   const fps = useProjectStore((s) => s.project.fps);
   const duration = useProjectStore((s) => s.project.duration);
-  const clips = useProjectStore((s) => s.project.clips);
-  const currentTime = useProjectStore((s) => s.currentTime);
-  const snapEnabled = useProjectStore((s) => s.snapEnabled);
-  const toggleSnap = useProjectStore((s) => s.toggleSnap);
-  const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
-
-  // Split only makes sense when the playhead is strictly inside a clip
-  const canSplit = clips.some(
-    (c) => currentTime > c.start + 0.05 && currentTime < c.start + c.duration - 0.05
-  );
 
   const [volume, setVolume] = useState<number>(1);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -104,34 +92,34 @@ export const PlayerControls: React.FC = () => {
       </div>
 
       {/* Center: Playback Buttons */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1 sm:gap-2">
         <button
           onClick={handleToStart}
-          className="p-1.5 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition"
+          className="min-w-[32px] min-h-[32px] p-1.5 text-slate-300 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           title="Ir al inicio (Home)"
-          aria-label="Ir al inicio"
+          aria-label="Ir al inicio de la línea de tiempo"
         >
           <SkipBack size={15} />
         </button>
 
         <button
           onClick={handleStepBack}
-          className="p-1.5 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition"
+          className="min-w-[32px] min-h-[32px] p-1.5 text-slate-300 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           title="Retroceder 1 cuadro (←)"
-          aria-label="Retroceder 1 cuadro"
+          aria-label="Retroceder 1 fotograma"
         >
           <span className="text-xs font-mono font-bold">-1f</span>
         </button>
 
         <button
           onClick={handleTogglePlay}
-          className={`p-2.5 rounded-full transition shadow-md active:scale-95 ${
+          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full transition shadow-md active:scale-95 flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
             isPlaying
               ? 'bg-amber-500 hover:bg-amber-400 text-dark-950'
-              : 'bg-blue-600 hover:bg-blue-500 text-white'
+              : 'bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-bold'
           }`}
           title={isPlaying ? 'Pausar (Espacio)' : 'Reproducir (Espacio)'}
-          aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+          aria-label={isPlaying ? 'Pausar reproducción' : 'Iniciar reproducción'}
           aria-pressed={isPlaying}
         >
           {isPlaying ? <Pause size={17} className="fill-current" /> : <Play size={17} className="fill-current translate-x-0.5" />}
@@ -139,62 +127,35 @@ export const PlayerControls: React.FC = () => {
 
         <button
           onClick={handleStepForward}
-          className="p-1.5 text-slate-400 hover:text-white hover:bg-dark-800 rounded transition"
+          className="min-w-[32px] min-h-[32px] p-1.5 text-slate-300 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           title="Avanzar 1 cuadro (→)"
-          aria-label="Avanzar 1 cuadro"
+          aria-label="Avanzar 1 fotograma"
         >
           <span className="text-xs font-mono font-bold">+1f</span>
         </button>
-
-        <button
-          onClick={splitAtPlayhead}
-          disabled={!canSplit}
-          className="p-1.5 ml-2 text-slate-400 hover:text-blue-400 hover:bg-dark-800 rounded transition disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-400 disabled:hover:bg-transparent"
-          title="Cortar clip en el cabezal (S)"
-          aria-label={canSplit ? 'Cortar clip en el cabezal' : 'Cortar clip en el cabezal (no disponible: coloca el cabezal dentro de un clip)'}
-        >
-          <Scissors size={15} />
-        </button>
       </div>
 
-      {/* Right: Snapping & Volume */}
-      <div className="flex items-center gap-3">
-        {/* Snapping Toggle */}
+      {/* Right: Master Volume */}
+      <div className="flex items-center gap-2">
         <button
-          onClick={toggleSnap}
-          aria-pressed={snapEnabled}
-          aria-label="Imán: snapping magnético"
-          className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs transition border ${
-            snapEnabled
-              ? 'bg-blue-600/20 border-blue-500/40 text-blue-400'
-              : 'bg-dark-950 border-dark-800 text-slate-500 hover:text-slate-300'
-          }`}
-          title="Imán / Snapping magnético"
+          onClick={handleToggleMute}
+          className="min-w-[32px] min-h-[32px] text-slate-300 hover:text-white p-1.5 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          title={isMuted ? 'Activar sonido' : 'Silenciar'}
+          aria-label={isMuted ? 'Activar sonido maestro' : 'Silenciar sonido maestro'}
         >
-          <Magnet size={13} />
-          <span className="hidden sm:inline">Imán</span>
+          {isMuted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
         </button>
-
-        {/* Master Volume */}
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={handleToggleMute}
-            className="text-slate-400 hover:text-white p-1 rounded transition"
-            title={isMuted ? 'Activar sonido' : 'Silenciar'}
-          >
-            {isMuted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
-          </button>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.05"
-            value={isMuted ? 0 : volume}
-            onChange={handleVolumeChange}
-            className="w-16 h-1 bg-dark-750 accent-blue-500 rounded cursor-pointer"
-            title="Volumen general"
-          />
-        </div>
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={isMuted ? 0 : volume}
+          onChange={handleVolumeChange}
+          aria-label="Volumen maestro"
+          className="w-16 sm:w-20 h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          title="Volumen general"
+        />
       </div>
     </div>
   );

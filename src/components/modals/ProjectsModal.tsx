@@ -314,6 +314,9 @@ export const ProjectsModal: React.FC = () => {
   return (
     <div
       data-testid="projects-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="projects-modal-title"
       className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 select-none animate-fadeIn"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -322,8 +325,8 @@ export const ProjectsModal: React.FC = () => {
       <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-4xl max-h-[90vh] shadow-2xl flex flex-col overflow-hidden relative">
         {/* Drag Overlay visual cue */}
         {isDragging && (
-          <div className="absolute inset-0 bg-cyan-950/80 border-2 border-dashed border-cyan-400 z-50 rounded-2xl flex flex-col items-center justify-center pointer-events-none p-6 text-center backdrop-blur-sm">
-            <Upload size={48} className="text-cyan-400 animate-bounce mb-3" />
+          <div className="absolute inset-0 bg-cyan-950/80 border-2 border-dashed border-cyan-400 z-50 rounded-2xl flex flex-col items-center justify-center pointer-events-none p-6 text-center backdrop-blur-sm animate-scaleUp">
+            <Upload size={48} className="text-cyan-400 mb-3" />
             <h3 className="text-lg font-bold text-white mb-1">Suelta tu archivo de proyecto</h3>
             <p className="text-xs text-cyan-200">Admite archivos .hydra y .json de HydraCut</p>
           </div>
@@ -337,7 +340,7 @@ export const ProjectsModal: React.FC = () => {
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-base font-bold text-white">Mis Proyectos</h2>
+                <h2 id="projects-modal-title" className="text-base font-bold text-white">Mis Proyectos</h2>
                 <span className="px-2 py-0.5 rounded-full bg-dark-800 text-slate-300 text-xs font-semibold">
                   {projects.length}
                 </span>
@@ -350,8 +353,9 @@ export const ProjectsModal: React.FC = () => {
 
           <button
             onClick={() => setProjectsModalOpen(false)}
-            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-dark-800 active:scale-95 transition"
+            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-dark-800 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             title="Cerrar modal (Esc)"
+            aria-label="Cerrar ventana de proyectos"
           >
             <X size={18} />
           </button>

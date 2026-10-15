@@ -23,10 +23,10 @@ export const ClipInspector: React.FC = () => {
 
   if (!clip) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-6 text-center text-slate-500 select-none">
-        <Sliders size={32} className="mb-2 text-slate-600 stroke-1" />
-        <p className="text-xs font-medium text-slate-400">Ningún clip seleccionado</p>
-        <p className="text-[11px] text-slate-600 mt-1">
+      <div className="flex flex-col items-center justify-center h-full p-6 text-center text-slate-400 select-none">
+        <Sliders size={32} className="mb-2 text-slate-500 stroke-1" />
+        <p className="text-xs font-semibold text-slate-200">Ningún clip seleccionado</p>
+        <p className="text-[11px] text-slate-400 mt-1">
           Haz clic sobre un clip en el timeline para ajustar volumen, opacidad, tamaño o texto.
         </p>
       </div>
@@ -41,7 +41,7 @@ export const ClipInspector: React.FC = () => {
     { label: 'Inter (Sans-serif)', value: 'Inter, sans-serif' },
     { label: 'Montserrat (Display Bold)', value: 'Montserrat, sans-serif' },
     { label: 'Bebas Neue (Condensed)', value: '"Bebas Neue", sans-serif' },
-    { label: 'Impact (Grotesk)', value: 'Impact, sans-serif' },
+    { label: 'Oswald (Condensed Display)', value: 'Oswald, sans-serif' },
     { label: 'JetBrains Mono', value: 'JetBrains Mono, monospace' },
     { label: 'Georgia (Serif)', value: 'Georgia, serif' },
   ];
@@ -305,8 +305,9 @@ export const ClipInspector: React.FC = () => {
               max="2.5"
               step="0.05"
               value={clip.scale ?? 1}
+              aria-label="Escala del clip"
               onChange={(e) => updateClip(clip.id, { scale: parseFloat(e.target.value) })}
-              className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+              className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             />
           </div>
 
@@ -322,8 +323,9 @@ export const ClipInspector: React.FC = () => {
               max="1"
               step="0.05"
               value={clip.opacity ?? 1}
+              aria-label="Opacidad del clip"
               onChange={(e) => updateClip(clip.id, { opacity: parseFloat(e.target.value) })}
-              className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+              className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             />
           </div>
 
@@ -340,8 +342,9 @@ export const ClipInspector: React.FC = () => {
                 max="500"
                 step="5"
                 value={clip.positionX || 0}
+                aria-label="Posición horizontal X"
                 onChange={(e) => updateClip(clip.id, { positionX: parseInt(e.target.value) })}
-                className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+                className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
               />
             </div>
             <div>
@@ -355,8 +358,9 @@ export const ClipInspector: React.FC = () => {
                 max="500"
                 step="5"
                 value={clip.positionY || 0}
+                aria-label="Posición vertical Y"
                 onChange={(e) => updateClip(clip.id, { positionY: parseInt(e.target.value) })}
-                className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+                className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
               />
             </div>
           </div>
@@ -364,7 +368,7 @@ export const ClipInspector: React.FC = () => {
           {/* Reset Transform Button */}
           <button
             onClick={() => updateClip(clip.id, { scale: 1, opacity: 1, positionX: 0, positionY: 0 })}
-            className="w-full text-center py-1 text-[11px] text-slate-400 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition"
+            className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             Restablecer Transformación
           </button>
@@ -392,13 +396,15 @@ export const ClipInspector: React.FC = () => {
                 max="2"
                 step="0.05"
                 value={clip.volume ?? 1}
+                aria-label="Volumen del clip"
                 onChange={(e) => updateClip(clip.id, { volume: parseFloat(e.target.value) })}
-                className="flex-1 h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer"
+                className="flex-1 h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
               />
               <button
                 onClick={() => updateClip(clip.id, { muted: !clip.muted })}
-                className={`p-1.5 rounded transition ${
-                  clip.muted ? 'bg-red-900/30 text-red-400' : 'bg-dark-800 text-slate-300 hover:text-white'
+                aria-label={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
+                className={`p-1.5 rounded transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none ${
+                  clip.muted ? 'bg-rose-950/40 text-rose-300 border border-rose-800/50' : 'bg-dark-800 text-slate-300 hover:text-white'
                 }`}
                 title={clip.muted ? 'Clip silenciado' : 'Silenciar clip'}
               >
@@ -511,6 +517,7 @@ export const ClipInspector: React.FC = () => {
                 min="0.1"
                 max={Math.min(5, Math.max(0.2, clip.duration / 2))}
                 step="0.1"
+                aria-label="Duración del fundido de entrada"
                 disabled={!clip.transition?.fadeInType || clip.transition.fadeInType === 'none'}
                 value={clip.transition?.fadeInDuration || 0.8}
                 onChange={(e) =>
@@ -523,7 +530,7 @@ export const ClipInspector: React.FC = () => {
                     },
                   })
                 }
-                className="w-full h-1.5 bg-dark-750 accent-amber-500 rounded cursor-pointer mt-2 disabled:opacity-40"
+                className="w-full h-1.5 bg-dark-750 accent-amber-500 rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
               />
             </div>
           </div>
@@ -555,7 +562,7 @@ export const ClipInspector: React.FC = () => {
                     },
                   });
                 }}
-                className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none"
+                className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
               >
                 <option value="none">Ninguno</option>
                 <option value="fade-black">Fundido a Negro</option>
@@ -572,6 +579,7 @@ export const ClipInspector: React.FC = () => {
                 min="0.1"
                 max={Math.min(5, Math.max(0.2, clip.duration / 2))}
                 step="0.1"
+                aria-label="Duración del fundido de salida"
                 disabled={!clip.transition?.fadeOutType || clip.transition.fadeOutType === 'none'}
                 value={clip.transition?.fadeOutDuration || 0.8}
                 onChange={(e) =>
@@ -584,7 +592,7 @@ export const ClipInspector: React.FC = () => {
                     },
                   })
                 }
-                className="w-full h-1.5 bg-dark-750 accent-amber-500 rounded cursor-pointer mt-2 disabled:opacity-40"
+                className="w-full h-1.5 bg-dark-750 accent-amber-500 rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
               />
             </div>
           </div>

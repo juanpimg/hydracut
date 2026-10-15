@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, 
   Download, 
-  Sparkles, 
+  Film, 
   Cpu, 
   CheckCircle, 
   AlertCircle, 
@@ -174,8 +174,8 @@ export const ExportModal: React.FC = () => {
         {/* Modal Header */}
         <div className="px-5 py-4 border-b border-dark-800 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
-              <Sparkles size={18} />
+            <div className="p-2 bg-cyan-500/10 text-cyan-400 rounded-lg border border-cyan-500/30">
+              <Film size={18} />
             </div>
             <div>
               <h3 className="text-sm font-bold text-white">Exportar Video MP4</h3>
@@ -187,7 +187,8 @@ export const ExportModal: React.FC = () => {
               if (progressState.state === 'rendering') handleCancelExport();
               setExportModalOpen(false);
             }}
-            className="text-slate-400 hover:text-white p-1 rounded-lg transition"
+            aria-label="Cerrar modal de exportación"
+            className="text-slate-400 hover:text-white p-1 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             <X size={18} />
           </button>
@@ -272,7 +273,7 @@ export const ExportModal: React.FC = () => {
               <div>
                 <div className="flex justify-between text-xs font-semibold text-slate-300 mb-1.5">
                   <span>Tasa de Bits (Calidad):</span>
-                  <span className="font-mono text-blue-400">{bitrateMbps} Mbps</span>
+                  <span className="font-mono text-cyan-400">{bitrateMbps} Mbps</span>
                 </div>
                 <input
                   type="range"
@@ -280,8 +281,9 @@ export const ExportModal: React.FC = () => {
                   max="20"
                   step="1"
                   value={bitrateMbps}
+                  aria-label="Tasa de bits en megabits por segundo"
                   onChange={(e) => setBitrateMbps(parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+                  className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                 />
               </div>
 
@@ -316,14 +318,21 @@ export const ExportModal: React.FC = () => {
                   {progressState.state === 'completed' && '¡Exportación exitosa!'}
                   {progressState.state === 'error' && 'Error al exportar'}
                 </span>
-                <span className="font-mono font-bold text-blue-400">{progressState.progress}%</span>
+                <span className="font-mono font-bold text-cyan-400">{progressState.progress}%</span>
               </div>
 
               {/* Progress bar */}
-              <div className="w-full h-2.5 bg-dark-950 rounded-full overflow-hidden border border-dark-800 p-0.5">
+              <div
+                role="progressbar"
+                aria-label="Progreso de exportación de video"
+                aria-valuenow={progressState.progress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                className="w-full h-2.5 bg-dark-950 rounded-full overflow-hidden border border-dark-800 p-0.5"
+              >
                 <div
                   style={{ width: `${progressState.progress}%` }}
-                  className="h-full bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full transition-all duration-200"
+                  className="h-full bg-cyan-400 rounded-full transition-all duration-200"
                 />
               </div>
 
