@@ -3,6 +3,7 @@ import { AspectRatio, Clip, MediaItem, Project, Track, TrackType } from '../type
 import { autosaveProject } from '../core/storage/projectStorage';
 import { calculateSnapping } from '../core/utils/math';
 import { mediaSourcePool } from '../core/engine/MediaSourcePool';
+import { masterClock } from '../core/engine/MasterClock';
 
 export interface HistoryState {
   tracks: Track[];
@@ -715,22 +716,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   splitAtPlayhead: () => {
-    const { project, currentTime, selectedClipId } = get();
+    const { project, selectedClipId } = get();
+    // Read masterClock.getTime() directly for microsecond accuracy, falling back to state.currentTime if clock is 0
+    const effectiveTime = masterClock.getTime() || get().currentTime;
+
     // 1. If a clip is selected and playhead is inside it, split that clip
     if (selectedClipId) {
       const sel = project.clips.find((c) => c.id === selectedClipId);
-      if (sel && currentTime > sel.start + 0.05 && currentTime < sel.start + sel.duration - 0.05) {
-        get().splitClip(selectedClipId, currentTime);
+      if (sel && effectiveTime > sel.start + 0.05 && effectiveTime < sel.start + sel.duration - 0.05) {
+        get().splitClip(selectedClipId, effectiveTime);
         return;
       }
     }
 
     // 2. Otherwise split the first unmuted/unlocked clip under playhead
     const targetClip = project.clips.find(
-      (c) => currentTime > c.start + 0.05 && currentTime < c.start + c.duration - 0.05
+      (c) => effectiveTime > c.start + 0.05 && effectiveTime < c.start + c.duration - 0.05
     );
     if (targetClip) {
-      get().splitClip(targetClip.id, currentTime);
+      get().splitClip(targetClip.id, effectiveTime);
     }
   },
 

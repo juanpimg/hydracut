@@ -42,13 +42,6 @@ export class MasterClock {
         this.audioCtx = null;
       }
     }
-    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      try {
-        this.audioCtx.resume().catch(() => {});
-      } catch {
-        // ignore resume errors
-      }
-    }
     return this.audioCtx;
   }
 
@@ -56,25 +49,51 @@ export class MasterClock {
     this.duration = Math.max(1, duration);
   }
 
+  /**
+   * Pure, side-effect-free calculation of current timeline time.
+   * Uses dual-clock synchronization: tracks AudioContext.currentTime when healthy,
+   * but falls back to performance.now() if AudioContext is null, suspended,
+   * or stalled/throttled in mobile/background.
+   */
+  private calculateCurrentTime(): number {
+    if (!this.isPlaying) {
+      return this.timelineTime;
+    }
+
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const perfElapsed = (now - this.perfStart) / 1000;
+
+    let elapsed: number;
+    if (this.audioCtx && this.audioCtx.state === 'running') {
+      const audioElapsed = this.audioCtx.currentTime - this.audioCtxStart;
+      // If audio clock has stalled (e.g. mobile energy-saving, throttled audio, or mock),
+      // or if drift between wall clock and audio clock exceeds 250ms, fallback to performance.now
+      if (audioElapsed <= 0 && perfElapsed > 0.05) {
+        elapsed = perfElapsed;
+      } else if (Math.abs(perfElapsed - audioElapsed) > 0.25) {
+        elapsed = perfElapsed;
+      } else {
+        elapsed = audioElapsed;
+      }
+    } else {
+      elapsed = perfElapsed;
+    }
+
+    if (elapsed < 0) elapsed = 0;
+    const t = this.timelineStart + elapsed;
+    return Math.max(0, Math.min(t, this.duration));
+  }
+
   public getTime(): number {
     if (!this.isPlaying) {
       return this.timelineTime;
     }
-    let elapsed: number;
-    if (this.audioCtx && this.audioCtx.state === 'running') {
-      elapsed = this.audioCtx.currentTime - this.audioCtxStart;
-    } else {
-      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      elapsed = (now - this.perfStart) / 1000;
-    }
-    if (elapsed < 0) elapsed = 0;
-    const t = this.timelineStart + elapsed;
-    if (t >= this.duration) {
-      this.seek(this.duration);
+    const current = this.calculateCurrentTime();
+    if (current >= this.duration) {
       this.pause();
       return this.duration;
     }
-    return t;
+    return current;
   }
 
   public getIsPlaying(): boolean {
@@ -100,7 +119,7 @@ export class MasterClock {
       ctx.resume().then(() => {
         if (this.isPlaying && this.audioCtx) {
           this.audioCtxStart = this.audioCtx.currentTime;
-          this.timelineStart = this.getTime();
+          this.timelineStart = this.calculateCurrentTime();
           this.perfStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
         }
       }).catch(() => {});
@@ -112,8 +131,9 @@ export class MasterClock {
 
   public pause(): void {
     if (!this.isPlaying) return;
-    this.timelineTime = this.getTime();
+    const finalTime = this.calculateCurrentTime();
     this.isPlaying = false;
+    this.timelineTime = finalTime;
 
     if (this.animFrameId !== null && typeof cancelAnimationFrame !== 'undefined') {
       cancelAnimationFrame(this.animFrameId);

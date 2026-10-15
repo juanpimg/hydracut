@@ -1,5 +1,10 @@
 import { Clip, MediaItem } from '../../types/project';
 
+interface VideoSyncState {
+  isCorrecting: boolean;
+  lastRateChangeTime: number;
+}
+
 /**
  * Manages reusable HTMLVideoElement and HTMLImageElement instances
  * for preview compositing and playback sync with zero memory leaks
@@ -11,11 +16,21 @@ export class MediaSourcePool {
   private audioElements: Map<string, HTMLAudioElement> = new Map();
   private startingPlayMap: Set<HTMLVideoElement> = new Set();
   private lastHardSeekTimeMap: Map<HTMLVideoElement, number> = new Map();
+  private videoSyncStateMap: WeakMap<HTMLVideoElement, VideoSyncState> = new WeakMap();
   private lastFrameMap: Map<string, HTMLCanvasElement | OffscreenCanvas> = new Map();
   private lastStoredFrameTimeMap: Map<string, number> = new Map();
   private lastPrewarmTime = 0;
   private frameReadyListeners: Set<() => void> = new Set();
   private frameReadyScheduled = false;
+
+  private getSyncState(video: HTMLVideoElement): VideoSyncState {
+    let state = this.videoSyncStateMap.get(video);
+    if (!state) {
+      state = { isCorrecting: false, lastRateChangeTime: 0 };
+      this.videoSyncStateMap.set(video, state);
+    }
+    return state;
+  }
 
   public getVideoElement(media: MediaItem, clipId?: string, sourceStart?: number): HTMLVideoElement {
     const key = clipId ? `${media.id}_${clipId}` : media.id;
@@ -199,8 +214,10 @@ export class MediaSourcePool {
 
   /**
    * Syncs video element time with source offset smoothly without stuttering or seek loops.
-   * Tolerates minor jitter (< 120ms) naturally without altering playback rate.
-   * Micro-adjusts rate smoothly for moderate drift (120ms - 1.5s) without frame-by-frame rate thrashing.
+   * Tolerates minor jitter (< 200ms) naturally without altering playback rate.
+   * Employs asymmetric hysteresis (enter at 200ms, exit at 80ms) and a 300ms rate change cooldown
+   * to eliminate hardware decoder micro-stutters and rate thrashing.
+   * Guards against active seeks and pending play startup.
    * Only hard-seeks for massive desync (> 1.5s) with a 1.5s cooldown to prevent seek loops.
    */
   public syncVideoTime(
@@ -242,46 +259,86 @@ export class MediaSourcePool {
         return;
       }
 
-      // If playback startup is in progress, allow it to stabilize
-      if (this.startingPlayMap.has(video)) {
+      // If playback startup is in progress or video is seeking, guard against drift evaluation
+      if (this.startingPlayMap.has(video) || video.seeking) {
         return;
       }
 
-      // Smooth drift correction during active playback:
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
       const drift = video.currentTime - targetTime;
       const absDrift = Math.abs(drift);
+      const syncState = this.getSyncState(video);
 
-      // Zone 1: In-sync tolerance deadband (< 120ms) - let video play naturally at 1.0x
-      if (absDrift <= 0.12) {
-        if (Math.abs(video.playbackRate - speed) > 0.01) {
-          video.playbackRate = speed;
+      // Severe drift (> 1.5s): Forced seek with cooldown to prevent stutter loops
+      if (absDrift > 1.50) {
+        const lastSeek = this.lastHardSeekTimeMap.has(video) ? this.lastHardSeekTimeMap.get(video)! : -Infinity;
+        if (now - lastSeek > 1500) {
+          this.lastHardSeekTimeMap.set(video, now);
+          video.currentTime = targetTime;
+          syncState.isCorrecting = false;
+          syncState.lastRateChangeTime = now;
         }
-      } else if (absDrift <= 0.50) {
-        // Zone 2: Minor drift (120ms - 500ms) - gentle 6% micro-adjustment
-        const targetRate = drift < 0 ? speed * 1.06 : Math.max(0.25, speed * 0.94);
-        if (Math.abs(video.playbackRate - targetRate) > 0.01) {
-          video.playbackRate = targetRate;
-        }
-      } else if (absDrift <= 1.50) {
-        // Zone 3: Moderate drift (500ms - 1.5s) - 20% rate adjustment
-        const targetRate = drift < 0 ? speed * 1.20 : Math.max(0.25, speed * 0.80);
-        if (Math.abs(video.playbackRate - targetRate) > 0.01) {
-          video.playbackRate = targetRate;
-        }
-      } else {
-        // Zone 4: Severe drift (> 1.5s) - forced seek with cooldown to prevent stutter loops
-        if (!video.seeking) {
-          const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-          const lastSeek = this.lastHardSeekTimeMap.get(video) || 0;
-          if (now - lastSeek > 1500) {
-            this.lastHardSeekTimeMap.set(video, now);
-            video.currentTime = targetTime;
+        return;
+      }
+
+      // Asymmetric Hysteresis Deadband State Machine:
+      // DEADBAND_ENTER = 200ms tolerance before engaging rate correction
+      // DEADBAND_EXIT = 80ms release threshold to return to exact native 1.0x speed
+      // RATE_CHANGE_COOLDOWN = 300ms minimum interval between playbackRate mutations
+      const DEADBAND_ENTER = 0.20;
+      const DEADBAND_EXIT = 0.08;
+      const RATE_CHANGE_COOLDOWN = 300;
+
+      if (!syncState.isCorrecting) {
+        if (absDrift <= DEADBAND_ENTER) {
+          // In native tolerance deadband: maintain exact native speed
+          if (Math.abs(video.playbackRate - speed) > 0.01) {
+            if (now - syncState.lastRateChangeTime >= RATE_CHANGE_COOLDOWN) {
+              video.playbackRate = speed;
+              syncState.lastRateChangeTime = now;
+            }
           }
+          return;
+        }
+        // Drift exceeded enter threshold: engage correction mode
+        syncState.isCorrecting = true;
+      } else {
+        // In correction mode: check if drift has reduced below exit threshold
+        if (absDrift <= DEADBAND_EXIT) {
+          syncState.isCorrecting = false;
+          if (Math.abs(video.playbackRate - speed) > 0.01) {
+            if (now - syncState.lastRateChangeTime >= RATE_CHANGE_COOLDOWN) {
+              video.playbackRate = speed;
+              syncState.lastRateChangeTime = now;
+            }
+          }
+          return;
+        }
+      }
+
+      // Determine target rate with micro-adjustment (Zone 2) vs moderate adjustment (Zone 3)
+      let targetRate: number;
+      if (absDrift <= 0.60) {
+        // Zone 2: Minor drift (gentle 6% micro-adjustment)
+        targetRate = drift < 0 ? speed * 1.06 : Math.max(0.25, speed * 0.94);
+      } else {
+        // Zone 3: Moderate drift (20% adjustment)
+        targetRate = drift < 0 ? speed * 1.20 : Math.max(0.25, speed * 0.80);
+      }
+
+      // Throttle rate mutations to avoid decoder pipeline resets
+      if (Math.abs(video.playbackRate - targetRate) > 0.01) {
+        if (now - syncState.lastRateChangeTime >= RATE_CHANGE_COOLDOWN) {
+          video.playbackRate = targetRate;
+          syncState.lastRateChangeTime = now;
         }
       }
     } else {
       // Paused / Scrubbing mode
       this.startingPlayMap.delete(video);
+      const syncState = this.getSyncState(video);
+      syncState.isCorrecting = false;
+
       if (!video.paused) {
         video.pause();
       }
@@ -344,6 +401,10 @@ export class MediaSourcePool {
     this.startingPlayMap.clear();
     for (const v of this.videoElements.values()) {
       if (!v.paused) v.pause();
+      const s = this.videoSyncStateMap.get(v);
+      if (s) {
+        s.isCorrecting = false;
+      }
     }
     for (const a of this.audioElements.values()) {
       if (!a.paused) a.pause();
@@ -358,6 +419,7 @@ export class MediaSourcePool {
     for (const [key, v] of Array.from(this.videoElements.entries())) {
       if (key.endsWith(suffix) || key === clipId) {
         this.startingPlayMap.delete(v);
+        this.videoSyncStateMap.delete(v);
         v.pause();
         v.removeAttribute('src');
         v.load();
@@ -388,6 +450,7 @@ export class MediaSourcePool {
     for (const [key, v] of Array.from(this.videoElements.entries())) {
       if (key === mediaId || key.startsWith(prefix)) {
         this.startingPlayMap.delete(v);
+        this.videoSyncStateMap.delete(v);
         v.pause();
         v.removeAttribute('src');
         v.load();
@@ -414,6 +477,7 @@ export class MediaSourcePool {
     this.startingPlayMap.clear();
     this.lastFrameMap.clear();
     for (const v of this.videoElements.values()) {
+      this.videoSyncStateMap.delete(v);
       v.pause();
       v.removeAttribute('src');
       v.load();

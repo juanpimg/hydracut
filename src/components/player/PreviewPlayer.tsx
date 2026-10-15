@@ -35,14 +35,11 @@ export const PreviewPlayer: React.FC = () => {
 
   // Sync MasterClock time with store & render frame
   useEffect(() => {
-    let lastStoreSyncTime = 0;
     const unsubTime = masterClock.subscribeTime((t) => {
       const isCurrentlyPlaying = masterClock.getIsPlaying();
 
-      // Throttle store state sync during continuous playback to avoid choking the main thread
-      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      if (!isCurrentlyPlaying || now - lastStoreSyncTime >= 100) {
-        lastStoreSyncTime = now;
+      // Only sync store time when paused or seeking, never during continuous playback
+      if (!isCurrentlyPlaying) {
         useProjectStore.getState().setCurrentTime(t);
       }
 
@@ -100,6 +97,7 @@ export const PreviewPlayer: React.FC = () => {
       if (masterClock.getIsPlaying()) {
         masterClock.pause();
       }
+      useProjectStore.getState().setCurrentTime(masterClock.getTime());
       audioEngine.stopAll();
     };
   }, []);

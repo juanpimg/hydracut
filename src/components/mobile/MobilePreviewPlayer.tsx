@@ -70,14 +70,11 @@ export const MobilePreviewPlayer: React.FC = () => {
 
   // Sync clock time and render
   useEffect(() => {
-    let lastStoreSyncTime = 0;
     const unsubTime = masterClock.subscribeTime((t) => {
       const isCurrentlyPlaying = masterClock.getIsPlaying();
 
-      // Throttle store sync during playback
-      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      if (!isCurrentlyPlaying || now - lastStoreSyncTime >= 100) {
-        lastStoreSyncTime = now;
+      // Only sync store time when paused or seeking, never during continuous playback
+      if (!isCurrentlyPlaying) {
         useProjectStore.getState().setCurrentTime(t);
       }
 
@@ -135,6 +132,7 @@ export const MobilePreviewPlayer: React.FC = () => {
       if (masterClock.getIsPlaying()) {
         masterClock.pause();
       }
+      useProjectStore.getState().setCurrentTime(masterClock.getTime());
       audioEngine.stopAll();
     };
   }, []);

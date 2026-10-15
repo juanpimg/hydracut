@@ -78,6 +78,23 @@ export class Compositor {
   private lastCompositedCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
   private lastCompositedTime = 0;
 
+  // Reused collections (zero per-frame heap allocations)
+  private mediaMap: Map<string, MediaItem> = new Map();
+  private trackMap: Map<string, Track> = new Map();
+  private activeVideoKeys: Set<string> = new Set();
+  private prewarmKeys: Set<string> = new Set();
+
+  // Dirty-checking state
+  private lastRenderedTime = -1;
+  private lastRenderedCanvasRef: HTMLCanvasElement | OffscreenCanvas | null = null;
+  private lastRenderedWidth = 0;
+  private lastRenderedHeight = 0;
+  private lastRenderedTracksRef: Track[] | null = null;
+  private lastRenderedClipsRef: Clip[] | null = null;
+  private lastWasPlaying = false;
+  private isCanvasBlankBlack = false;
+  private lastHadUnreadyVideo = false;
+
   /**
    * Renders a frame at timeline time `time` onto the target canvas.
    */
@@ -89,54 +106,69 @@ export class Compositor {
     const width = canvas.width;
     const height = canvas.height;
 
-    // Map media items by id for fast lookup
-    const mediaMap = new Map<string, MediaItem>();
-    for (const m of mediaPool) {
-      mediaMap.set(m.id, m);
+    // Populate persistent lookup maps without allocating new heap instances
+    this.mediaMap.clear();
+    for (let i = 0; i < mediaPool.length; i++) {
+      const m = mediaPool[i];
+      this.mediaMap.set(m.id, m);
     }
 
-    // Map tracks by id
-    const trackMap = new Map<string, Track>();
-    for (const t of tracks) {
-      trackMap.set(t.id, t);
+    this.trackMap.clear();
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      this.trackMap.set(t.id, t);
     }
 
-    // Separate tracks by type and sort back-to-front (painters algorithm)
-    // Video tracks in UI are listed top-to-bottom (V2 above V1).
-    // Base video (V1) is rendered first (background), overlay video (V2) on top.
-    const videoTracks = tracks.filter((t) => t.type === 'video');
-    const textTracks = tracks.filter((t) => t.type === 'text');
+    this.activeVideoKeys.clear();
 
-    const sortedVideoTracks = [...videoTracks].reverse();
-    const sortedTextTracks = [...textTracks].reverse();
-
-    // Visual rendering sequence: base video -> overlay video -> text overlays
-    const renderOrder = [...sortedVideoTracks, ...sortedTextTracks];
-    const activeVideoKeys = new Set<string>();
+    // Single-pass visual readiness & active clip pre-check
     let hasActiveVisualClip = false;
-    let hasDrawnVisualFrame = false;
-
-    // Pre-check active visual clips and video decoder readiness
+    let hasActiveTextClip = false;
     let hasUnreadyVideo = false;
-    for (const track of renderOrder) {
-      if (!track.isVisible) continue;
-      const tClips = clips.filter(
-        (c) => c.trackId === track.id && time >= c.start && time < c.start + c.duration && c.opacity > 0
-      );
-      for (const clip of tClips) {
-        if (clip.type === 'video' || clip.type === 'image') {
-          hasActiveVisualClip = true;
-          if (clip.type === 'video') {
-            const media = mediaMap.get(clip.mediaId);
-            if (media) {
-              const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
-              if (videoEl.readyState < 2 && !mediaSourcePool.getLastFrame(clip.id) && !mediaSourcePool.getLastFrame(media.id)) {
-                hasUnreadyVideo = true;
-              }
+
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i];
+      if (clip.opacity <= 0) continue;
+      if (time < clip.start || time >= clip.start + clip.duration) continue;
+
+      const track = this.trackMap.get(clip.trackId);
+      if (!track || !track.isVisible) continue;
+
+      if (clip.type === 'video' || clip.type === 'image') {
+        hasActiveVisualClip = true;
+        if (clip.type === 'video') {
+          const media = this.mediaMap.get(clip.mediaId);
+          if (media) {
+            const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
+            if (videoEl.readyState < 2 && !mediaSourcePool.getLastFrame(clip.id) && !mediaSourcePool.getLastFrame(media.id)) {
+              hasUnreadyVideo = true;
             }
           }
         }
+      } else if (clip.type === 'text') {
+        hasActiveTextClip = true;
       }
+    }
+
+    // Dirty check: skip rendering if paused and frame parameters are identical
+    const canvasUnchanged = canvas === this.lastRenderedCanvasRef;
+    const sizeUnchanged = width === this.lastRenderedWidth && height === this.lastRenderedHeight;
+    const tracksUnchanged = tracks === this.lastRenderedTracksRef;
+    const clipsUnchanged = clips === this.lastRenderedClipsRef;
+    const isSameTime = Math.abs(time - this.lastRenderedTime) < 0.0001;
+
+    if (
+      !isPlaying &&
+      !this.lastWasPlaying &&
+      canvasUnchanged &&
+      sizeUnchanged &&
+      tracksUnchanged &&
+      clipsUnchanged &&
+      isSameTime &&
+      !this.lastHadUnreadyVideo &&
+      !hasUnreadyVideo
+    ) {
+      return;
     }
 
     // Canvas Background Management:
@@ -150,72 +182,115 @@ export class Compositor {
         ctx.fillStyle = '#0a0a0c';
         ctx.fillRect(0, 0, width, height);
       }
-    } else if (!hasActiveVisualClip) {
-      // Empty gap on timeline: black canvas
-      ctx.fillStyle = '#0a0a0c';
-      ctx.fillRect(0, 0, width, height);
+      this.isCanvasBlankBlack = false;
+    } else if (!hasActiveVisualClip && !hasActiveTextClip) {
+      // In empty gap: only fillRect if not already blank black or dimensions changed
+      if (!this.isCanvasBlankBlack || !sizeUnchanged || !canvasUnchanged) {
+        ctx.fillStyle = '#0a0a0c';
+        ctx.fillRect(0, 0, width, height);
+        this.isCanvasBlankBlack = true;
+      }
       this.lastCompositedCanvas = null;
     } else {
       // Normal clear
       ctx.fillStyle = '#0a0a0c';
       ctx.fillRect(0, 0, width, height);
+      this.isCanvasBlankBlack = false;
     }
 
-    for (const track of renderOrder) {
-      if (!track.isVisible) continue;
+    let hasDrawnVisualFrame = false;
 
-      // Find active clips in this track at time `time`
-      const activeClips = clips.filter(
-        (c) => c.trackId === track.id && time >= c.start && time < c.start + c.duration
-      );
+    // Pass 1: Video tracks rendered bottom-to-top (painters algorithm: V1 background first, V2 overlay on top)
+    for (let i = tracks.length - 1; i >= 0; i--) {
+      const track = tracks[i];
+      if (track.type !== 'video' || !track.isVisible) continue;
 
-      for (const clip of activeClips) {
+      for (let j = 0; j < clips.length; j++) {
+        const clip = clips[j];
+        if (clip.trackId !== track.id) continue;
+        if (time < clip.start || time >= clip.start + clip.duration) continue;
         if (clip.opacity <= 0) continue;
 
         if (clip.type === 'video' || clip.type === 'image') {
-          const media = mediaMap.get(clip.mediaId);
+          const media = this.mediaMap.get(clip.mediaId);
           if (!media) continue;
 
           if (clip.type === 'video') {
             const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
-            activeVideoKeys.add(`${media.id}_${clip.id}`);
+            this.activeVideoKeys.add(`${media.id}_${clip.id}`);
             const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
             const sourceOffset = clip.sourceStart + (time - clip.start) * speed;
             const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
             const clampedOffset = Math.max(0, Math.min(maxSourceTime, sourceOffset));
             mediaSourcePool.syncVideoTime(videoEl, clampedOffset, isPlaying, speed);
 
-            const drawn = this.drawMediaToCanvas(ctx, videoEl, clip, width, height, media.width || 1280, media.height || 720, time, media, isPlaying);
+            const drawn = this.drawMediaToCanvas(
+              ctx,
+              videoEl,
+              clip,
+              width,
+              height,
+              media.width || 1280,
+              media.height || 720,
+              time,
+              media,
+              isPlaying
+            );
             if (drawn !== false) {
               hasDrawnVisualFrame = true;
             }
           } else if (clip.type === 'image') {
             const imgEl = mediaSourcePool.getImageElement(media, clip.id);
-            const drawn = this.drawMediaToCanvas(ctx, imgEl, clip, width, height, media.width || 1280, media.height || 720, time, media, isPlaying);
+            const drawn = this.drawMediaToCanvas(
+              ctx,
+              imgEl,
+              clip,
+              width,
+              height,
+              media.width || 1280,
+              media.height || 720,
+              time,
+              media,
+              isPlaying
+            );
             if (drawn !== false) {
               hasDrawnVisualFrame = true;
             }
           }
-        } else if (clip.type === 'text') {
+        }
+      }
+    }
+
+    // Pass 2: Text tracks rendered in reverse order (T1, T2 overlays on top of video)
+    for (let i = tracks.length - 1; i >= 0; i--) {
+      const track = tracks[i];
+      if (track.type !== 'text' || !track.isVisible) continue;
+
+      for (let j = 0; j < clips.length; j++) {
+        const clip = clips[j];
+        if (clip.trackId !== track.id) continue;
+        if (time < clip.start || time >= clip.start + clip.duration) continue;
+        if (clip.opacity <= 0) continue;
+
+        if (clip.type === 'text') {
           this.drawTextToCanvas(ctx, clip, width, height, time);
         }
       }
     }
 
+    // Pause inactive video elements and prewarm upcoming ones
     if (isPlaying) {
-      const prewarmKeys = new Set<string>();
-      for (const c of clips) {
+      this.prewarmKeys.clear();
+      for (let i = 0; i < clips.length; i++) {
+        const c = clips[i];
         if (c.type === 'video' && c.start > time && c.start <= time + 2.5) {
-          prewarmKeys.add(`${c.mediaId}_${c.id}`);
+          this.prewarmKeys.add(`${c.mediaId}_${c.id}`);
         }
       }
-      mediaSourcePool.pauseInactiveVideos(activeVideoKeys, prewarmKeys);
+      mediaSourcePool.pauseInactiveVideos(this.activeVideoKeys, this.prewarmKeys);
     }
 
-    // Anti-flicker protection:
-    // If an active visual clip was scheduled to be visible, but produced no frames yet
-    // (e.g. temporary asynchronous seek/decode latency across clip cuts or scrubbing), bridge with the last composited frame
-    // instead of flashing black #0a0a0c!
+    // Anti-flicker protection and full-buffer snapshot throttling (500ms during continuous playback)
     if (hasActiveVisualClip && !hasDrawnVisualFrame && this.lastCompositedCanvas) {
       try {
         ctx.drawImage(this.lastCompositedCanvas, 0, 0, width, height);
@@ -224,8 +299,10 @@ export class Compositor {
       }
     } else if (hasDrawnVisualFrame) {
       const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      // Throttle copying to lastCompositedCanvas during continuous playback to avoid 60fps duplicate canvas blitting
-      if (!isPlaying || now - this.lastCompositedTime >= 100) {
+      // Throttle copying to lastCompositedCanvas to at most 500ms intervals during continuous playback
+      // to eliminate 8.3MB full-canvas texture copying at 60 FPS, while taking immediate snapshots when paused.
+      const throttleInterval = isPlaying ? 500 : 0;
+      if (now - this.lastCompositedTime >= throttleInterval) {
         this.lastCompositedTime = now;
         if (!this.lastCompositedCanvas) {
           if (typeof OffscreenCanvas !== 'undefined') {
@@ -254,6 +331,16 @@ export class Compositor {
     } else if (!hasActiveVisualClip) {
       this.lastCompositedCanvas = null;
     }
+
+    // Update dirty-checking cache
+    this.lastRenderedTime = time;
+    this.lastRenderedCanvasRef = canvas;
+    this.lastRenderedWidth = width;
+    this.lastRenderedHeight = height;
+    this.lastRenderedTracksRef = tracks;
+    this.lastRenderedClipsRef = clips;
+    this.lastWasPlaying = isPlaying;
+    this.lastHadUnreadyVideo = hasUnreadyVideo;
   }
 
   /**

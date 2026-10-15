@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { 
   FolderPlus, 
   Type, 
@@ -12,6 +12,7 @@ import {
   X
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
+import { masterClock } from '../../core/engine/MasterClock';
 
 export type MobileSheetType = 'media' | 'text' | 'speed' | 'volume' | 'transition' | 'opacity' | null;
 
@@ -19,18 +20,103 @@ interface MobileBottomBarProps {
   onOpenSheet: (sheet: MobileSheetType) => void;
 }
 
+interface MobileSplitButtonProps {
+  mode: 'clip' | 'global';
+  onSplit: () => void;
+}
+
+export const MobileSplitButton: React.FC<MobileSplitButtonProps> = ({ mode, onSplit }) => {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const clips = useProjectStore((s) => s.project.clips);
+  const clipsRef = useRef(clips);
+  clipsRef.current = clips;
+
+  const canSplitNow = () => {
+    const t = masterClock.getTime();
+    return clipsRef.current.some(
+      (c) => t > c.start + 0.05 && t < c.start + c.duration - 0.05
+    );
+  };
+
+  useEffect(() => {
+    const updateState = (t: number) => {
+      if (!buttonRef.current) return;
+      const can = clipsRef.current.some(
+        (c) => t > c.start + 0.05 && t < c.start + c.duration - 0.05
+      );
+      if (buttonRef.current.disabled !== !can) {
+        buttonRef.current.disabled = !can;
+        buttonRef.current.setAttribute(
+          'aria-label',
+          mode === 'clip'
+            ? (can ? 'Dividir clip' : 'Dividir clip (no disponible: coloca el cabezal dentro de un clip)')
+            : (can ? 'Dividir en cabezal' : 'Dividir en cabezal (no disponible: coloca el cabezal dentro de un clip)')
+        );
+      }
+    };
+
+    updateState(masterClock.getTime());
+    let lastCheck = 0;
+    const unsubTime = masterClock.subscribeTime((t) => {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      if (!masterClock.getIsPlaying() || now - lastCheck >= 200) {
+        lastCheck = now;
+        updateState(t);
+      }
+    });
+
+    const unsubState = masterClock.subscribeState((playing) => {
+      if (!playing) {
+        updateState(masterClock.getTime());
+      }
+    });
+
+    return () => {
+      unsubTime();
+      unsubState();
+    };
+  }, [clips, mode]);
+
+  if (mode === 'clip') {
+    return (
+      <button
+        ref={buttonRef}
+        onClick={onSplit}
+        disabled={!canSplitNow()}
+        className="flex flex-col items-center justify-center w-14 h-12 rounded-xl text-cyan-400 hover:text-cyan-300 active:bg-dark-850 active:scale-95 transition disabled:opacity-30"
+        title="Dividir clip"
+        aria-label={canSplitNow() ? 'Dividir clip' : 'Dividir clip (no disponible: coloca el cabezal dentro de un clip)'}
+      >
+        <Scissors size={18} />
+        <span className="text-[10px] mt-0.5 font-bold">Dividir</span>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      ref={buttonRef}
+      onClick={onSplit}
+      disabled={!canSplitNow()}
+      className="flex flex-col items-center justify-center w-16 h-12 rounded-xl text-slate-200 hover:text-white active:bg-dark-850 active:scale-95 transition disabled:opacity-30"
+      title="Dividir en cabezal"
+      aria-label={canSplitNow() ? 'Dividir en cabezal' : 'Dividir en cabezal (no disponible: coloca el cabezal dentro de un clip)'}
+    >
+      <div className="w-6 h-6 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400">
+        <Scissors size={15} />
+      </div>
+      <span className="text-[10px] mt-1 font-medium text-slate-300">Dividir</span>
+    </button>
+  );
+};
+
 export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet }) => {
   const selectedClipId = useProjectStore((s) => s.selectedClipId);
-  const clips = useProjectStore((s) => s.project.clips);
-  const currentTime = useProjectStore((s) => s.currentTime);
   const selectClip = useProjectStore((s) => s.selectClip);
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
 
   const hasSelectedClip = !!selectedClipId;
-  const canSplit = clips.some(
-    (c) => currentTime > c.start + 0.05 && currentTime < c.start + c.duration - 0.05
-  );
 
   const handleDelete = () => {
     if (confirm('¿Eliminar el clip seleccionado? Puedes deshacer esta acción.')) {
@@ -54,16 +140,7 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
           </button>
 
           {/* Split (Dividir) */}
-          <button
-            onClick={splitAtPlayhead}
-            disabled={!canSplit}
-            className="flex flex-col items-center justify-center w-14 h-12 rounded-xl text-cyan-400 hover:text-cyan-300 active:bg-dark-850 active:scale-95 transition disabled:opacity-30"
-            title="Dividir clip"
-            aria-label={canSplit ? 'Dividir clip' : 'Dividir clip (no disponible: coloca el cabezal dentro de un clip)'}
-          >
-            <Scissors size={18} />
-            <span className="text-[10px] mt-0.5 font-bold">Dividir</span>
-          </button>
+          <MobileSplitButton mode="clip" onSplit={splitAtPlayhead} />
 
           {/* Speed (Velocidad) */}
           <button
@@ -156,18 +233,7 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
           </button>
 
           {/* Quick Split at Playhead */}
-          <button
-            onClick={splitAtPlayhead}
-            disabled={!canSplit}
-            className="flex flex-col items-center justify-center w-16 h-12 rounded-xl text-slate-200 hover:text-white active:bg-dark-850 active:scale-95 transition disabled:opacity-30"
-            title="Dividir en cabezal"
-            aria-label={canSplit ? 'Dividir en cabezal' : 'Dividir en cabezal (no disponible: coloca el cabezal dentro de un clip)'}
-          >
-            <div className="w-6 h-6 rounded-lg bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400">
-              <Scissors size={15} />
-            </div>
-            <span className="text-[10px] mt-1 font-medium text-slate-300">Dividir</span>
-          </button>
+          <MobileSplitButton mode="global" onSplit={splitAtPlayhead} />
         </div>
       )}
     </nav>

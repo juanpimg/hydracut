@@ -9,8 +9,13 @@ import { mediaSourcePool } from './MediaSourcePool';
 export class AudioEngine {
   private masterGain: GainNode | null = null;
   private trackGains: Map<string, GainNode> = new Map();
-
   private masterVolume: number = 1;
+
+  // Zero-thrashing caches
+  private trackMuteCache: Map<string, boolean> = new Map();
+  private elementVolumeCache: WeakMap<HTMLMediaElement, number> = new WeakMap();
+  private mediaMapCache: Map<string, MediaItem> = new Map();
+  private trackMapCache: Map<string, Track> = new Map();
 
   private getMasterGain(): GainNode | null {
     if (!this.masterGain) {
@@ -18,6 +23,7 @@ export class AudioEngine {
         const ctx = masterClock.getAudioContext();
         if (!ctx) return null;
         this.masterGain = ctx.createGain();
+        this.masterGain.gain.value = this.masterVolume;
         this.masterGain.connect(ctx.destination);
       } catch {
         this.masterGain = null;
@@ -61,27 +67,32 @@ export class AudioEngine {
         ctx.resume().catch(() => {});
       }
 
-      const mediaMap = new Map<string, MediaItem>();
-      for (const m of mediaPool) mediaMap.set(m.id, m);
+      // Re-populate reusable map caches without heap allocation on every frame
+      this.mediaMapCache.clear();
+      for (const m of mediaPool) this.mediaMapCache.set(m.id, m);
 
-      const trackMap = new Map<string, Track>();
-      for (const t of tracks) trackMap.set(t.id, t);
+      this.trackMapCache.clear();
+      for (const t of tracks) this.trackMapCache.set(t.id, t);
 
-      // Update track gain muting
+      // Update track gain muting ONLY when state changed
       for (const track of tracks) {
-        const tg = this.getTrackGain(track.id);
-        if (tg && tg.gain) {
-          tg.gain.value = track.isMuted ? 0 : 1;
+        const cachedMute = this.trackMuteCache.get(track.id);
+        if (cachedMute !== track.isMuted) {
+          this.trackMuteCache.set(track.id, track.isMuted);
+          const tg = this.getTrackGain(track.id);
+          if (tg && tg.gain) {
+            tg.gain.value = track.isMuted ? 0 : 1;
+          }
         }
       }
 
       // Process clips with audio
       for (const clip of clips) {
         if (clip.type !== 'audio' && clip.type !== 'video') continue;
-        const media = mediaMap.get(clip.mediaId);
+        const media = this.mediaMapCache.get(clip.mediaId);
         if (!media) continue;
 
-        const track = trackMap.get(clip.trackId);
+        const track = this.trackMapCache.get(clip.trackId);
         const isTrackMuted = track ? track.isMuted : false;
 
         const mediaEl = clip.type === 'video'
@@ -128,18 +139,39 @@ export class AudioEngine {
           }
 
           const effectiveVolume = (clip.volume ?? 1) * this.masterVolume * transitionMultiplier;
-          mediaEl.volume = Math.min(Math.max(effectiveVolume, 0), 1);
-          mediaEl.muted = clip.muted || isTrackMuted || this.masterVolume === 0;
+          const targetVolume = Math.min(Math.max(effectiveVolume, 0), 1);
+          const cachedVolume = this.elementVolumeCache.get(mediaEl);
+
+          // Guard volume mutation: update only when delta >= 0.01 or at boundary values (0 or 1)
+          if (
+            cachedVolume === undefined ||
+            Math.abs(cachedVolume - targetVolume) >= 0.01 ||
+            (targetVolume === 0 && cachedVolume !== 0) ||
+            (targetVolume === 1 && cachedVolume !== 1)
+          ) {
+            mediaEl.volume = targetVolume;
+            this.elementVolumeCache.set(mediaEl, targetVolume);
+          }
+
+          // Guard muted mutation: update only when changed
+          const targetMuted = clip.muted || isTrackMuted || this.masterVolume === 0;
+          if (mediaEl.muted !== targetMuted) {
+            mediaEl.muted = targetMuted;
+          }
 
           if (clip.type === 'audio' && mediaEl.paused) {
             mediaEl.play().catch(() => {});
           }
         } else {
-          if (clip.type === 'audio' && !mediaEl.paused) {
-            mediaEl.pause();
+          if (clip.type === 'audio') {
+            if (!mediaEl.paused) {
+              mediaEl.pause();
+            }
           } else if (clip.type === 'video') {
-            // If video clip is inactive or muted, ensure audio is silenced
-            mediaEl.muted = true;
+            // Guard: silence video audio at most once upon entering inactive state
+            if (!mediaEl.muted) {
+              mediaEl.muted = true;
+            }
           }
         }
       }
@@ -149,14 +181,20 @@ export class AudioEngine {
   }
 
   public setMasterVolume(vol: number): void {
-    this.masterVolume = Math.max(0, Math.min(vol, 1));
+    const clamped = Math.max(0, Math.min(vol, 1));
+    if (this.masterVolume === clamped) return;
+    this.masterVolume = clamped;
     const g = this.getMasterGain();
-    if (g && g.gain) {
+    if (g && g.gain && g.gain.value !== this.masterVolume) {
       g.gain.value = this.masterVolume;
     }
   }
 
   public stopAll(): void {
+    this.trackMuteCache.clear();
+    this.elementVolumeCache = new WeakMap();
+    this.mediaMapCache.clear();
+    this.trackMapCache.clear();
     try {
       mediaSourcePool.pauseAll();
     } catch {
