@@ -1,4 +1,12 @@
 import { Clip, MediaItem } from '../../types/project';
+import {
+  applyPitchPolicyToElement,
+  resolvePlayback,
+  DEFAULT_PRESERVE_PITCH,
+  MIN_PLAYBACK_RATE,
+  PlaybackOptions,
+  ResolvedPlayback,
+} from '../utils/playbackRate';
 
 interface VideoSyncState {
   isCorrecting: boolean;
@@ -19,8 +27,12 @@ export const SEEK_JUMP_THRESHOLD = 0.25;
 /**
  * Browsers clamp `playbackRate` below 0.0625 (Chrome/Safari minimum). The old
  * absolute floor of 0.25 broke every slow-motion clip below 0.25x (E-19).
+ *
+ * F4: the constant lives in `core/utils/playbackRate` (the single source of
+ * truth for the playback semantics); it is re-exported here for backwards
+ * compatibility with the existing importers.
  */
-export const MIN_PLAYBACK_RATE = 0.0625;
+export { MIN_PLAYBACK_RATE };
 
 /** Cooldown between two forced hard seeks on the same element (ms). */
 const HARD_SEEK_COOLDOWN_MS = 1500;
@@ -197,13 +209,11 @@ export class MediaSourcePool {
         el.muted = true; // muted in video element; audio mixed via AudioEngine
         el.playsInline = true;
         el.preload = 'auto';
-        // The exporter renders audio with a plain AudioBufferSourceNode, which shifts
-        // the pitch on speed changes. The preview must match it (E-22).
-        try {
-          el.preservesPitch = false;
-        } catch {
-          // Not supported by every engine
-        }
+        // F4: the default policy is to PRESERVE the pitch. The clip policy
+        // (`clip.preservePitch`) is applied by the AudioEngine as soon as the
+        // clip is known; the previous code forced `preservesPitch = false`
+        // (chipmunk at 2x) and made the preview disagree with the export.
+        applyPitchPolicyToElement(el, DEFAULT_PRESERVE_PITCH);
 
         const storeFrameIfReady = () => {
           if (el && el.readyState >= 2) {
@@ -272,12 +282,10 @@ export class MediaSourcePool {
       }
       el.crossOrigin = 'anonymous';
       el.preload = 'auto';
-      // Match the exporter pitch behaviour (E-22).
-      try {
-        el.preservesPitch = false;
-      } catch {
-        // Not supported by every engine
-      }
+      // F4: the default policy is to PRESERVE the pitch (the clip policy is
+      // applied by the AudioEngine). Forcing `false` here is what made the
+      // preview and the export disagree about the height of the voice.
+      applyPitchPolicyToElement(el, DEFAULT_PRESERVE_PITCH);
       el.addEventListener('error', () => {
         this.reportMediaError(media.id, clipId, 'Audio media failed to load or decode');
       });
@@ -285,6 +293,53 @@ export class MediaSourcePool {
     }
     this.applySourceStart(el, sourceStart);
     return el;
+  }
+
+  /**
+   * F4 · Aplica al elemento la reproducción resuelta de un clip
+   * (velocidad + política de tono).
+   *
+   * Esta es la escritura canónica del lado del preview: usa la MISMA
+   * `resolvePlayback()` que el exportador, de modo que el elemento del
+   * preview y el `AudioBufferSourceNode` del export reciben exactamente los
+   * mismos números (preview == export).
+   *
+   * @param applyRate `false` cuando la velocidad la controla otro sistema
+   *   (el controlador de sincronización del vídeo, que modula el `playbackRate`
+   *   para corregir la deriva): en ese caso solo se aplica la política de tono.
+   */
+  public applyPlayback(
+    el: HTMLMediaElement | null | undefined,
+    clip: PlaybackOptions | null | undefined,
+    options?: { applyRate?: boolean }
+  ): ResolvedPlayback {
+    const resolved = resolvePlayback(clip);
+    const applyRate = options?.applyRate !== false;
+    if (el && applyRate) {
+      try {
+        if (Math.abs(el.playbackRate - resolved.rate) > 0.001) {
+          el.playbackRate = resolved.rate;
+        }
+      } catch {
+        // El elemento no admite cambios de velocidad (ignorado).
+      }
+    }
+    applyPitchPolicyToElement(el, resolved.preservesPitch);
+    return resolved;
+  }
+
+  /**
+   * F4 · Aplica SOLO la política de tono al elemento.
+   *
+   * La velocidad de un elemento de vídeo la gobierna el controlador de
+   * sincronización (`syncVideoTime`), que puede modularla temporalmente para
+   * corregir la deriva; el tono, en cambio, es una decisión del clip.
+   */
+  public applyPitchPolicy(
+    el: HTMLMediaElement | null | undefined,
+    preservesPitch: boolean
+  ): void {
+    applyPitchPolicyToElement(el, preservesPitch);
   }
 
   /**
@@ -456,6 +511,9 @@ export class MediaSourcePool {
    */
   public resyncVideo(video: HTMLVideoElement, targetTime: number, speed: number = 1): void {
     if (!video) return;
+    // F4: the rate is always the one resolved by the single source of truth,
+    // so the preview and the export can never disagree about the speed.
+    const rate = resolvePlayback({ speed }).rate;
     const syncState = this.getSyncState(video);
     const now = this.now();
     syncState.isCorrecting = false;
@@ -470,8 +528,8 @@ export class MediaSourcePool {
       // Element not seekable yet
     }
     try {
-      if (Math.abs(video.playbackRate - speed) > 0.01) {
-        video.playbackRate = speed;
+      if (Math.abs(video.playbackRate - rate) > 0.01) {
+        video.playbackRate = rate;
       }
     } catch {
       // Ignore
@@ -492,17 +550,24 @@ export class MediaSourcePool {
       if (time < clip.start || time >= clip.start + clip.duration) continue;
       const media = mediaMap.get(clip.mediaId);
       if (!media) continue;
-      const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+      // F4: the source window advances at the resolved rate, and the element
+      // receives the very same rate + the pitch policy of the clip.
+      const playback = resolvePlayback(clip);
+      const speed = playback.rate;
       const rawOffset = clip.sourceStart + (time - clip.start) * speed;
       const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
       const clampedOffset = Math.max(0, Math.min(maxSourceTime, rawOffset));
 
       if (clip.type === 'video') {
         const video = this.videoElements.get(`${media.id}_${clip.id}`);
-        if (video) this.resyncVideo(video, clampedOffset, speed);
+        if (video) {
+          this.applyPitchPolicy(video, playback.preservesPitch);
+          this.resyncVideo(video, clampedOffset, speed);
+        }
       } else {
         const audio = this.audioElements.get(`${media.id}_${clip.id}`);
         if (audio) {
+          this.applyPitchPolicy(audio, playback.preservesPitch);
           try {
             audio.currentTime = clampedOffset;
           } catch {
@@ -532,6 +597,11 @@ export class MediaSourcePool {
       return;
     }
 
+    // F4: the base rate of the clip is the one resolved by the single source
+    // of truth (`resolvePlayback`), so the element of the preview plays at
+    // exactly the same speed as the exported file.
+    const rate = resolvePlayback({ speed }).rate;
+
     const now = this.now();
     const syncState = this.getSyncState(video);
 
@@ -545,7 +615,7 @@ export class MediaSourcePool {
     syncState.hasTargetTime = true;
 
     if (isSeekJump) {
-      this.resyncVideo(video, targetTime, speed);
+      this.resyncVideo(video, targetTime, rate);
       return;
     }
 
@@ -559,8 +629,8 @@ export class MediaSourcePool {
           if (Math.abs(video.currentTime - targetTime) > 0.8) {
             video.currentTime = targetTime;
           }
-          if (Math.abs(video.playbackRate - speed) > 0.01) {
-            video.playbackRate = speed;
+          if (Math.abs(video.playbackRate - rate) > 0.01) {
+            video.playbackRate = rate;
           }
           this.startingPlayMap.add(video);
           const settled = this.tryPlay(video);
@@ -611,9 +681,9 @@ export class MediaSourcePool {
       if (!syncState.isCorrecting) {
         if (absDrift <= DEADBAND_ENTER) {
           // In native tolerance deadband: maintain exact native speed
-          if (Math.abs(video.playbackRate - speed) > 0.01) {
+          if (Math.abs(video.playbackRate - rate) > 0.01) {
             if (now - syncState.lastRateChangeTime >= RATE_CHANGE_COOLDOWN) {
-              video.playbackRate = speed;
+              video.playbackRate = rate;
               syncState.lastRateChangeTime = now;
             }
           }
@@ -625,9 +695,9 @@ export class MediaSourcePool {
         // In correction mode: check if drift has reduced below exit threshold
         if (absDrift <= DEADBAND_EXIT) {
           syncState.isCorrecting = false;
-          if (Math.abs(video.playbackRate - speed) > 0.01) {
+          if (Math.abs(video.playbackRate - rate) > 0.01) {
             if (now - syncState.lastRateChangeTime >= RATE_CHANGE_COOLDOWN) {
-              video.playbackRate = speed;
+              video.playbackRate = rate;
               syncState.lastRateChangeTime = now;
             }
           }
@@ -639,10 +709,10 @@ export class MediaSourcePool {
       let targetRate: number;
       if (absDrift <= 0.60) {
         // Zone 2: Minor drift (gentle 6% micro-adjustment)
-        targetRate = drift < 0 ? speed * 1.06 : Math.max(MIN_PLAYBACK_RATE, speed * 0.94);
+        targetRate = drift < 0 ? rate * 1.06 : Math.max(MIN_PLAYBACK_RATE, rate * 0.94);
       } else {
         // Zone 3: Moderate drift (20% adjustment)
-        targetRate = drift < 0 ? speed * 1.20 : Math.max(MIN_PLAYBACK_RATE, speed * 0.80);
+        targetRate = drift < 0 ? rate * 1.20 : Math.max(MIN_PLAYBACK_RATE, rate * 0.80);
       }
 
       // Throttle rate mutations to avoid decoder pipeline resets
@@ -660,8 +730,8 @@ export class MediaSourcePool {
       if (!video.paused) {
         video.pause();
       }
-      if (Math.abs(video.playbackRate - speed) > 0.01) {
-        video.playbackRate = speed;
+      if (Math.abs(video.playbackRate - rate) > 0.01) {
+        video.playbackRate = rate;
       }
       const diff = Math.abs(video.currentTime - targetTime);
       if (diff > 0.03 && !video.seeking) {

@@ -2,6 +2,7 @@ import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { Clip, ExportConfig, ExportProgress, MediaItem, Track } from '../../types/project';
 import { Compositor } from '../engine/Compositor';
 import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
+import { applyDetuneToParam, resolvePlayback } from '../utils/playbackRate';
 
 export interface ExportParams {
   config: ExportConfig;
@@ -853,10 +854,18 @@ async function renderOfflineAudio(
         decodedCache.set(clip.mediaId, decodedBuffer);
       }
 
-      const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+      const playback = resolvePlayback(clip);
       const sourceNode = offlineCtx.createBufferSource();
       sourceNode.buffer = decodedBuffer;
-      sourceNode.playbackRate.value = speed;
+      sourceNode.playbackRate.value = playback.rate;
+      // F4: `playbackRate` multiplies the frequency by the rate (the voice
+      // turns into a chipmunk at 2x). The `detune` compensation cancels that
+      // multiplication EXACTLY (-1200 * log2(rate) cents), so the exported file
+      // keeps the original pitch while the tempo changes: the same contract
+      // the preview applies through `preservesPitch`.
+      // It MUST be written before `start()`: the node takes the value of the
+      // AudioParam when it starts.
+      applyDetuneToParam(sourceNode.detune, playback.detuneCents);
 
       const gainNode = offlineCtx.createGain();
       const baseVol = clip.volume ?? 1;
@@ -898,7 +907,9 @@ async function renderOfflineAudio(
 
       const offset = Math.min(clip.sourceStart, Math.max(0, decodedBuffer.duration - 0.01));
       const bufferDurationAvailable = Math.max(0, decodedBuffer.duration - offset);
-      const playDuration = Math.min(clip.duration * speed, bufferDurationAvailable);
+      // F4: the source window consumed is `duration * rate` (the rate is the
+      // resolved one, identical to the preview).
+      const playDuration = Math.min(clip.duration * playback.rate, bufferDurationAvailable);
       if (playDuration > 0) {
         // EX-02: `duration` is expressed in *buffer* seconds and is
         // independent of `playbackRate`. Passing `playDuration / speed` made

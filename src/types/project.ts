@@ -111,6 +111,19 @@ export interface Clip {
   // Transiciones y Velocidad
   transition?: ClipTransition;
   speed?: number;         // Factor de velocidad (ej. 0.5, 1, 1.5, 2). Default 1
+  /**
+   * F4 · Conservar el tono (pitch) al cambiar la velocidad.
+   *
+   * Por defecto es `true` (el tono NO se desplaza: una voz acelerada sigue
+   * sonando como una voz). Con `false` el tono se desplaza con la velocidad
+   * (efecto "chipmunk"), que es lo que hace un `AudioBufferSourceNode` con
+   * `playbackRate` sin compensación.
+   *
+   * `undefined` significa "preservar" (compatibilidad con los proyectos ya
+   * guardados). La semántica exacta la fija `resolvePlayback()`
+   * (`src/core/utils/playbackRate.ts`), la única fuente de verdad.
+   */
+  preservePitch?: boolean;
 
   // Propiedades de Texto y Letras Sincronizadas
   text?: string;

@@ -531,11 +531,36 @@ export const ClipInspector: React.FC = () => {
                 min="0.25"
                 max="4"
                 step="0.25"
+                aria-label="Velocidad del clip"
                 value={clip.speed || 1}
                 onChange={(e) => updateClip(clip.id, { speed: parseFloat(e.target.value) })}
                 className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer"
               />
             </div>
+
+            {/* F4: pitch policy. The preview and the export MUST agree, so the
+                choice is stored in the clip and resolved by `resolvePlayback()`. */}
+            <label
+              htmlFor={`clip-preserve-pitch-${clip.id}`}
+              className="flex items-center gap-2 cursor-pointer select-none pt-1"
+            >
+              <input
+                id={`clip-preserve-pitch-${clip.id}`}
+                type="checkbox"
+                data-testid="clip-preserve-pitch"
+                checked={clip.preservePitch !== false}
+                onChange={(e) => updateClip(clip.id, { preservePitch: e.target.checked })}
+                className="w-3.5 h-3.5 accent-blue-500 rounded focus-visible:ring-2 focus-visible:ring-blue-500"
+              />
+              <span className="text-[11px] text-slate-300 font-medium">
+                Preservar el tono (pitch)
+              </span>
+            </label>
+            <p className="text-[10px] leading-snug text-slate-500" data-testid="clip-preserve-pitch-hint">
+              {clip.preservePitch === false
+                ? 'El tono sube o baja con la velocidad (efecto "chipmunk"). El preview y el export se comportan igual.'
+                : 'Al acelerar, la voz mantiene su tono original: el preview y el MP4 exportado suenan exactamente igual.'}
+            </p>
           </div>
         </div>
       )}

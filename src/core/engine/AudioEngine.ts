@@ -1,6 +1,7 @@
 import { Clip, MediaItem, Track } from '../../types/project';
 import { masterClock } from './MasterClock';
 import { mediaSourcePool } from './MediaSourcePool';
+import { resolvePlayback } from '../utils/playbackRate';
 
 /** Minimum interval between two `play()` attempts on the same element (ms). */
 const PLAY_RETRY_INTERVAL_MS = 1000;
@@ -221,8 +222,18 @@ export class AudioEngine {
 
         if (!mediaEl) continue;
 
+        // F4: the playback semantics of the clip (speed + pitch policy) are
+        // resolved ONCE, here, with the same function the exporter uses. The
+        // preview and the export therefore receive the same numbers.
+        const playback = resolvePlayback(clip);
+
+        // F4: the pitch policy is a decision of the clip and is applied to the
+        // element of the preview (the export applies the equivalent
+        // `detune` compensation to its `AudioBufferSourceNode`).
+        mediaSourcePool.applyPitchPolicy(mediaEl, playback.preservesPitch);
+
         if (isActive) {
-          const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+          const speed = playback.rate;
           const rawOffset = clip.sourceStart + (time - clip.start) * speed;
           // The source offset is clamped to the media duration, exactly like the
           // video path does, otherwise the element seeks past its end on every
