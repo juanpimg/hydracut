@@ -150,8 +150,9 @@ describe('Challenger 1: MasterClock & AudioEngine Adversarial Stress Test Harnes
       // Dynamically shrink duration to 10.0s (less than current position 15.0s)
       clock.setDuration(10.0);
 
-      // getTime() must clamp and pause cleanly without throwing
-      const t = clock.getTime();
+      // getTime() must clamp without throwing. The pause at the end of the
+      // timeline is owned by the playback tick, not by the getter (E-15).
+      const t = clock.tick();
       expect(t).toBe(10.0);
       expect(clock.getIsPlaying()).toBe(false);
     });

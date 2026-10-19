@@ -1,10 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import { PreviewPlayer } from '../player/PreviewPlayer';
 import { PlayerControls } from '../player/PlayerControls';
 import { Timeline } from '../timeline/Timeline';
-import { ExportModal } from '../export/ExportModal';
 import { ShortcutsModal } from '../modals/ShortcutsModal';
 import { ProjectsModal } from '../modals/ProjectsModal';
 import { WelcomeModal } from '../modals/WelcomeModal';
@@ -14,6 +13,18 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { loadAutosavedProject, rehydrateProjectMedia } from '../../core/storage/projectStorage';
+import { useLiveAnnouncement, announce } from './liveRegion';
+
+/**
+ * F3 / B-10: the export modal (and with it the exporter and `mp4-muxer`) is
+ * loaded ON DEMAND.
+ *
+ * The modal used to be part of the initial chunk even though it is useless
+ * until the user exports something: ~5 KB gzip of dead weight on EVERY boot.
+ * `React.lazy` splits it into its own chunk, which is only fetched when the
+ * modal is opened for the first time.
+ */
+const ExportModal = lazy(() => import('../export/ExportModal'));
 
 export const MainLayout: React.FC = () => {
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
@@ -22,6 +33,19 @@ export const MainLayout: React.FC = () => {
   const redo = useProjectStore((s) => s.redo);
   const fps = useProjectStore((s) => s.project.fps);
   const loadProject = useProjectStore((s) => s.loadProject);
+  const selectedClipId = useProjectStore((s) => s.selectedClipId);
+  const selectedClipName = useProjectStore((s) =>
+    s.selectedClipId ? s.project.clips.find((c) => c.id === s.selectedClipId)?.name : undefined
+  );
+
+  const announcement = useLiveAnnouncement();
+
+  /**
+   * F3: the export modal is only mounted (and its chunk only fetched) when it
+   * is actually open. The flag is subscribed to with a selector so the shell
+   * does not re-render on every UI store change.
+   */
+  const isExportModalOpen = useUIStore((s) => s.isExportModalOpen);
 
   // Load autosaved project on startup
   useEffect(() => {
@@ -32,6 +56,13 @@ export const MainLayout: React.FC = () => {
       }
     });
   }, [loadProject]);
+
+  // UI-16: announce the selected clip to the screen readers.
+  useEffect(() => {
+    if (!selectedClipId) return;
+    if (!selectedClipName) return;
+    announce(`Clip seleccionado: ${selectedClipName}`);
+  }, [selectedClipId, selectedClipName]);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -144,7 +175,13 @@ export const MainLayout: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-dark-950 text-slate-100 select-none">
+    // UI-05: `h-screen` (100vh) is the *large* viewport: on iPad/Safari the
+    // browser chrome covered the bottom timeline. The inline `100dvh` wins
+    // wherever it is supported and the class stays as the fallback.
+    <div
+      className="flex flex-col h-screen w-screen overflow-hidden bg-dark-950 text-slate-100 select-none"
+      style={{ height: '100dvh' }}
+    >
       {/* Top Header */}
       <Header />
 
@@ -161,15 +198,36 @@ export const MainLayout: React.FC = () => {
       </div>
 
       {/* Bottom: Multitrack Interactive Timeline */}
-      <div className="h-60 sm:h-64 md:h-72 max-h-[40vh] w-full min-w-0 shrink-0">
+      <div
+        className="h-60 sm:h-64 md:h-72 max-h-[40vh] w-full min-w-0 shrink-0"
+        style={{ maxHeight: '40dvh' }}
+      >
         <Timeline />
       </div>
 
       {/* Modals */}
-      <ExportModal />
+      {isExportModalOpen && (
+        <Suspense fallback={null}>
+          <ExportModal />
+        </Suspense>
+      )}
       <ShortcutsModal />
       <ProjectsModal />
       <WelcomeModal />
+
+      {/*
+        UI-16: the app had no `aria-live` region at all. This single polite
+        region announces the status changes pushed with `announce(...)`.
+      */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        data-testid="live-region"
+        className="sr-only"
+      >
+        {announcement.text}
+      </div>
     </div>
   );
 };

@@ -1,19 +1,19 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { X, Keyboard } from 'lucide-react';
 import { useUIStore } from '../../store/useUIStore';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 
 export const ShortcutsModal: React.FC = () => {
   const { isShortcutsModalOpen, setShortcutsModalOpen } = useUIStore();
 
-  // Close on Escape or backdrop click (effect before early-return: hooks order)
-  useEffect(() => {
-    if (!isShortcutsModalOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShortcutsModalOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isShortcutsModalOpen, setShortcutsModalOpen]);
+  /**
+   * UI-08: the modal declared `role="dialog" aria-modal="true"` but the focus
+   * never entered it (it had only 2 tabbable elements) and was never restored
+   * on close. The focus trap also owns the `Escape` key.
+   */
+  const dialogRef = useFocusTrap<HTMLDivElement>(isShortcutsModalOpen, {
+    onEscape: () => setShortcutsModalOpen(false),
+  });
 
   if (!isShortcutsModalOpen) return null;
 
@@ -32,10 +32,12 @@ export const ShortcutsModal: React.FC = () => {
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label="Atajos de teclado"
-      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none animate-fadeIn"
+      tabIndex={-1}
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none animate-fadeIn focus:outline-none"
       onClick={(e) => {
         if (e.target === e.currentTarget) setShortcutsModalOpen(false);
       }}
@@ -50,7 +52,7 @@ export const ShortcutsModal: React.FC = () => {
           <button
             onClick={() => setShortcutsModalOpen(false)}
             aria-label="Cerrar modal de atajos"
-            className="text-slate-400 hover:text-white p-1 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="text-slate-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             <X size={18} />
           </button>
@@ -72,7 +74,7 @@ export const ShortcutsModal: React.FC = () => {
         <div className="px-5 py-3 border-t border-dark-800 flex justify-end bg-dark-950">
           <button
             onClick={() => setShortcutsModalOpen(false)}
-            className="px-4 py-1.5 bg-dark-800 hover:bg-dark-750 text-white text-xs rounded-lg transition"
+            className="px-4 py-1.5 min-h-[44px] bg-dark-800 hover:bg-dark-750 text-white text-xs rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             Entendido
           </button>

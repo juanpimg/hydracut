@@ -8,6 +8,158 @@ export interface RenderOptions {
   clips: Clip[];
   mediaPool: MediaItem[];
   isPlaying: boolean;
+  /**
+   * Logical width of the composition (the PROJECT resolution).
+   *
+   * Every layout computation (positions, sizes, `drawImage` destination
+   * rects, `measureText` baselines, transitions) happens in this space, so the
+   * composition is identical no matter how big the backing store of the
+   * canvas is. Defaults to `canvas.width` (legacy behaviour: the canvas *is*
+   * the project resolution).
+   */
+  logicalWidth?: number;
+  /**
+   * Logical height of the composition (the PROJECT resolution).
+   * Defaults to `canvas.height`.
+   */
+  logicalHeight?: number;
+  /**
+   * Uniform scale applied to the logical space.
+   *
+   * The compositor applies it once per frame with
+   * `ctx.setTransform(scale, 0, 0, scale, 0, 0)`, so the project-space maths
+   * keeps working unchanged while the rasterisation happens at the resolution
+   * of the display. Defaults to `canvas.width / logicalWidth`.
+   */
+  renderScale?: number;
+}
+
+/**
+ * Hard ceiling for the number of pixels the PREVIEW may rasterise.
+ *
+ * The preview used to always allocate a canvas as big as the project
+ * (1920x1080 = 2 073 600 px) even when the canvas was displayed inside a
+ * 200x110 box: 100x more pixels than the display could ever show, at 60 fps
+ * (KI-02). The preview now renders at the size of the display; this ceiling
+ * only protects the pathological cases (a 4K project shown full screen).
+ */
+export const MAX_PREVIEW_PIXELS = 1_300_000;
+
+export interface RenderScaleInput {
+  /** Project width in pixels (the logical space). */
+  logicalWidth: number;
+  /** Project height in pixels (the logical space). */
+  logicalHeight: number;
+  /** CSS width of the canvas box (device independent pixels). */
+  cssWidth: number;
+  /** CSS height of the canvas box (device independent pixels). */
+  cssHeight: number;
+  /** `window.devicePixelRatio` of the display. */
+  devicePixelRatio: number;
+  /** Maximum number of pixels the backing store may use. */
+  maxPixels?: number;
+}
+
+export interface RenderScaleResult {
+  /** Uniform scale applied to the logical space. Always <= 1. */
+  scale: number;
+  /** Width of the backing store (always even). */
+  width: number;
+  /** Height of the backing store (always even). */
+  height: number;
+  /** `width * height` — the number of pixels actually rasterised. */
+  pixels: number;
+  /** Device pixels the display shows (`cssWidth * devicePixelRatio`). */
+  deviceWidth: number;
+  /** Device pixels the display shows (`cssHeight * devicePixelRatio`). */
+  deviceHeight: number;
+  /**
+   * `pixels / (cssWidth * cssHeight)` — how many times more pixels are
+   * rasterised than the CSS box has. 1 = exactly the pixels of the display
+   * (at DPR 1), DPR = the pixels of the display at that DPR.
+   */
+  wasteFactor: number;
+}
+
+/** Clamps a number into `[min, max]`, tolerating NaN / Infinity. */
+function clampNumber(value: number, min: number, max: number, fallback: number): number {
+  if (!Number.isFinite(value)) return fallback;
+  if (value < min) return min;
+  if (value > max) return max;
+  return value;
+}
+
+/**
+ * Computes the backing store of the preview canvas.
+ *
+ * The formula (all the maths is pure, so it is unit tested):
+ *
+ *   1. `scale = min(cssWidth * dpr / logicalWidth, cssHeight * dpr / logicalHeight)`
+ *      → the backing store matches the DISPLAY (device pixels), so the preview
+ *        is crisp on HiDPI screens and never renders more pixels than the
+ *        display can show.
+ *   2. `scale = min(scale, 1)`
+ *      → the preview is NEVER rendered above the project resolution (a 4K
+ *        project shown in a small box is downscaled, not upscaled).
+ *   3. `scale = min(scale, sqrt(pixelBudget / (logicalWidth * logicalHeight)))`
+ *      with `pixelBudget = max(maxPixels, min(devicePixels, projectPixels))`
+ *      → the absolute pixel ceiling is enforced, but it never forces the
+ *        preview below the resolution the display actually needs (that would
+ *        blur a HiDPI preview) and never above the project resolution.
+ *   4. The backing store is `round(logical * scale)`, rounded DOWN to an even
+ *      number (H.264 friendly), keeping the project aspect ratio.
+ */
+export function computeRenderScale(input: RenderScaleInput): RenderScaleResult {
+  const logicalWidth = Math.max(1, Math.round(clampNumber(input.logicalWidth, 1, 1e6, 1920)));
+  const logicalHeight = Math.max(1, Math.round(clampNumber(input.logicalHeight, 1, 1e6, 1080)));
+  const dpr = clampNumber(input.devicePixelRatio, 0.1, 8, 1);
+  const cssWidth = Math.max(0, clampNumber(input.cssWidth, 0, 1e6, 0));
+  const cssHeight = Math.max(0, clampNumber(input.cssHeight, 0, 1e6, 0));
+  const maxPixels = Math.max(1, clampNumber(input.maxPixels ?? MAX_PREVIEW_PIXELS, 1, 1e9, MAX_PREVIEW_PIXELS));
+
+  const deviceWidth = cssWidth * dpr;
+  const deviceHeight = cssHeight * dpr;
+
+  // 1. The scale that matches the display (device pixels).
+  let scale: number;
+  if (deviceWidth > 0 && deviceHeight > 0) {
+    scale = Math.min(deviceWidth / logicalWidth, deviceHeight / logicalHeight);
+  } else {
+    // No layout information yet: keep the project resolution.
+    scale = 1;
+  }
+
+  // 2. Never render above the project resolution.
+  scale = Math.min(scale, 1);
+
+  // 3. Absolute pixel ceiling (never below what the display needs).
+  const projectPixels = logicalWidth * logicalHeight;
+  const neededPixels = Math.min(deviceWidth * deviceHeight, projectPixels);
+  const pixelBudget = Math.max(maxPixels, neededPixels);
+  scale = Math.min(scale, Math.sqrt(pixelBudget / projectPixels));
+
+  if (!Number.isFinite(scale) || scale <= 0) scale = 1;
+
+  // 4. Backing store: even numbers, project aspect ratio preserved.
+  let width = Math.max(2, Math.round(logicalWidth * scale));
+  let height = Math.max(2, Math.round(logicalHeight * scale));
+  if (width % 2 !== 0) width -= 1;
+  if (height % 2 !== 0) height -= 1;
+  if (width < 2) width = 2;
+  if (height < 2) height = 2;
+
+  const pixels = width * height;
+  const cssPixels = cssWidth * cssHeight;
+
+  return {
+    scale,
+    width,
+    height,
+    pixels,
+    deviceWidth,
+    deviceHeight,
+    wasteFactor: cssPixels > 0 ? pixels / cssPixels : 0,
+  };
 }
 
 export interface TransitionParams {
@@ -38,7 +190,9 @@ export function calculateTransition(clip: Clip, time: number, canvasWidth: numbe
       const progressIn = Math.max(0, Math.min(1, timeInClip / fadeInDuration));
 
       if (fadeInType === 'fade-black') {
-        alphaMultiplier *= progressIn;
+        // Symmetric with 'fade-white': the transition is an overlay only.
+        // Multiplying the alpha AND overlaying black would darken the clip twice
+        // (0.25*C + 0.75*B at 50% instead of 0.5*C + 0.5*B) (E-06).
         overlayColor = '#000000';
         overlayOpacity = Math.max(overlayOpacity, 1 - progressIn);
       } else if (fadeInType === 'fade-white') {
@@ -56,7 +210,7 @@ export function calculateTransition(clip: Clip, time: number, canvasWidth: numbe
       const progressOut = Math.max(0, Math.min(1, timeLeft / fadeOutDuration));
 
       if (fadeOutType === 'fade-black') {
-        alphaMultiplier *= progressOut;
+        // Symmetric with 'fade-white' (see the fade in branch) (E-06).
         overlayColor = '#000000';
         overlayOpacity = Math.max(overlayOpacity, 1 - progressOut);
       } else if (fadeOutType === 'fade-white') {
@@ -77,7 +231,6 @@ export function calculateTransition(clip: Clip, time: number, canvasWidth: numbe
 export class Compositor {
   private lastCompositedCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
   private lastCompositedTime = 0;
-
   // Reused collections (zero per-frame heap allocations)
   private mediaMap: Map<string, MediaItem> = new Map();
   private trackMap: Map<string, Track> = new Map();
@@ -89,6 +242,9 @@ export class Compositor {
   private lastRenderedCanvasRef: HTMLCanvasElement | OffscreenCanvas | null = null;
   private lastRenderedWidth = 0;
   private lastRenderedHeight = 0;
+  private lastRenderedLogicalWidth = 0;
+  private lastRenderedLogicalHeight = 0;
+  private lastRenderedScale = 0;
   private lastRenderedTracksRef: Track[] | null = null;
   private lastRenderedClipsRef: Clip[] | null = null;
   private lastWasPlaying = false;
@@ -96,15 +252,119 @@ export class Compositor {
   private lastHadUnreadyVideo = false;
 
   /**
+   * Drops every cached frame and invalidates the dirty-check state.
+   * MUST be called when the project is replaced, otherwise the anti-flicker
+   * bridge paints the last frame of the previous project (C1).
+   */
+  public clear(): void {
+    this.lastCompositedCanvas = null;
+    this.lastCompositedTime = 0;
+    this.lastRenderedTime = -1;
+    this.lastRenderedCanvasRef = null;
+    this.lastRenderedWidth = 0;
+    this.lastRenderedHeight = 0;
+    this.lastRenderedLogicalWidth = 0;
+    this.lastRenderedLogicalHeight = 0;
+    this.lastRenderedScale = 0;
+    this.lastRenderedTracksRef = null;
+    this.lastRenderedClipsRef = null;
+    this.lastWasPlaying = false;
+    this.isCanvasBlankBlack = false;
+    this.lastHadUnreadyVideo = false;
+    this.activeVideoKeys.clear();
+    this.prewarmKeys.clear();
+  }
+
+  /**
+   * `true` when the 2D context supports the full transform API.
+   *
+   * The unit tests use fake contexts that only implement a subset of the API,
+   * so every transform related call has to be feature detected.
+   */
+  private static supportsTransform(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
+  ): boolean {
+    return (
+      typeof (ctx as CanvasRenderingContext2D).setTransform === 'function' &&
+      typeof (ctx as CanvasRenderingContext2D).save === 'function' &&
+      typeof (ctx as CanvasRenderingContext2D).restore === 'function'
+    );
+  }
+
+  /**
+   * Fills the WHOLE backing store with the background colour.
+   *
+   * The clear rectangle is expressed in DEVICE pixels (not in the logical
+   * space): with a scaled context a logical sized rectangle would leave an
+   * uncleared strip on the right/bottom edge of the canvas.
+   */
+  private clearDevice(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    deviceWidth: number,
+    deviceHeight: number
+  ): void {
+    const transformed = Compositor.supportsTransform(ctx);
+    if (transformed) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+    ctx.fillStyle = '#0a0a0c';
+    ctx.fillRect(0, 0, deviceWidth, deviceHeight);
+    if (transformed) ctx.restore();
+  }
+
+  /**
+   * Paints the cached frame over the whole backing store (1:1, device pixels).
+   */
+  private blitCache(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    deviceWidth: number,
+    deviceHeight: number
+  ): void {
+    const transformed = Compositor.supportsTransform(ctx);
+    if (transformed) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
+    ctx.drawImage(this.lastCompositedCanvas as CanvasImageSource, 0, 0, deviceWidth, deviceHeight);
+    if (transformed) ctx.restore();
+  }
+
+  /**
    * Renders a frame at timeline time `time` onto the target canvas.
+   *
+   * The composition always happens in the LOGICAL space (the project
+   * resolution); the canvas is only the raster target. `logicalWidth` /
+   * `logicalHeight` / `renderScale` describe how the logical space maps onto
+   * the backing store of the canvas (KI-02: the preview is rasterised at the
+   * resolution of the display, not at the project resolution).
    */
   public renderFrame(options: RenderOptions): void {
     const { time, canvas, tracks, clips, mediaPool, isPlaying } = options;
     const ctx = canvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
     if (!ctx) return;
 
-    const width = canvas.width;
-    const height = canvas.height;
+    // Device pixels: the real size of the backing store of the canvas.
+    const deviceWidth = canvas.width;
+    const deviceHeight = canvas.height;
+
+    // Logical pixels: the project space every layout computation happens in.
+    const logicalWidth = Math.max(1, Math.round(options.logicalWidth ?? deviceWidth));
+    const logicalHeight = Math.max(1, Math.round(options.logicalHeight ?? deviceHeight));
+    const width = logicalWidth;
+    const height = logicalHeight;
+
+    // Scale the context once per frame: the project space maths below keeps
+    // working unchanged while the rasterisation happens at the resolution of
+    // the display.
+    const canTransform = Compositor.supportsTransform(ctx);
+    let renderScale = options.renderScale ?? (deviceWidth / logicalWidth);
+    if (!Number.isFinite(renderScale) || renderScale <= 0) renderScale = 1;
+    if (canTransform) {
+      ctx.setTransform(renderScale, 0, 0, renderScale, 0, 0);
+    } else {
+      renderScale = 1;
+    }
 
     // Populate persistent lookup maps without allocating new heap instances
     this.mediaMap.clear();
@@ -134,25 +394,44 @@ export class Compositor {
       const track = this.trackMap.get(clip.trackId);
       if (!track || !track.isVisible) continue;
 
-      if (clip.type === 'video' || clip.type === 'image') {
+      // The pre-check MUST agree with the draw pass (E-07): a clip whose media
+      // type does not match its track type is not renderable at all. Counting it
+      // as an active visual clip made the anti-flicker cache paint a stale frame
+      // instead of black.
+      if (track.type === 'video') {
+        if (clip.type !== 'video' && clip.type !== 'image') continue;
+        const media = this.mediaMap.get(clip.mediaId);
+        if (!media) continue;
         hasActiveVisualClip = true;
         if (clip.type === 'video') {
-          const media = this.mediaMap.get(clip.mediaId);
-          if (media) {
-            const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
-            if (videoEl.readyState < 2 && !mediaSourcePool.getLastFrame(clip.id) && !mediaSourcePool.getLastFrame(media.id)) {
-              hasUnreadyVideo = true;
-            }
+          const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
+          // The very same source time the draw pass will ask for, so the
+          // "is the frame ready" decision and the draw pass always agree.
+          const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+          const rawOffset = clip.sourceStart + (time - clip.start) * speed;
+          const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
+          const clampedOffset = Math.max(0, Math.min(maxSourceTime, rawOffset));
+          if (
+            videoEl.readyState < 2 &&
+            !mediaSourcePool.getLastFrame(clip.id) &&
+            !mediaSourcePool.getLastFrameForSource(media.id, clampedOffset)
+          ) {
+            hasUnreadyVideo = true;
           }
         }
-      } else if (clip.type === 'text') {
+      } else if (track.type === 'text') {
+        if (clip.type !== 'text') continue;
         hasActiveTextClip = true;
       }
+      // Audio tracks never render visuals.
     }
 
     // Dirty check: skip rendering if paused and frame parameters are identical
     const canvasUnchanged = canvas === this.lastRenderedCanvasRef;
-    const sizeUnchanged = width === this.lastRenderedWidth && height === this.lastRenderedHeight;
+    const sizeUnchanged = deviceWidth === this.lastRenderedWidth && deviceHeight === this.lastRenderedHeight;
+    const logicalUnchanged =
+      logicalWidth === this.lastRenderedLogicalWidth && logicalHeight === this.lastRenderedLogicalHeight;
+    const scaleUnchanged = renderScale === this.lastRenderedScale;
     const tracksUnchanged = tracks === this.lastRenderedTracksRef;
     const clipsUnchanged = clips === this.lastRenderedClipsRef;
     const isSameTime = Math.abs(time - this.lastRenderedTime) < 0.0001;
@@ -162,6 +441,8 @@ export class Compositor {
       !this.lastWasPlaying &&
       canvasUnchanged &&
       sizeUnchanged &&
+      logicalUnchanged &&
+      scaleUnchanged &&
       tracksUnchanged &&
       clipsUnchanged &&
       isSameTime &&
@@ -177,24 +458,21 @@ export class Compositor {
     // Instead bridge with lastCompositedCanvas if available.
     if (hasActiveVisualClip && hasUnreadyVideo && this.lastCompositedCanvas) {
       try {
-        ctx.drawImage(this.lastCompositedCanvas, 0, 0, width, height);
+        this.blitCache(ctx, deviceWidth, deviceHeight);
       } catch {
-        ctx.fillStyle = '#0a0a0c';
-        ctx.fillRect(0, 0, width, height);
+        this.clearDevice(ctx, deviceWidth, deviceHeight);
       }
       this.isCanvasBlankBlack = false;
     } else if (!hasActiveVisualClip && !hasActiveTextClip) {
       // In empty gap: only fillRect if not already blank black or dimensions changed
       if (!this.isCanvasBlankBlack || !sizeUnchanged || !canvasUnchanged) {
-        ctx.fillStyle = '#0a0a0c';
-        ctx.fillRect(0, 0, width, height);
+        this.clearDevice(ctx, deviceWidth, deviceHeight);
         this.isCanvasBlankBlack = true;
       }
       this.lastCompositedCanvas = null;
     } else {
       // Normal clear
-      ctx.fillStyle = '#0a0a0c';
-      ctx.fillRect(0, 0, width, height);
+      this.clearDevice(ctx, deviceWidth, deviceHeight);
       this.isCanvasBlankBlack = false;
     }
 
@@ -234,7 +512,8 @@ export class Compositor {
               media.height || 720,
               time,
               media,
-              isPlaying
+              isPlaying,
+              clampedOffset
             );
             if (drawn !== false) {
               hasDrawnVisualFrame = true;
@@ -293,7 +572,7 @@ export class Compositor {
     // Anti-flicker protection and full-buffer snapshot throttling (500ms during continuous playback)
     if (hasActiveVisualClip && !hasDrawnVisualFrame && this.lastCompositedCanvas) {
       try {
-        ctx.drawImage(this.lastCompositedCanvas, 0, 0, width, height);
+        this.blitCache(ctx, deviceWidth, deviceHeight);
       } catch {
         // Ignored
       }
@@ -306,22 +585,24 @@ export class Compositor {
         this.lastCompositedTime = now;
         if (!this.lastCompositedCanvas) {
           if (typeof OffscreenCanvas !== 'undefined') {
-            this.lastCompositedCanvas = new OffscreenCanvas(width, height);
+            this.lastCompositedCanvas = new OffscreenCanvas(deviceWidth, deviceHeight);
           } else if (typeof document !== 'undefined') {
             const c = document.createElement('canvas');
-            c.width = width;
-            c.height = height;
+            c.width = deviceWidth;
+            c.height = deviceHeight;
             this.lastCompositedCanvas = c;
           }
-        } else if (this.lastCompositedCanvas.width !== width || this.lastCompositedCanvas.height !== height) {
-          this.lastCompositedCanvas.width = width;
-          this.lastCompositedCanvas.height = height;
+        } else if (this.lastCompositedCanvas.width !== deviceWidth || this.lastCompositedCanvas.height !== deviceHeight) {
+          this.lastCompositedCanvas.width = deviceWidth;
+          this.lastCompositedCanvas.height = deviceHeight;
         }
         if (this.lastCompositedCanvas) {
           try {
             const bCtx = this.lastCompositedCanvas.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
             if (bCtx) {
-              bCtx.drawImage(canvas, 0, 0, width, height);
+              // 1:1 copy of the DEVICE pixels (the cache lives in the same
+              // resolution as the canvas it mirrors).
+              bCtx.drawImage(canvas, 0, 0, deviceWidth, deviceHeight);
             }
           } catch {
             // Ignored
@@ -335,8 +616,11 @@ export class Compositor {
     // Update dirty-checking cache
     this.lastRenderedTime = time;
     this.lastRenderedCanvasRef = canvas;
-    this.lastRenderedWidth = width;
-    this.lastRenderedHeight = height;
+    this.lastRenderedWidth = deviceWidth;
+    this.lastRenderedHeight = deviceHeight;
+    this.lastRenderedLogicalWidth = logicalWidth;
+    this.lastRenderedLogicalHeight = logicalHeight;
+    this.lastRenderedScale = renderScale;
     this.lastRenderedTracksRef = tracks;
     this.lastRenderedClipsRef = clips;
     this.lastWasPlaying = isPlaying;
@@ -356,7 +640,8 @@ export class Compositor {
     sourceHeight: number,
     time: number = 0,
     media?: MediaItem,
-    isPlaying: boolean = false
+    isPlaying: boolean = false,
+    sourceTime?: number
   ): boolean {
     const transition = calculateTransition(clip, time, canvasWidth);
 
@@ -407,12 +692,19 @@ export class Compositor {
       if (mediaElement instanceof HTMLVideoElement) {
         if (mediaElement.readyState >= 2) {
           ctx.drawImage(mediaElement, x, y, drawWidth, drawHeight);
-          mediaSourcePool.storeVideoFrame(clip.id, mediaElement, media?.id, !isPlaying);
+          mediaSourcePool.storeVideoFrame(clip.id, mediaElement, media?.id, !isPlaying, sourceTime);
           hasDrawn = true;
         } else {
           // Video element has not decoded this frame yet (temporary seek or buffer):
-          // First try to display the last cached frame to prevent black flashes or thumbnail jumps
-          const cachedFrame = mediaSourcePool.getLastFrame(clip.id) || (media ? mediaSourcePool.getLastFrame(media.id) : null);
+          // First try to display the last cached frame to prevent black flashes or thumbnail jumps.
+          // The media level fallback is only used when the cached frame belongs to
+          // the requested source time, otherwise a frame of a completely different
+          // point of the same source would be shown (E-13).
+          const cachedFrame =
+            mediaSourcePool.getLastFrame(clip.id) ||
+            (media && sourceTime !== undefined
+              ? mediaSourcePool.getLastFrameForSource(media.id, sourceTime)
+              : null);
           if (cachedFrame) {
             ctx.drawImage(cachedFrame, x, y, drawWidth, drawHeight);
             hasDrawn = true;
@@ -430,8 +722,15 @@ export class Compositor {
           }
         }
       } else {
-        ctx.drawImage(mediaElement, x, y, drawWidth, drawHeight);
-        hasDrawn = true;
+        // An image that is not decoded yet is a silent no-op: reporting it as
+        // drawn poisoned the anti-flicker cache with a black frame (E-14).
+        const img = mediaElement as HTMLImageElement;
+        const isDecoded =
+          typeof img.complete !== 'boolean' ? true : img.complete && (img.naturalWidth || 0) > 0;
+        if (isDecoded) {
+          ctx.drawImage(mediaElement, x, y, drawWidth, drawHeight);
+          hasDrawn = true;
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

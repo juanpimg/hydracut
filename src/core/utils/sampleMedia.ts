@@ -142,12 +142,32 @@ function generateFallbackColorCard(title: string, color: string): { url: string;
 }
 
 /**
+ * Maximum time we wait for a sample clip to be recorded.
+ *
+ * The recording is done in real time (MediaRecorder), so a slow device needs
+ * some slack, but the promise MUST settle: when `recorder.onstop` never fires
+ * the UI used to hang forever on "Generando clips de muestra..." and the
+ * colour-card fallback was never reached.
+ */
+export const SAMPLE_GENERATION_TIMEOUT_MS = 30_000;
+
+/**
+ * Duration (in seconds) of the generated sample clips.
+ *
+ * The samples are recorded in real time, so their duration IS the time the
+ * user waits. 2 s keeps the generated media valid and playable while cutting
+ * the blocking time of the "Generar clips de prueba" button roughly in half.
+ */
+export const SAMPLE_VIDEO_DURATION_SECONDS = 2;
+
+/**
  * Generates an animated video WebM/MP4 Blob using HTML5 Canvas captureStream and MediaRecorder
  */
 export async function generateSampleVideoBlob(
   title: string,
-  durationSeconds: number = 4,
-  themeColor: string = '#3b82f6'
+  durationSeconds: number = SAMPLE_VIDEO_DURATION_SECONDS,
+  themeColor: string = '#3b82f6',
+  timeoutMs: number = SAMPLE_GENERATION_TIMEOUT_MS
 ): Promise<Blob> {
   if (!isCanvasCaptureSupported()) {
     throw new Error('Canvas captureStream no está soportado en este navegador.');
@@ -171,7 +191,7 @@ export async function generateSampleVideoBlob(
   }
 
   const fps = 30;
-  const totalFrames = fps * durationSeconds;
+  const totalFrames = Math.max(1, Math.round(fps * durationSeconds));
   const stream: MediaStream =
     typeof canvas.captureStream === 'function'
       ? canvas.captureStream(fps)
@@ -180,15 +200,99 @@ export async function generateSampleVideoBlob(
   const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
   const chunks: Blob[] = [];
 
-  recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
-  };
-
-  recorder.start();
-
   let frame = 0;
-  return new Promise((resolve, reject) => {
-    const drawInterval = setInterval(() => {
+
+  return new Promise<Blob>((resolve, reject) => {
+    let settled = false;
+    let drawInterval: ReturnType<typeof setInterval> | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    /**
+     * Releases EVERY resource: the drawing interval, the timeout, the
+     * recorder and — crucially — the tracks of the captured MediaStream.
+     * `canvas.captureStream()` keeps producing frames (and holding a GPU
+     * surface) until its tracks are stopped, which used to leak one live
+     * track per generated sample (KI-04 / EX-18).
+     */
+    const cleanup = () => {
+      if (drawInterval !== null) {
+        clearInterval(drawInterval);
+        drawInterval = null;
+      }
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      try {
+        if (recorder.state !== 'inactive') recorder.stop();
+      } catch {
+        // ignore (the recorder may already be inactive)
+      }
+      try {
+        for (const track of stream.getTracks()) track.stop();
+      } catch {
+        // ignore
+      }
+    };
+
+    const resolveOnce = (blob: Blob) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(blob);
+    };
+
+    const rejectOnce = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
+    };
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onstop = () => {
+      if (chunks.length === 0) {
+        rejectOnce(
+          new Error(`La grabación del clip de muestra "${title}" no produjo ningún dato.`)
+        );
+        return;
+      }
+      resolveOnce(new Blob(chunks, { type: mimeType }));
+    };
+
+    recorder.onerror = (ev) => {
+      const detail = (ev as ErrorEvent)?.error;
+      rejectOnce(
+        new Error(
+          `Error grabando el clip de muestra "${title}": ${
+            detail instanceof Error ? detail.message : 'fallo desconocido del grabador'
+          }`
+        )
+      );
+    };
+
+    // Bounded timeout: guarantees the promise settles even if `onstop` never
+    // fires, so the caller can fall back to the colour cards.
+    timeoutId = setTimeout(() => {
+      rejectOnce(
+        new Error(
+          `La generación del clip de muestra "${title}" excedió el tiempo máximo ` +
+            `(${Math.round(timeoutMs / 1000)} s).`
+        )
+      );
+    }, timeoutMs);
+
+    try {
+      recorder.start();
+    } catch (err) {
+      rejectOnce(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+
+    const drawFrame = () => {
       try {
         const progress = frame / totalFrames;
         const t = frame / fps;
@@ -228,43 +332,62 @@ export async function generateSampleVideoBlob(
 
         frame++;
         if (frame >= totalFrames) {
-          clearInterval(drawInterval);
-          recorder.onstop = () => {
-            const finalBlob = new Blob(chunks, { type: mimeType });
-            resolve(finalBlob);
-          };
-          recorder.stop();
+          if (drawInterval !== null) {
+            clearInterval(drawInterval);
+            drawInterval = null;
+          }
+          try {
+            recorder.stop();
+          } catch (err) {
+            rejectOnce(err instanceof Error ? err : new Error(String(err)));
+          }
         }
       } catch (err) {
-        clearInterval(drawInterval);
-        reject(err);
+        // EX-18: the interval used to reject() without stopping the recorder,
+        // leaving an orphan recording running forever.
+        rejectOnce(err instanceof Error ? err : new Error(String(err)));
       }
-    }, 1000 / fps);
+    };
+
+    drawInterval = setInterval(drawFrame, 1000 / fps);
   });
 }
 
 /**
- * Creates preset sample media items ready to use without uploading anything
+ * Creates preset sample media items ready to use without uploading anything.
+ *
+ * `timeoutMs` bounds the recording of every sample clip so the promise always
+ * settles (and the colour-card fallback is reachable) even on a device where
+ * `MediaRecorder.onstop` never fires.
  */
-export async function createPresetMediaItems(): Promise<MediaItem[]> {
+export async function createPresetMediaItems(
+  timeoutMs: number = SAMPLE_GENERATION_TIMEOUT_MS
+): Promise<MediaItem[]> {
   const items: MediaItem[] = [];
   const canGenerateVideo = isCanvasCaptureSupported() && getSupportedVideoMimeType() !== null;
 
   if (canGenerateVideo) {
-    try {
-      // 1. Video Demo 1: Cyber Neon
-      const video1Blob = await generateSampleVideoBlob('Clip 1: Intro Neón', 5, '#6366f1');
+    // Both clips are recorded in real time, so they are generated IN PARALLEL:
+    // the user waits for the longest clip instead of for the sum of both.
+    const sampleDuration = SAMPLE_VIDEO_DURATION_SECONDS;
+    const [video1Result, video2Result] = await Promise.allSettled([
+      generateSampleVideoBlob('Clip 1: Intro Neón', sampleDuration, '#6366f1', timeoutMs),
+      generateSampleVideoBlob('Clip 2: B-Roll Pulso', sampleDuration, '#ec4899', timeoutMs),
+    ]);
+
+    if (video1Result.status === 'fulfilled') {
+      const video1Blob = video1Result.value;
       const video1Url = safeCreateObjectURL(video1Blob);
-      const video1Thumb = await generateVideoThumbnail(video1Blob, 1.5).catch(() => createPlaceholderThumbnail('Intro Neón', '#6366f1'));
-      const video1Filmstrip = await generateFilmstrip(video1Blob, 5, 5).catch(() => generatePlaceholderFilmstrip(5, '#6366f1'));
+      const video1Thumb = await generateVideoThumbnail(video1Blob, 1.0).catch(() => createPlaceholderThumbnail('Intro Neón', '#6366f1'));
+      const video1Filmstrip = await generateFilmstrip(video1Blob, sampleDuration, 4).catch(() => generatePlaceholderFilmstrip(4, '#6366f1'));
       const video1Peaks = generateSyntheticWaveform(40);
 
       items.push({
         id: 'demo_video_1',
-        name: 'Intro Neón (5s)',
+        name: `Intro Neón (${sampleDuration}s)`,
         type: 'video',
         url: video1Url,
-        duration: 5,
+        duration: sampleDuration,
         width: 640,
         height: 360,
         fps: 30,
@@ -274,20 +397,23 @@ export async function createPresetMediaItems(): Promise<MediaItem[]> {
         size: video1Blob.size,
         createdAt: Date.now(),
       });
+    } else {
+      console.warn('Video sample generation failed, using fallback cards:', video1Result.reason);
+    }
 
-      // 2. Video Demo 2: Action Beat
-      const video2Blob = await generateSampleVideoBlob('Clip 2: B-Roll Pulso', 4, '#ec4899');
+    if (video2Result.status === 'fulfilled') {
+      const video2Blob = video2Result.value;
       const video2Url = safeCreateObjectURL(video2Blob);
-      const video2Thumb = await generateVideoThumbnail(video2Blob, 1.0).catch(() => createPlaceholderThumbnail('B-Roll Pulso', '#ec4899'));
-      const video2Filmstrip = await generateFilmstrip(video2Blob, 4, 4).catch(() => generatePlaceholderFilmstrip(4, '#ec4899'));
+      const video2Thumb = await generateVideoThumbnail(video2Blob, 0.8).catch(() => createPlaceholderThumbnail('B-Roll Pulso', '#ec4899'));
+      const video2Filmstrip = await generateFilmstrip(video2Blob, sampleDuration, 4).catch(() => generatePlaceholderFilmstrip(4, '#ec4899'));
       const video2Peaks = generateSyntheticWaveform(35);
 
       items.push({
         id: 'demo_video_2',
-        name: 'B-Roll Pulso (4s)',
+        name: `B-Roll Pulso (${sampleDuration}s)`,
         type: 'video',
         url: video2Url,
-        duration: 4,
+        duration: sampleDuration,
         width: 640,
         height: 360,
         fps: 30,
@@ -297,8 +423,8 @@ export async function createPresetMediaItems(): Promise<MediaItem[]> {
         size: video2Blob.size,
         createdAt: Date.now() + 1,
       });
-    } catch (err) {
-      console.warn('Video sample generation failed, using fallback cards:', err);
+    } else {
+      console.warn('Video sample generation failed, using fallback cards:', video2Result.reason);
     }
   }
 
@@ -307,10 +433,10 @@ export async function createPresetMediaItems(): Promise<MediaItem[]> {
     const card1 = generateFallbackColorCard('Tarjeta 1: Intro Neón', '#6366f1');
     items.push({
       id: 'demo_card_1',
-      name: 'Tarjeta 1: Intro Neón (5s)',
+      name: `Tarjeta 1: Intro Neón (${SAMPLE_VIDEO_DURATION_SECONDS}s)`,
       type: 'image',
       url: card1.url,
-      duration: 5,
+      duration: SAMPLE_VIDEO_DURATION_SECONDS,
       width: 640,
       height: 360,
       fps: 30,
@@ -323,10 +449,10 @@ export async function createPresetMediaItems(): Promise<MediaItem[]> {
     const card2 = generateFallbackColorCard('Tarjeta 2: B-Roll Pulso', '#ec4899');
     items.push({
       id: 'demo_card_2',
-      name: 'Tarjeta 2: B-Roll Pulso (4s)',
+      name: `Tarjeta 2: B-Roll Pulso (${SAMPLE_VIDEO_DURATION_SECONDS}s)`,
       type: 'image',
       url: card2.url,
-      duration: 4,
+      duration: SAMPLE_VIDEO_DURATION_SECONDS,
       width: 640,
       height: 360,
       fps: 30,

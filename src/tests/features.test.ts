@@ -121,15 +121,19 @@ describe('Transition Engine Calculation', () => {
       },
     };
 
-    // 1. At start of fade in (t = 2.0): alphaMultiplier = 0
+    // The fade is a single overlay (like 'fade-white'): the clip itself is never
+    // darkened twice. Before the fix the clip alpha was multiplied AND a black
+    // overlay was drawn, which produced 0.25*C + 0.75*B at 50% instead of the
+    // symmetric 0.5*C + 0.5*B (E-06).
+    // 1. At start of fade in (t = 2.0): fully covered by black
     const startIn = calculateTransition(clipWithFade, 2.0, 1920);
-    expect(startIn.alphaMultiplier).toBe(0);
+    expect(startIn.alphaMultiplier).toBe(1);
     expect(startIn.overlayColor).toBe('#000000');
     expect(startIn.overlayOpacity).toBe(1);
 
-    // 2. Midway through fade in (t = 2.5): alphaMultiplier = 0.5
+    // 2. Midway through fade in (t = 2.5): half covered by black
     const midIn = calculateTransition(clipWithFade, 2.5, 1920);
-    expect(midIn.alphaMultiplier).toBeCloseTo(0.5);
+    expect(midIn.alphaMultiplier).toBe(1);
     expect(midIn.overlayOpacity).toBeCloseTo(0.5);
 
     // 3. Middle of clip (t = 5.0): fully visible, no transition
@@ -137,9 +141,9 @@ describe('Transition Engine Calculation', () => {
     expect(midClip.alphaMultiplier).toBe(1);
     expect(midClip.overlayOpacity).toBe(0);
 
-    // 4. Midway through fade out (t = 7.5, 0.5s left out of 1.0s): alphaMultiplier = 0.5
+    // 4. Midway through fade out (t = 7.5, 0.5s left out of 1.0s): half covered
     const midOut = calculateTransition(clipWithFade, 7.5, 1920);
-    expect(midOut.alphaMultiplier).toBeCloseTo(0.5);
+    expect(midOut.alphaMultiplier).toBe(1);
     expect(midOut.overlayOpacity).toBeCloseTo(0.5);
   });
 

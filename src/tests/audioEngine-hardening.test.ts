@@ -104,7 +104,9 @@ describe('MasterClock & AudioEngine Web Audio API Hardening', () => {
       const start = performance.now();
       vi.spyOn(performance, 'now').mockReturnValue(start + 6000);
 
-      const t = clock.getTime();
+      // The pause at the end of the timeline is owned by the playback tick,
+      // `getTime()` is a pure getter (E-15).
+      const t = clock.tick();
       expect(t).toBe(5);
       expect(clock.getIsPlaying()).toBe(false);
     });
@@ -213,7 +215,7 @@ describe('MasterClock & AudioEngine Web Audio API Hardening', () => {
       expect(pauseAllSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('disconnects existing gain nodes and resets on stopAll', () => {
+    it('keeps the Web Audio routing alive on stopAll and amplifies above 100% through the graph', () => {
       const disconnectMock = vi.fn();
       const mockGainNode = {
         connect: vi.fn(),
@@ -225,15 +227,35 @@ describe('MasterClock & AudioEngine Web Audio API Hardening', () => {
         state = 'running';
         destination = {};
         createGain = vi.fn(() => mockGainNode);
+        createMediaElementSource = vi.fn(() => ({ connect: vi.fn() }));
       }
       (globalThis as Record<string, unknown>).AudioContext = MockAudioContext;
 
+      const fakeAudioEl = {
+        volume: 1,
+        muted: false,
+        currentTime: 0,
+        playbackRate: 1,
+        paused: false,
+        play: vi.fn().mockResolvedValue(undefined),
+        pause: vi.fn(),
+      } as unknown as HTMLAudioElement;
+      vi.spyOn(mediaSourcePool, 'getAudioElement').mockReturnValue(fakeAudioEl);
+
       const engine = new AudioEngine();
       engine.setMasterVolume(0.8);
-      engine.updateAudio(0, false, mockTracks, mockClips, mockMedia);
+
+      // A clip at 200% needs the graph: `HTMLMediaElement.volume` is capped at 1.
+      const loudClip: Clip = { ...mockClips[0], volume: 2 };
+      engine.updateAudio(1.0, true, mockTracks, [loudClip], mockMedia);
+
+      expect(fakeAudioEl.volume).toBeCloseTo(1, 2);
+      expect(mockGainNode.gain.value).toBeCloseTo(1.6, 2); // 2.0 * 0.8 master volume
 
       engine.stopAll();
-      expect(disconnectMock).toHaveBeenCalled();
+
+      // Tearing the graph down would silence the media elements forever.
+      expect(disconnectMock).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,6 +1,6 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
-import { compositor } from '../../core/engine/Compositor';
+import { compositor, computeRenderScale } from '../../core/engine/Compositor';
 import { masterClock } from '../../core/engine/MasterClock';
 import { audioEngine } from '../../core/engine/AudioEngine';
 import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
@@ -8,6 +8,8 @@ import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
 export const PreviewPlayer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  /** Scale applied to the project space to fill the backing store (KI-02). */
+  const renderScaleRef = useRef<number>(1);
 
   const duration = useProjectStore((s) => s.project.duration);
   const aspectRatio = useProjectStore((s) => s.project.aspectRatio);
@@ -33,6 +35,30 @@ export const PreviewPlayer: React.FC = () => {
     }
   }, [clips, mediaPool]);
 
+  /**
+   * Paints the current frame of the project into the preview canvas.
+   *
+   * The composition always happens in the PROJECT space (`logicalWidth` /
+   * `logicalHeight`); `renderScale` maps it onto the backing store of the
+   * canvas, which is sized for the display (KI-02).
+   */
+  const renderCurrentFrame = useCallback((isPlaying: boolean) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const currProject = useProjectStore.getState().project;
+    compositor.renderFrame({
+      time: masterClock.getTime(),
+      canvas,
+      tracks: currProject.tracks,
+      clips: currProject.clips,
+      mediaPool: currProject.mediaPool,
+      isPlaying,
+      logicalWidth: currProject.resolution.width,
+      logicalHeight: currProject.resolution.height,
+      renderScale: renderScaleRef.current,
+    });
+  }, []);
+
   // Sync MasterClock time with store & render frame
   useEffect(() => {
     const unsubTime = masterClock.subscribeTime((t) => {
@@ -53,6 +79,9 @@ export const PreviewPlayer: React.FC = () => {
           clips: currProject.clips,
           mediaPool: currProject.mediaPool,
           isPlaying: isCurrentlyPlaying,
+          logicalWidth: currProject.resolution.width,
+          logicalHeight: currProject.resolution.height,
+          renderScale: renderScaleRef.current,
         });
       }
       audioEngine.updateAudio(
@@ -77,16 +106,7 @@ export const PreviewPlayer: React.FC = () => {
 
     const unsubFrame = mediaSourcePool.onFrameReady(() => {
       if (!masterClock.getIsPlaying() && canvasRef.current) {
-        const currProject = useProjectStore.getState().project;
-        const t = masterClock.getTime();
-        compositor.renderFrame({
-          time: t,
-          canvas: canvasRef.current,
-          tracks: currProject.tracks,
-          clips: currProject.clips,
-          mediaPool: currProject.mediaPool,
-          isPlaying: false,
-        });
+        renderCurrentFrame(false);
       }
     });
 
@@ -100,7 +120,7 @@ export const PreviewPlayer: React.FC = () => {
       useProjectStore.getState().setCurrentTime(masterClock.getTime());
       audioEngine.stopAll();
     };
-  }, []);
+  }, [renderCurrentFrame]);
 
   // Re-render frame when tracks/clips/mediaPool change while paused (e.g. clip edited, added, moved)
   useEffect(() => {
@@ -113,6 +133,9 @@ export const PreviewPlayer: React.FC = () => {
         clips,
         mediaPool,
         isPlaying: false,
+        logicalWidth: resolution.width,
+        logicalHeight: resolution.height,
+        renderScale: renderScaleRef.current,
       });
       audioEngine.updateAudio(
         t,
@@ -123,6 +146,59 @@ export const PreviewPlayer: React.FC = () => {
       );
     }
   }, [tracks, clips, mediaPool, resolution]);
+
+  /**
+   * KI-02: the backing store of the preview canvas is sized for the DISPLAY,
+   * not for the project.
+   *
+   * The canvas used to be hard-wired to the project resolution (1920x1080 =
+   * 2 073 600 px) even when it was displayed inside a 200x110 box: up to 100x
+   * more rasterised pixels than the screen could show, at 60 fps.
+   *
+   * The fit is recomputed whenever the canvas box changes (window resize,
+   * rotation, sidebar toggle…) through a `ResizeObserver`.
+   */
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const fit = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const dpr = typeof window !== 'undefined' && window.devicePixelRatio ? window.devicePixelRatio : 1;
+      const result = computeRenderScale({
+        logicalWidth: resolution.width,
+        logicalHeight: resolution.height,
+        cssWidth: rect.width,
+        cssHeight: rect.height,
+        devicePixelRatio: dpr,
+      });
+      renderScaleRef.current = result.scale;
+      if (canvas.width === result.width && canvas.height === result.height) return;
+      // Resizing the canvas clears it: paint the current frame again.
+      canvas.width = result.width;
+      canvas.height = result.height;
+      renderCurrentFrame(masterClock.getIsPlaying());
+    };
+
+    fit();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', fit);
+      return () => window.removeEventListener('resize', fit);
+    }
+
+    const observer = new ResizeObserver(fit);
+    observer.observe(canvas);
+    // `devicePixelRatio` can change without a resize of the box (moving the
+    // window to another monitor): the window resize event covers that too.
+    window.addEventListener('resize', fit);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', fit);
+    };
+  }, [resolution.width, resolution.height, renderCurrentFrame]);
 
   // Determine CSS aspect ratio class
   const getAspectClass = () => {
@@ -143,8 +219,14 @@ export const PreviewPlayer: React.FC = () => {
       ref={containerRef}
       className="relative flex-1 bg-dark-950 flex items-center justify-center p-4 overflow-hidden select-none"
     >
-      {/* Canvas wrapper */}
-      <div className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-dark-800 ${getAspectClass()}`}>
+      {/* Canvas wrapper.
+          The width is `min(100%, <project width>)` instead of the intrinsic
+          size of the canvas: the layout must not change when the backing
+          store is re-fitted for the display (KI-02). */}
+      <div
+        style={{ width: `min(100%, ${resolution.width}px)` }}
+        className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-dark-800 ${getAspectClass()}`}
+      >
         <canvas
           ref={canvasRef}
           width={resolution.width}

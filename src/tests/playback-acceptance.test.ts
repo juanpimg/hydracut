@@ -95,6 +95,9 @@ function createMockDOM() {
   return { mockDoc, mockWin, MockNode, MockElement, MockHTMLElement };
 }
 
+/** Instance type of the mocked `<button>` element used by the DOM mock. */
+type MockButton = InstanceType<ReturnType<typeof createMockDOM>['MockHTMLElement']>;
+
 describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
   const originalAudioContext = (globalThis as Record<string, unknown>).AudioContext;
   const originalWebkitAudioContext = (globalThis as Record<string, unknown>).webkitAudioContext;
@@ -134,7 +137,9 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
 
       let finalTime = 0;
       expect(() => {
-        finalTime = clock.getTime();
+        // The pause at the end of the timeline is owned by the playback tick,
+        // `getTime()` is a pure getter (E-15).
+        finalTime = clock.tick();
       }).not.toThrow();
 
       expect(finalTime).toBe(10.0);
@@ -823,6 +828,53 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
   // =========================================================================
   describe('R5 Acceptance: React Render Isolation for MobileBottomBar', () => {
     let mockDOM: ReturnType<typeof createMockDOM>;
+    let root: ReturnType<typeof ReactDOM.createRoot> | null = null;
+
+    /**
+     * Mounts the REAL `MobileBottomBar` and counts the React *commits* of its
+     * subtree through `React.Profiler`.
+     *
+     * A wrapper counter (the previous implementation) only measures how often
+     * the WRAPPER re-rendered. React re-renders a child without re-rendering
+     * its parent, so that counter stayed at 1 even if `MobileBottomBar` had
+     * re-rendered 600 times. `React.Profiler.onRender` fires on every commit
+     * that touches the profiled subtree, which is the real observable.
+     */
+    const mountBottomBar = () => {
+      const commits: number[] = [];
+      const container = mockDOM.mockDoc.createElement('div');
+      root = ReactDOM.createRoot(container as unknown as HTMLElement);
+      root.render(
+        React.createElement(
+          React.Profiler,
+          {
+            id: 'mobile-bottom-bar',
+            onRender: () => {
+              commits.push(1);
+            },
+          },
+          React.createElement(MobileBottomBar, { onOpenSheet: () => {} })
+        )
+      );
+      return { commits, container };
+    };
+
+    /** Finds a rendered element whose `aria-label` starts with `prefix`. */
+    const findByLabel = (node: unknown, prefix: string): MockButton | null => {
+      const el = node as
+        | { getAttribute?: (name: string) => string | null; childNodes?: unknown[] }
+        | null;
+      if (!el) return null;
+      if (typeof el.getAttribute === 'function') {
+        const label = el.getAttribute('aria-label');
+        if (label && label.startsWith(prefix)) return el as MockButton;
+      }
+      for (const child of el.childNodes ?? []) {
+        const found = findByLabel(child, prefix);
+        if (found) return found;
+      }
+      return null;
+    };
 
     beforeEach(() => {
       mockDOM = createMockDOM();
@@ -833,9 +885,18 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
       (globalThis as Record<string, unknown>).HTMLElement = mockDOM.MockHTMLElement;
 
       useProjectStore.getState().resetProject();
+      // Deterministic clock state through the PUBLIC API only.
+      masterClock.pause();
+      masterClock.seek(0);
     });
 
     afterEach(() => {
+      // Unmount the React root so the `masterClock` subscription registered by
+      // `MobileSplitButton` does not leak into the following tests.
+      if (root) {
+        root.unmount();
+        root = null;
+      }
       delete (globalThis as Record<string, unknown>).document;
       delete (globalThis as Record<string, unknown>).window;
       delete (globalThis as Record<string, unknown>).Node;
@@ -843,38 +904,68 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
       delete (globalThis as Record<string, unknown>).HTMLElement;
     });
 
-    it('MobileBottomBar mounts with renderCount <= 1 and does not re-render across 600 ticks of simulated 60 FPS playback', async () => {
-      let renderCount = 0;
+    it('MobileBottomBar commits exactly once and does not re-render across 600 ticks of simulated 60 FPS playback', async () => {
+      // A clip from 1s to 6s so the split button has real data to inspect.
+      useProjectStore.getState().addTrack('video', 'V1');
+      const trackId = useProjectStore.getState().project.tracks[0].id;
+      useProjectStore.setState((s) => ({
+        project: {
+          ...s.project,
+          clips: [
+            {
+              id: 'c1',
+              trackId,
+              mediaId: 'm1',
+              name: 'Clip 1',
+              type: 'video',
+              start: 1.0,
+              duration: 5.0,
+              sourceStart: 0,
+              sourceDuration: 5.0,
+              volume: 1,
+              opacity: 1,
+              scale: 1,
+              positionX: 0,
+              positionY: 0,
+              muted: false,
+            },
+          ],
+        },
+      }));
 
-      // Wrap MobileBottomBar to monitor re-renders
-      const MonitoredMobileBottomBar: React.FC<{ onOpenSheet: () => void }> = (props) => {
-        renderCount++;
-        return React.createElement(MobileBottomBar, props);
-      };
-
-      const container = mockDOM.mockDoc.createElement('div');
-      const root = ReactDOM.createRoot(container as unknown as HTMLElement);
-
-      // Mount component
-      root.render(React.createElement(MonitoredMobileBottomBar, { onOpenSheet: () => {} }));
+      const { commits, container } = mountBottomBar();
 
       // Wait for initial render commit
       await new Promise((resolve) => setTimeout(resolve, 80));
-      expect(renderCount).toBe(1);
+      expect(commits.length).toBe(1);
 
-      // Simulate 600 ticks of 60 FPS playback (10 seconds)
+      // Simulate 600 ticks of 60 FPS playback (10 seconds) through the PUBLIC
+      // clock API. `seek()` is the public entry point that notifies the time
+      // subscribers; the private `notifyTime()` is never called from a test.
       for (let tick = 0; tick < 600; tick++) {
-        const time = tick * (1 / 60);
-        // Dispatch clock tick to any subscribers
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (masterClock as any).notifyTime(time);
+        masterClock.seek((tick * (1 / 60)) % 30);
       }
 
       await new Promise((resolve) => setTimeout(resolve, 80));
 
       // STRICT ACCEPTANCE ASSERTION:
-      // MobileBottomBar must NOT re-render during playback!
-      expect(renderCount).toBe(1);
+      // the MobileBottomBar subtree must NOT be re-rendered during playback!
+      expect(commits.length).toBe(1);
+
+      // The clock subscription is still alive: the split button state is
+      // updated IMPERATIVELY (DOM mutation), not by a React re-render.
+      const splitButton = findByLabel(container, 'Dividir en cabezal');
+      expect(splitButton).not.toBeNull();
+      // The playhead is at ~10s, outside the 1s..6s clip -> the button is disabled.
+      expect(splitButton!.disabled).toBe(true);
+      expect(splitButton!.getAttribute('aria-label')).toContain('no disponible');
+
+      // Moving the playhead INSIDE the clip flips the button, still with no commit.
+      masterClock.seek(3.0);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(splitButton!.disabled).toBe(false);
+      expect(splitButton!.getAttribute('aria-label')).toBe('Dividir en cabezal');
+      expect(commits.length).toBe(1);
     });
 
     it('splitAtPlayhead in useProjectStore directly queries masterClock.getTime() for microsecond accuracy', () => {

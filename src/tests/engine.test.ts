@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Compositor } from '../core/engine/Compositor';
 import { useProjectStore } from '../store/useProjectStore';
 import { Clip, Track } from '../types/project';
@@ -149,78 +149,351 @@ describe('Track Management & Hierarchy', () => {
   });
 });
 
-describe('WebCodecs Audio Planar Chunking Logic', () => {
-  it('constructs correct stereo planar buffer with left channel followed by right channel', () => {
-    const sampleRate = 48000;
-    const framesInChunk = 2048;
+/**
+ * Contract tests for the REAL export pipeline.
+ *
+ * The previous version of this file re-implemented the planar audio chunking
+ * and the even-dimension rounding *locally* and asserted the local copies, so
+ * it proved nothing about the shipped code. These tests drive the public
+ * `exportVideo()` entry point with instrumented WebCodecs globals and assert
+ * what the production code actually hands to the encoders.
+ */
+describe('Export Pipeline: production contract with the WebCodecs encoders', () => {
+  const REAL_GLOBALS: Record<string, unknown> = {};
+  const GLOBAL_KEYS = [
+    'VideoEncoder',
+    'VideoFrame',
+    'AudioEncoder',
+    'AudioData',
+    'OfflineAudioContext',
+    'document',
+    'fetch',
+  ];
 
-    // Simulate Left (channel 0) and Right (channel 1) samples
-    const leftChannel = new Float32Array(framesInChunk);
-    const rightChannel = new Float32Array(framesInChunk);
-    for (let i = 0; i < framesInChunk; i++) {
-      leftChannel[i] = 0.5;
-      rightChannel[i] = -0.5;
-    }
+  interface EncoderConfig {
+    width?: number;
+    height?: number;
+    codec?: string;
+    numberOfChannels?: number;
+    sampleRate?: number;
+    framerate?: number;
+  }
 
-    // Planar format for 2 channels: Left plane followed by Right plane
-    const chunkData = new Float32Array(framesInChunk * 2);
-    for (let i = 0; i < framesInChunk; i++) {
-      chunkData[i] = leftChannel[i];
-      chunkData[framesInChunk + i] = rightChannel[i];
-    }
+  interface AudioDataInit {
+    format: string;
+    sampleRate: number;
+    numberOfFrames: number;
+    numberOfChannels: number;
+    timestamp: number;
+    data: Float32Array;
+  }
 
-    // Total elements: 4096 (2048 per channel)
-    expect(chunkData.length).toBe(4096);
-    // Byte length: 4096 * 4 bytes = 16384 bytes
-    expect(chunkData.buffer.byteLength).toBe(framesInChunk * 2 * 4);
+  let videoEncoderConfigs: EncoderConfig[] = [];
+  let audioDataInits: AudioDataInit[] = [];
+  let renderFrameSpy: ReturnType<typeof vi.spyOn>;
 
-    // Verify channel 0 samples
-    expect(chunkData[0]).toBe(0.5);
-    expect(chunkData[framesInChunk - 1]).toBe(0.5);
+  const LEFT_SAMPLE = 0.25;
+  const RIGHT_SAMPLE = -0.75;
 
-    // Verify channel 1 samples
-    expect(chunkData[framesInChunk]).toBe(-0.5);
-    expect(chunkData[framesInChunk * 2 - 1]).toBe(-0.5);
-
-    // Verify timestamp calculation in microseconds
-    const offset = 2048;
-    const timestampUs = Math.round((offset / sampleRate) * 1_000_000);
-    expect(timestampUs).toBe(Math.round((2048 / 48000) * 1_000_000));
+  /** Fake rendered PCM: distinct constant value per channel. */
+  const makeRenderedBuffer = (length: number, sampleRate = 48000) => ({
+    duration: length / sampleRate,
+    length,
+    sampleRate,
+    numberOfChannels: 2,
+    getChannelData: (channel: number) => {
+      const data = new Float32Array(length);
+      data.fill(channel === 0 ? LEFT_SAMPLE : RIGHT_SAMPLE);
+      return data;
+    },
   });
-});
 
-describe('Export Dimension Rounding for Hardware Acceleration', () => {
-  it('guarantees that all dimensions are strictly even numbers for H.264', () => {
-    const testCases = [
-      { base: 1080, ratio: '16:9' as const },
-      { base: 720, ratio: '16:9' as const },
-      { base: 2160, ratio: '16:9' as const },
-      { base: 1080, ratio: '9:16' as const },
-      { base: 720, ratio: '9:16' as const },
-      { base: 1080, ratio: '1:1' as const },
-      { base: 721, ratio: '16:9' as const }, // odd base
-      { base: 333, ratio: '9:16' as const }, // odd base
-    ];
+  beforeEach(() => {
+    for (const key of GLOBAL_KEYS) {
+      REAL_GLOBALS[key] = (globalThis as Record<string, unknown>)[key];
+    }
+    videoEncoderConfigs = [];
+    audioDataInits = [];
 
-    for (const tc of testCases) {
-      let width = tc.base;
-      let height = tc.base;
-      if (tc.ratio === '16:9') {
-        width = Math.round((tc.base * 16) / 9);
-        height = tc.base;
-      } else if (tc.ratio === '9:16') {
-        width = tc.base;
-        height = Math.round((tc.base * 16) / 9);
+    // --- WebCodecs: VideoEncoder -------------------------------------------
+    class FakeVideoEncoder {
+      state: 'unconfigured' | 'configured' | 'closed' = 'unconfigured';
+      encodeQueueSize = 0;
+      private init: {
+        output: (chunk: unknown, meta?: unknown) => void;
+        error: (e: unknown) => void;
+      };
+      constructor(init: { output: (chunk: unknown, meta?: unknown) => void; error: (e: unknown) => void }) {
+        this.init = init;
       }
+      static isConfigSupported = vi.fn(async (cfg: EncoderConfig) => ({
+        supported: true,
+        config: cfg,
+      }));
+      configure(cfg: EncoderConfig) {
+        videoEncoderConfigs.push(cfg);
+        this.state = 'configured';
+      }
+      encode(
+        _frame: { timestamp: number; duration?: number },
+        encodeOptions?: { keyFrame?: boolean }
+      ) {
+        this.init.output(
+          {
+            byteLength: 4,
+            copyTo: (dest: Uint8Array) => dest.set([0, 0, 0, 1]),
+            type: encodeOptions?.keyFrame ? 'key' : 'delta',
+            timestamp: 0,
+            duration: 33333,
+          },
+          {
+            decoderConfig: {
+              codec: 'avc1.640028',
+              codedWidth: 1920,
+              codedHeight: 1080,
+              colorSpace: {
+                primaries: 'bt709',
+                transfer: 'bt709',
+                matrix: 'bt709',
+              },
+            },
+          }
+        );
+      }
+      async flush() {}
+      close() {
+        this.state = 'closed';
+      }
+      addEventListener() {}
+      removeEventListener() {}
+    }
 
-      // Even rounding
-      width = width - (width % 2);
-      height = height - (height % 2);
+    class FakeVideoFrame {
+      timestamp: number;
+      duration?: number;
+      constructor(_source: unknown, init: { timestamp: number; duration?: number }) {
+        this.timestamp = init.timestamp;
+        this.duration = init.duration;
+      }
+      close() {}
+    }
 
-      expect(width % 2).toBe(0);
-      expect(height % 2).toBe(0);
-      expect(width).toBeGreaterThan(0);
-      expect(height).toBeGreaterThan(0);
+    // --- WebCodecs: AudioEncoder -------------------------------------------
+    class FakeAudioEncoder {
+      state: 'unconfigured' | 'configured' | 'closed' = 'unconfigured';
+      encodeQueueSize = 0;
+      private init: {
+        output: (chunk: unknown, meta?: unknown) => void;
+        error: (e: unknown) => void;
+      };
+      constructor(init: { output: (chunk: unknown, meta?: unknown) => void; error: (e: unknown) => void }) {
+        this.init = init;
+      }
+      static isConfigSupported = vi.fn(async (cfg: EncoderConfig) => ({
+        supported: true,
+        config: cfg,
+      }));
+      configure(_cfg: EncoderConfig) {
+        this.state = 'configured';
+      }
+      encode(data: { timestamp: number }) {
+        this.init.output(
+          {
+            byteLength: 8,
+            copyTo: (dest: Uint8Array) => dest.set([1, 2, 3, 4, 5, 6, 7, 8]),
+            type: 'key',
+            timestamp: data.timestamp,
+            duration: 21333,
+          },
+          undefined
+        );
+      }
+      async flush() {}
+      close() {
+        this.state = 'closed';
+      }
+      addEventListener() {}
+      removeEventListener() {}
+    }
+
+    class FakeAudioData {
+      constructor(public init: AudioDataInit) {
+        audioDataInits.push(init);
+      }
+      close() {}
+    }
+
+    class FakeOfflineAudioContext {
+      length: number;
+      sampleRate: number;
+      destination = {};
+      constructor(_channels: number, length: number, sampleRate: number) {
+        this.length = length;
+        this.sampleRate = sampleRate;
+      }
+      createBufferSource() {
+        return {
+          buffer: null as unknown,
+          playbackRate: { value: 1 },
+          connect: () => {},
+          start: () => {},
+        };
+      }
+      createGain() {
+        return {
+          gain: { setValueAtTime: () => {}, linearRampToValueAtTime: () => {} },
+          connect: () => {},
+        };
+      }
+      async decodeAudioData() {
+        return makeRenderedBuffer(10 * this.sampleRate, this.sampleRate);
+      }
+      async startRendering() {
+        return makeRenderedBuffer(this.length, this.sampleRate);
+      }
+    }
+
+    const g = globalThis as Record<string, unknown>;
+    g.VideoEncoder = FakeVideoEncoder;
+    g.VideoFrame = FakeVideoFrame;
+    g.AudioEncoder = FakeAudioEncoder;
+    g.AudioData = FakeAudioData;
+    g.OfflineAudioContext = FakeOfflineAudioContext;
+    g.fetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      arrayBuffer: async () => new ArrayBuffer(8),
+    }));
+
+    // The exporter creates its own canvas through `document.createElement`.
+    g.document = {
+      createElement: () => ({
+        width: 0,
+        height: 0,
+        getContext: () => null,
+      }),
+    };
+
+    // The canvas rendering itself is not what these tests assert: stub it out
+    // so the export only exercises the encoder contract.
+    renderFrameSpy = vi
+      .spyOn(Compositor.prototype, 'renderFrame')
+      .mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    renderFrameSpy.mockRestore();
+    for (const key of GLOBAL_KEYS) {
+      const g = globalThis as Record<string, unknown>;
+      if (REAL_GLOBALS[key] === undefined) {
+        delete g[key];
+      } else {
+        g[key] = REAL_GLOBALS[key];
+      }
+    }
+  });
+
+  const buildExportParams = (width: number, height: number) => ({
+    config: {
+      aspectRatio: '16:9' as const,
+      width,
+      height,
+      fps: 30,
+      bitrate: 2_000_000,
+      format: 'mp4' as const,
+    },
+    duration: 0.1,
+    tracks: [
+      {
+        id: 'track_a1',
+        name: 'A1',
+        type: 'audio' as const,
+        isMuted: false,
+        isLocked: false,
+        isVisible: true,
+      },
+    ],
+    clips: [
+      {
+        id: 'clip_a1',
+        trackId: 'track_a1',
+        mediaId: 'media_a1',
+        name: 'Audio Clip',
+        type: 'audio' as const,
+        start: 0,
+        duration: 0.1,
+        sourceStart: 0,
+        sourceDuration: 0.1,
+        volume: 1,
+        opacity: 1,
+        scale: 1,
+        positionX: 0,
+        positionY: 0,
+        muted: false,
+      },
+    ],
+    mediaPool: [
+      {
+        id: 'media_a1',
+        name: 'Audio Media',
+        type: 'audio' as const,
+        url: 'blob:media-a1',
+        duration: 10,
+        width: 0,
+        height: 0,
+        fps: 0,
+        thumbnailUrl: '',
+        size: 128,
+        createdAt: 0,
+      },
+    ],
+    onProgress: () => {},
+  });
+
+  it('hands the encoders strictly even dimensions, rounding the odd ones down', async () => {
+    const { exportVideo } = await import('../core/export/webcodecsExporter');
+
+    // 1921x1081 are both odd: H.264 hardware encoders reject odd dimensions.
+    await exportVideo(buildExportParams(1921, 1081) as never);
+
+    expect(videoEncoderConfigs.length).toBeGreaterThan(0);
+    for (const cfg of videoEncoderConfigs) {
+      expect(cfg.width! % 2).toBe(0);
+      expect(cfg.height! % 2).toBe(0);
+    }
+    // The encoder must be configured with the ROUNDED dimensions.
+    expect(videoEncoderConfigs.some((c) => c.width === 1920 && c.height === 1080)).toBe(true);
+    expect(videoEncoderConfigs.some((c) => c.width === 1921 || c.height === 1081)).toBe(false);
+  });
+
+  it('feeds the AudioEncoder a stereo f32-planar buffer (left plane then right plane)', async () => {
+    const { exportVideo, AUDIO_BLOCK_SIZE } = await import('../core/export/webcodecsExporter');
+
+    await exportVideo(buildExportParams(640, 360) as never);
+
+    expect(AUDIO_BLOCK_SIZE).toBe(2048);
+    expect(audioDataInits.length).toBeGreaterThan(0);
+
+    const first = audioDataInits[0];
+    expect(first.format).toBe('f32-planar');
+    expect(first.numberOfChannels).toBe(2);
+    expect(first.numberOfFrames).toBe(AUDIO_BLOCK_SIZE);
+    expect(first.sampleRate).toBe(48000);
+    expect(first.timestamp).toBe(0);
+
+    // Planar layout: the first plane is the LEFT channel, the second one RIGHT.
+    const plane = first.data;
+    expect(plane.length).toBe(AUDIO_BLOCK_SIZE * 2);
+    expect(plane[0]).toBe(LEFT_SAMPLE);
+    expect(plane[AUDIO_BLOCK_SIZE - 1]).toBe(LEFT_SAMPLE);
+    expect(plane[AUDIO_BLOCK_SIZE]).toBe(RIGHT_SAMPLE);
+    expect(plane[AUDIO_BLOCK_SIZE * 2 - 1]).toBe(RIGHT_SAMPLE);
+
+    // The second chunk starts exactly one block later (timestamp in µs).
+    if (audioDataInits.length > 1) {
+      expect(audioDataInits[1].timestamp).toBe(
+        Math.round((AUDIO_BLOCK_SIZE / 48000) * 1_000_000)
+      );
     }
   });
 });

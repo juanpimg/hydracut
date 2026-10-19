@@ -34,6 +34,17 @@ export interface ClipTransition {
   fadeOutDuration: number; // segundos
 }
 
+/**
+ * Availability of a media item (F3).
+ *
+ * - `ok`      : the file is present and usable (the default).
+ * - `missing` : the bytes are gone (the file disappeared from OPFS or the
+ *               rehydration failed). The clip renders black and silent, so the
+ *               UI MUST warn about it and offer a relink.
+ * - `error`   : the file is there but it cannot be decoded / loaded.
+ */
+export type MediaStatus = 'ok' | 'missing' | 'error';
+
 export interface MediaItem {
   id: string;
   name: string;
@@ -49,6 +60,33 @@ export interface MediaItem {
   size: number;
   createdAt: number;
   opfsPath?: string;
+  /**
+   * Availability of the media (F3). Optional for backwards compatibility:
+   * a media without status is healthy (`ok`).
+   */
+  status?: MediaStatus;
+}
+
+/**
+ * What happens when a clip is inserted where another clip already lives (F1).
+ *
+ * - `block`    : the insertion is refused and the reason is reported.
+ * - `overwrite`: the new clip trims the overlapped part of the existing one.
+ * - `ripple`   : the clips that follow shift to the right to make room.
+ */
+export type OverlapPolicy = 'block' | 'overwrite' | 'ripple';
+
+/**
+ * Entry of the media trash (F2): the media that left the project together
+ * with the clips that used it (they are restored with it).
+ */
+export interface TrashEntry {
+  /** The media item that was removed from the media pool. */
+  media: MediaItem;
+  /** The clips that referenced the media (kept aside, not rendered). */
+  clips: Clip[];
+  /** Timestamp (ms since the epoch) of the removal. */
+  deletedAt: number;
 }
 
 export interface Clip {
@@ -98,9 +136,32 @@ export interface Project {
   tracks: Track[];
   clips: Clip[];
   mediaPool: MediaItem[];
+  /**
+   * Duration of the timeline (seconds). It is DERIVED from the real extent of
+   * the content: `max(clip.start + clip.duration)`. It must never be padded
+   * with an arbitrary floor, because this is the value the exporter renders
+   * and the value the export modal displays (KI-01 / S-06 / B-06).
+   */
   duration: number;
+  /**
+   * Optional tail (seconds) added AFTER the last clip when computing
+   * `duration`. Defaults to 0 (no padding): the exported video has to match
+   * what the user sees in the timeline. Set it explicitly to opt in a tail.
+   */
+  endPaddingSeconds?: number;
   createdAt: number;
   updatedAt: number;
+  /**
+   * Policy applied when a clip is inserted over an existing clip (F1).
+   * Optional for backwards compatibility: projects saved before F1 default
+   * to `block` (the safest policy).
+   */
+  overlapPolicy?: OverlapPolicy;
+  /**
+   * Media trash (F2). Optional for backwards compatibility: projects saved
+   * before F2 have no trash at all.
+   */
+  trash?: TrashEntry[];
 }
 
 export interface ProjectMetadata {

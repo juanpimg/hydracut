@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useId } from 'react';
 import { X } from 'lucide-react';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 
 interface MobileBottomSheetProps {
   isOpen: boolean;
@@ -14,6 +15,12 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
   title,
   children
 }) => {
+  const titleId = useId();
+
+  // UI-08: the sheet declared `role="dialog" aria-modal="true"` but never
+  // moved the focus inside, never trapped it and never restored it.
+  const dialogRef = useFocusTrap<HTMLDivElement>(isOpen, { onEscape: onClose });
+
   // Lock body scroll while open
   useEffect(() => {
     if (isOpen) {
@@ -26,24 +33,17 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
     };
   }, [isOpen]);
 
-  // Close on Escape
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
   if (!isOpen) return null;
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
-      aria-label={title}
-      className="fixed inset-0 z-50 flex flex-col justify-end"
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      data-testid="mobile-bottom-sheet"
+      className="fixed inset-0 z-50 flex flex-col justify-end focus:outline-none"
     >
       {/* Backdrop */}
       <div 
@@ -54,7 +54,7 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
       {/* Sheet Content */}
       <div 
         data-sheet-content="true"
-        className="relative bg-dark-900 border-t border-dark-750 rounded-t-2xl shadow-2xl flex flex-col max-h-[60vh] h-[52vh] z-10 overflow-hidden pb-[env(safe-area-inset-bottom)] animate-slideUp"
+        className="relative bg-dark-900 border-t border-dark-750 rounded-t-2xl shadow-2xl flex flex-col max-h-[60dvh] h-[52dvh] z-10 overflow-hidden pb-[env(safe-area-inset-bottom)] animate-slideUp"
       >
         {/* Drag handle pill */}
         <div className="w-full flex justify-center pt-2 pb-1">
@@ -63,12 +63,12 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
 
         {/* Sheet Header */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-dark-800 shrink-0">
-          <h3 className="text-sm font-bold text-white tracking-wide">
+          <h3 id={titleId} className="text-sm font-bold text-white tracking-wide">
             {title}
           </h3>
           <button
             onClick={onClose}
-            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white bg-dark-850 hover:bg-dark-800 rounded-full transition active:scale-95"
+            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white bg-dark-850 hover:bg-dark-800 rounded-full transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             title="Cerrar"
             aria-label="Cerrar panel"
           >

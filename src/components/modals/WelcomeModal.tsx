@@ -9,6 +9,7 @@ import {
   rehydrateProjectMedia,
 } from '../../core/storage/projectStorage';
 import { ProjectMetadata } from '../../types/project';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
 
 function formatDate(timestamp: number): string {
   if (!timestamp) return 'Fecha desconocida';
@@ -41,15 +42,16 @@ export const WelcomeModal: React.FC = () => {
       .catch(() => setRecent([]));
   }, [isWelcomeOpen]);
 
-  // Close on Escape (= continue with current project)
-  useEffect(() => {
-    if (!isWelcomeOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setWelcomeOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isWelcomeOpen, setWelcomeOpen]);
+  /**
+   * UI-08: the welcome screen is a modal dialog: it must move the focus
+   * inside, trap it and give it back when it closes.
+   */
+  const dialogRef = useFocusTrap<HTMLDivElement>(isWelcomeOpen, {
+    onEscape: () => setWelcomeOpen(false),
+  });
+
+  // Close on Escape (= continue with current project) is handled by the focus
+  // trap (`useFocusTrap`).
 
   if (!isWelcomeOpen) return null;
 
@@ -90,18 +92,20 @@ export const WelcomeModal: React.FC = () => {
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-label="Bienvenido a HydraCut"
       data-testid="welcome-modal"
-      className="fixed inset-0 bg-black/80 backdrop-blur-md z-[70] flex items-center justify-center p-4 select-none animate-fadeIn"
+      tabIndex={-1}
+      className="fixed inset-0 bg-black/80 backdrop-blur-md z-[70] flex items-center justify-center p-4 select-none animate-fadeIn focus:outline-none"
     >
       <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-scaleUp">
         {/* Header */}
         <div className="px-5 pt-5 pb-3 text-center relative">
           <button
             onClick={() => setWelcomeOpen(false)}
-            className="absolute top-3 right-3 text-slate-400 hover:text-white p-2 rounded-lg hover:bg-dark-800 active:scale-95 transition"
+            className="absolute top-3 right-3 text-slate-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-dark-800 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             title="Continuar (Esc)"
             aria-label="Cerrar y continuar"
           >
@@ -144,7 +148,7 @@ export const WelcomeModal: React.FC = () => {
             onClick={() => setWelcomeOpen(false)}
             disabled={busy}
             data-testid="welcome-continue"
-            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm shadow-md shadow-cyan-500/20 active:scale-[0.99] transition text-left"
+            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm shadow-md shadow-cyan-500/20 active:scale-[0.99] transition text-left focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:outline-none"
           >
             <FolderOpen size={18} className="shrink-0" />
             <span>
@@ -157,7 +161,7 @@ export const WelcomeModal: React.FC = () => {
             onClick={handleNewBlank}
             disabled={busy}
             data-testid="welcome-new"
-            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/40 text-slate-200 hover:text-white font-semibold text-sm active:scale-[0.99] transition text-left"
+            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/40 text-slate-200 hover:text-white font-semibold text-sm active:scale-[0.99] transition text-left focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             <FilePlus2 size={18} className="text-cyan-400 shrink-0" />
             <span>
@@ -170,7 +174,7 @@ export const WelcomeModal: React.FC = () => {
             onClick={handleOpenGallery}
             disabled={busy}
             data-testid="welcome-open"
-            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/40 text-slate-200 hover:text-white font-semibold text-sm active:scale-[0.99] transition text-left"
+            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/40 text-slate-200 hover:text-white font-semibold text-sm active:scale-[0.99] transition text-left focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             <FolderOpen size={18} className="text-emerald-400 shrink-0" />
             <span>
@@ -196,7 +200,7 @@ export const WelcomeModal: React.FC = () => {
                     onClick={() => handleLoadRecent(p.id)}
                     disabled={busy}
                     data-testid={`welcome-recent-${p.id}`}
-                    className="w-full flex items-center justify-between gap-2 px-3 min-h-[44px] rounded-lg hover:bg-dark-850 text-left transition group"
+                    className="w-full flex items-center justify-between gap-2 px-3 min-h-[44px] rounded-lg hover:bg-dark-850 text-left transition group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                   >
                     <span className="text-xs font-medium text-slate-300 group-hover:text-white truncate">
                       {p.name}

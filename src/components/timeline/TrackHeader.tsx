@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { Track } from '../../types/project';
 import { useProjectStore } from '../../store/useProjectStore';
+import { moveFocusWithin } from '../../hooks/useFocusTrap';
 
 interface TrackHeaderProps {
   track: Track;
@@ -36,6 +37,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [popoverCoords, setPopoverCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const trackIndex = typeof index === 'number' ? index : tracks.findIndex((t) => t.id === track.id);
   const canDelete = tracks.length > 1;
@@ -92,26 +94,54 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
     }
   };
 
-  // Close menu on Escape
+  // Close the menu on Escape and navigate it with the arrow keys (audit UI-14)
   useEffect(() => {
     if (!menuOpen) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMenuOpen(false);
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        setMenuOpen(false);
+        menuBtnRef.current?.focus();
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        moveFocusWithin(menuRef.current, '[role="menuitem"]', e.key === 'ArrowDown' ? 'next' : 'prev');
+        return;
+      }
+      if (e.key === 'Home' || e.key === 'End') {
+        e.preventDefault();
+        moveFocusWithin(menuRef.current, '[role="menuitem"]', e.key === 'Home' ? 'first' : 'last');
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+
+    const raf =
+      typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame(() => {
+            moveFocusWithin(menuRef.current, '[role="menuitem"]', 'first');
+          })
+        : null;
+    if (raf === null) moveFocusWithin(menuRef.current, '[role="menuitem"]', 'first');
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      if (raf !== null) cancelAnimationFrame(raf);
+    };
   }, [menuOpen]);
 
   // Touch hitbox button base styling (44px height guaranteed; width 28px real
   // + 4px pseudo expansion each side. Gap between buttons absorbs the expansion
   // so neighboring hit areas overlap by at most ~4px instead of ~14px.)
   const buttonBaseClass =
-    "relative flex items-center justify-center rounded-md transition active:scale-95 touch-manipulation h-11 min-h-[44px] w-7 min-w-[28px] after:absolute after:-inset-1 after:content-['']";
+    "relative flex items-center justify-center rounded-md transition active:scale-95 touch-manipulation h-11 min-h-[44px] w-7 min-w-[28px] after:absolute after:-inset-1 after:content-[''] focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none";
 
   return (
     <div
       data-testid={`track-header-${track.id}`}
-      className="h-14 px-1.5 sm:px-2 md:px-3 bg-dark-900 border-b border-r border-dark-800 flex items-center justify-between select-none group"
+      className="h-14 px-1.5 sm:px-2 md:px-3 bg-dark-900 border-b border-r border-dark-800 flex items-center justify-between select-none group overflow-hidden"
     >
       {/* 1. Track Badge & Full Name */}
       <div className="flex items-center gap-1 min-w-0 flex-1 pr-1 overflow-hidden">
@@ -128,7 +158,14 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
         </span>
       </div>
 
-      {/* 2. Direct Touch Action Buttons */}
+      {/*
+        2. Direct Touch Action Buttons.
+
+        UI-12: on 320–390 px phones the four buttons needed 136 px inside a
+        112 px column and were painted on top of the first clips of the lane
+        area. Below 400 px only the visibility and the "more" buttons stay
+        inline; mute and lock move into the "more" menu (see below).
+      */}
       <div className="flex items-center gap-1 shrink-0">
         {/* Visibility (Eye) */}
         <button
@@ -148,7 +185,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
           {track.isVisible ? <Eye size={13} /> : <EyeOff size={13} />}
         </button>
 
-        {/* Mute (Audio / Video) */}
+        {/* Mute (Audio / Video) — inline only from 400px up */}
         {track.type !== 'text' ? (
           <button
             type="button"
@@ -156,7 +193,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
               e.stopPropagation();
               toggleTrackMute(track.id);
             }}
-            className={`${buttonBaseClass} ${
+            className={`${buttonBaseClass} hidden min-[400px]:flex ${
               track.isMuted
                 ? 'text-red-400 bg-red-950/50 border border-red-500/30'
                 : 'text-slate-400 hover:text-white'
@@ -168,17 +205,17 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
           </button>
         ) : (
           /* Placeholder invisible to preserve columnar grid alignment */
-          <div className="w-7 min-w-[28px] h-11 min-h-[44px]" aria-hidden="true" />
+          <div className="hidden min-[400px]:block w-7 min-w-[28px] h-11 min-h-[44px]" aria-hidden="true" />
         )}
 
-        {/* Lock */}
+        {/* Lock — inline only from 400px up */}
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             toggleTrackLock(track.id);
           }}
-          className={`${buttonBaseClass} ${
+          className={`${buttonBaseClass} hidden min-[400px]:flex ${
             track.isLocked
               ? 'text-amber-400 bg-amber-950/50 border border-amber-500/30'
               : 'text-slate-400 hover:text-white'
@@ -220,22 +257,60 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
               onClick={(e) => {
                 e.stopPropagation();
                 setMenuOpen(false);
+                menuBtnRef.current?.focus();
               }}
             />
 
             {/* Menu Popover Container */}
             <div
+              ref={menuRef}
               role="menu"
               aria-label="Opciones de pista"
               data-testid={`track-menu-${track.id}`}
               style={{ top: `${popoverCoords.top}px`, left: `${popoverCoords.left}px` }}
-              className="fixed z-[60] w-44 max-h-[70vh] overflow-y-auto bg-dark-900 border border-dark-750 rounded-lg shadow-2xl py-1 px-1 text-slate-200 text-xs flex flex-col gap-0.5 animate-scaleUp"
+              className="fixed z-[60] w-44 max-h-[70dvh] overflow-y-auto bg-dark-900 border border-dark-750 rounded-lg shadow-2xl py-1 px-1 text-slate-200 text-xs flex flex-col gap-0.5 animate-scaleUp"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="px-2.5 py-1.5 border-b border-dark-800 text-[10px] font-mono font-bold text-slate-400 flex items-center justify-between">
                 <span className="truncate">{track.name}</span>
                 <span className="uppercase text-[9px] text-slate-500 ml-1 shrink-0">{track.type}</span>
               </div>
+
+              {/* Mute — only below 400px, where the inline button is hidden */}
+              {track.type !== 'text' && (
+                <button
+                  role="menuitem"
+                  title={track.isMuted ? 'Activar audio' : 'Silenciar pista'}
+                  aria-label={track.isMuted ? 'Activar audio' : 'Silenciar pista'}
+                  data-testid={`track-menu-mute-${track.id}`}
+                  onClick={() => {
+                    toggleTrackMute(track.id);
+                    setMenuOpen(false);
+                    menuBtnRef.current?.focus();
+                  }}
+                  className="min-[400px]:hidden w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white transition text-left min-h-[44px] touch-manipulation"
+                >
+                  {track.isMuted ? <VolumeX size={14} className="text-red-400 shrink-0" /> : <Volume2 size={14} className="shrink-0" />}
+                  <span className="truncate">{track.isMuted ? 'Activar audio' : 'Silenciar pista'}</span>
+                </button>
+              )}
+
+              {/* Lock — only below 400px, where the inline button is hidden */}
+              <button
+                role="menuitem"
+                title={track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}
+                aria-label={track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}
+                data-testid={`track-menu-lock-${track.id}`}
+                onClick={() => {
+                  toggleTrackLock(track.id);
+                  setMenuOpen(false);
+                  menuBtnRef.current?.focus();
+                }}
+                className="min-[400px]:hidden w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white transition text-left min-h-[44px] touch-manipulation"
+              >
+                {track.isLocked ? <Lock size={14} className="text-amber-400 shrink-0" /> : <Unlock size={14} className="shrink-0" />}
+                <span className="truncate">{track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}</span>
+              </button>
 
               {/* Duplicar pista */}
               <button
@@ -246,6 +321,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
                 onClick={() => {
                   duplicateTrack(track.id);
                   setMenuOpen(false);
+                  menuBtnRef.current?.focus();
                 }}
                 className="w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white transition text-left min-h-[40px] touch-manipulation"
               >
@@ -263,6 +339,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
                 onClick={() => {
                   reorderTrack(track.id, 'up');
                   setMenuOpen(false);
+                  menuBtnRef.current?.focus();
                 }}
                 className={`w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md transition text-left min-h-[40px] touch-manipulation ${
                   canMoveUp
@@ -284,6 +361,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
                 onClick={() => {
                   reorderTrack(track.id, 'down');
                   setMenuOpen(false);
+                  menuBtnRef.current?.focus();
                 }}
                 className={`w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md transition text-left min-h-[40px] touch-manipulation ${
                   canMoveDown
@@ -307,6 +385,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
                     onClick={() => {
                       removeTrack(track.id);
                       setMenuOpen(false);
+                      menuBtnRef.current?.focus();
                     }}
                     className="w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-red-950/40 active:bg-red-950/60 text-red-400 hover:text-red-300 transition text-left min-h-[40px] touch-manipulation"
                   >

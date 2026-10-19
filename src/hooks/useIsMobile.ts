@@ -1,13 +1,34 @@
 import { useState, useEffect } from 'react';
 
 /**
+ * Height under which the app switches to the compact (CapCut-like) shell.
+ */
+export const COMPACT_HEIGHT = 500;
+
+/**
+ * Pure viewport classification.
+ *
+ * A viewport is "mobile" when it is narrower than the breakpoint **or** when
+ * it is short (landscape phone / small window), which keeps the compact
+ * shell on 844×390 and 568×320.
+ */
+export function isMobileViewport(
+  width: number,
+  height: number,
+  breakpoint: number = 768,
+  compactHeight: number = COMPACT_HEIGHT
+): boolean {
+  return width < breakpoint || height <= compactHeight;
+}
+
+/**
  * Hook to detect mobile viewports (< 768px) and mobile landscape (height <= 500px).
  * Uses window.matchMedia and resize listener for performant event-driven updates.
  */
 export function useIsMobile(breakpoint: number = 768): boolean {
   const checkIsMobile = () => {
     if (typeof window === 'undefined') return false;
-    return window.innerWidth < breakpoint || window.innerHeight <= 500;
+    return isMobileViewport(window.innerWidth, window.innerHeight, breakpoint);
   };
 
   const [isMobile, setIsMobile] = useState<boolean>(checkIsMobile);
@@ -15,7 +36,7 @@ export function useIsMobile(breakpoint: number = 768): boolean {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const mediaQuery = window.matchMedia(`(max-width: ${breakpoint - 1}px), (max-height: 500px)`);
+    const mediaQuery = window.matchMedia(`(max-width: ${breakpoint - 1}px), (max-height: ${COMPACT_HEIGHT}px)`);
     
     const updateMatch = () => {
       setIsMobile(checkIsMobile());
@@ -51,7 +72,7 @@ export function useIsMobile(breakpoint: number = 768): boolean {
 /**
  * Hook to detect reduced window height / landscape mode (height <= maxHeight).
  */
-export function useIsCompactHeight(maxHeight: number = 500): boolean {
+export function useIsCompactHeight(maxHeight: number = COMPACT_HEIGHT): boolean {
   const check = () => {
     if (typeof window === 'undefined') return false;
     return window.innerHeight <= maxHeight;
@@ -86,4 +107,3 @@ export function useIsCompactHeight(maxHeight: number = 500): boolean {
 
   return isCompact;
 }
-

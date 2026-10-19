@@ -9,26 +9,78 @@ import {
   AlignCenter, 
   AlignRight,
   Sparkles,
-  Gauge
+  Gauge,
+  Layers,
+  AlertTriangle
 } from 'lucide-react';
-import { TransitionType } from '../../types/project';
-import { useProjectStore } from '../../store/useProjectStore';
+import { OverlapPolicy, TransitionType } from '../../types/project';
+import { DEFAULT_OVERLAP_POLICY, useProjectStore } from '../../store/useProjectStore';
 import { formatDuration } from '../../core/utils/time';
+
+/** Human readable description of every overlap policy (F1). */
+export const OVERLAP_POLICY_LABELS: Record<OverlapPolicy, { label: string; hint: string }> = {
+  block: {
+    label: 'Bloquear',
+    hint: 'No se inserta un clip si el destino ya está ocupado: te avisa del conflicto.',
+  },
+  overwrite: {
+    label: 'Sobrescribir',
+    hint: 'El clip nuevo recorta la parte solapada del clip existente.',
+  },
+  ripple: {
+    label: 'Ripple',
+    hint: 'Los clips posteriores de la pista se desplazan para hacer sitio.',
+  },
+};
 
 export const ClipInspector: React.FC = () => {
   const clip = useProjectStore((s) => s.project.clips.find((c) => c.id === s.selectedClipId));
   const track = useProjectStore((s) => s.project.tracks.find((t) => t.id === clip?.trackId));
   const updateClip = useProjectStore((s) => s.updateClip);
   const removeClip = useProjectStore((s) => s.removeClip);
+  const mediaPool = useProjectStore((s) => s.project.mediaPool);
+  const overlapPolicy = useProjectStore((s) => s.project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY);
+  const setOverlapPolicy = useProjectStore((s) => s.setOverlapPolicy);
+
+  const policySection = (
+    <div className="space-y-2 mt-auto pt-3 mb-1" data-testid="overlap-policy-section">
+      <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+        <Layers size={13} className="text-blue-400" />
+        <span>Política de Solapamiento</span>
+      </div>
+      <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+        <label htmlFor="overlap-policy-select" className="text-[11px] text-slate-400 block">
+          Qué pasa al insertar un clip donde ya hay contenido:
+        </label>
+        <select
+          id="overlap-policy-select"
+          data-testid="overlap-policy-select"
+          value={overlapPolicy}
+          onChange={(e) => setOverlapPolicy(e.target.value as OverlapPolicy)}
+          className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+        >
+          <option value="block">Bloquear (recomendado)</option>
+          <option value="overwrite">Sobrescribir</option>
+          <option value="ripple">Ripple (desplazar)</option>
+        </select>
+        <p className="text-[10px] leading-snug text-slate-500" data-testid="overlap-policy-hint">
+          {OVERLAP_POLICY_LABELS[overlapPolicy]?.hint ?? ''}
+        </p>
+      </div>
+    </div>
+  );
 
   if (!clip) {
     return (
-      <div className="flex flex-col items-center justify-center h-full p-6 text-center text-slate-400 select-none">
-        <Sliders size={32} className="mb-2 text-slate-500 stroke-1" />
-        <p className="text-xs font-semibold text-slate-200">Ningún clip seleccionado</p>
-        <p className="text-[11px] text-slate-400 mt-1">
-          Haz clic sobre un clip en el timeline para ajustar volumen, opacidad, tamaño o texto.
-        </p>
+      <div className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-y-auto select-none">
+        <div className="flex flex-col items-center justify-center flex-1 p-6 text-center text-slate-400 select-none">
+          <Sliders size={32} className="mb-2 text-slate-500 stroke-1" />
+          <p className="text-xs font-semibold text-slate-200">Ningún clip seleccionado</p>
+          <p className="text-[11px] text-slate-400 mt-1">
+            Haz clic sobre un clip en el timeline para ajustar volumen, opacidad, tamaño o texto.
+          </p>
+        </div>
+        {policySection}
       </div>
     );
   }
@@ -36,6 +88,11 @@ export const ClipInspector: React.FC = () => {
   const isVideoOrImage = clip.type === 'video' || clip.type === 'image';
   const hasAudio = clip.type === 'video' || clip.type === 'audio';
   const isText = clip.type === 'text';
+
+  // F3: the media of the selected clip is not usable.
+  const clipMedia = clip.mediaId ? mediaPool.find((m) => m.id === clip.mediaId) : undefined;
+  const mediaUnavailable = !isText && (!clipMedia || clipMedia.status === 'missing');
+  const mediaBroken = !isText && !mediaUnavailable && clipMedia?.status === 'error';
 
   const fontOptions = [
     { label: 'Inter (Sans-serif)', value: 'Inter, sans-serif' },
@@ -83,6 +140,22 @@ export const ClipInspector: React.FC = () => {
           <span className="font-mono text-slate-300">{formatDuration(clip.duration)}</span>
         </div>
       </div>
+
+      {/* F3: the media of this clip is not available (B-14). */}
+      {(mediaUnavailable || mediaBroken) && (
+        <div
+          data-testid="inspector-missing-media"
+          role="alert"
+          className="mb-3 p-2 bg-rose-950/40 border border-rose-700/60 rounded text-rose-200 text-[11px] flex items-start gap-2"
+        >
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>
+            {mediaUnavailable
+              ? 'El archivo de este medio no está disponible: el clip se ve negro y sin sonido. Revínculalo desde el panel de medios.'
+              : 'El archivo de este medio no se puede decodificar. Revínculalo desde el panel de medios.'}
+          </span>
+        </div>
+      )}
 
       {/* TEXT PROPERTIES */}
       {isText && (
@@ -598,6 +671,8 @@ export const ClipInspector: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {policySection}
     </div>
   );
 };

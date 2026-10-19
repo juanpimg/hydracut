@@ -146,8 +146,11 @@ describe('Project Store Operations', () => {
     const updated = useProjectStore.getState().project;
     expect(updated.clips.length).toBe(1);
     expect(updated.clips[0].id).toBe('test_clip_1');
-    // Clip ends at 25s, duration should be at least 25+5 = 30
-    expect(updated.duration).toBeGreaterThanOrEqual(30);
+    // KI-01 / S-06 / B-06: the duration is the REAL extent of the content.
+    // The clip ends at 25 s, so the project duration is exactly 25 s.
+    // (It used to be `>= 30`: a hard-coded 15 s floor plus 5 s of padding that
+    //  made every export 4x longer than the content with a black tail.)
+    expect(updated.duration).toBe(25);
   });
 
   it('splits clip accurately into two parts', () => {

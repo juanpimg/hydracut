@@ -1,7 +1,7 @@
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { Clip, ExportConfig, ExportProgress, MediaItem, Track } from '../../types/project';
 import { Compositor } from '../engine/Compositor';
-import { mediaSourcePool } from '../engine/MediaSourcePool';
+import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
 
 export interface ExportParams {
   config: ExportConfig;
@@ -100,14 +100,20 @@ class H264BitWriter {
 }
 
 /**
- * Generates a valid H.264 Baseline Profile Level 4.0 SPS for arbitrary dimensions.
+ * Generates a valid H.264 Baseline Profile SPS for arbitrary dimensions.
+ * The declared level defaults to the minimum level that actually fits the
+ * frame size at 30 fps (level 4.0 for 1080p, level 5.1 for 4K).
  */
-export function generateBaselineSps(width: number, height: number): Uint8Array {
+export function generateBaselineSps(
+  width: number,
+  height: number,
+  levelIdc: number = deriveAvcLevelIdc(width, height, 30)
+): Uint8Array {
   const w = new H264BitWriter();
   w.writeBits(0x67, 8); // NAL type 7 (SPS), ref_idc 3
   w.writeBits(66, 8); // Baseline Profile (0x42)
   w.writeBits(0xe0, 8); // constraint_set0..2 flags (0xE0)
-  w.writeBits(40, 8); // Level 4.0 (0x28)
+  w.writeBits(levelIdc & 0xff, 8); // level_idc
   w.writeUe(0); // seq_parameter_set_id = 0
   w.writeUe(0); // log2_max_frame_num_minus4 = 0
   w.writeUe(0); // pic_order_cnt_type = 0
@@ -290,11 +296,145 @@ export function buildAvcDecoderConfigurationRecord(
 
 /**
  * Generates a valid fallback AVCDecoderConfigurationRecord tailored to width and height.
+ * The declared level is derived from the dimensions so the `avcC` box never
+ * contradicts the actual frame size (a 4K stream declared as level 4.0 is
+ * self-inconsistent and rejected by conformant decoders).
  */
-export function getFallbackAvcDescription(width = 1920, height = 1080): Uint8Array {
-  const sps = generateBaselineSps(width, height);
+export function getFallbackAvcDescription(
+  width = 1920,
+  height = 1080,
+  levelIdc: number = deriveAvcLevelIdc(width, height, 30)
+): Uint8Array {
+  const sps = generateBaselineSps(width, height, levelIdc);
   const pps = generateBaselinePps();
   return buildAvcDecoderConfigurationRecord(sps, pps);
+}
+
+/**
+ * H.264 level table (ITU-T H.264 Annex A).
+ *
+ * - `idc`         → `level_idc` value written in the codec string / SPS
+ * - `maxFs`       → maximum frame size, in macroblocks
+ * - `maxMbsPerSec`→ maximum macroblock processing rate
+ * - `maxBr`       → maximum bitrate, in kbit/s
+ */
+const AVC_LEVELS: ReadonlyArray<{
+  idc: number;
+  maxFs: number;
+  maxMbsPerSec: number;
+  maxBr: number;
+}> = [
+  { idc: 10, maxFs: 99, maxMbsPerSec: 1485, maxBr: 64 },
+  { idc: 11, maxFs: 396, maxMbsPerSec: 3000, maxBr: 192 },
+  { idc: 12, maxFs: 396, maxMbsPerSec: 6000, maxBr: 384 },
+  { idc: 13, maxFs: 396, maxMbsPerSec: 11880, maxBr: 768 },
+  { idc: 20, maxFs: 396, maxMbsPerSec: 11880, maxBr: 2000 },
+  { idc: 21, maxFs: 792, maxMbsPerSec: 19800, maxBr: 4000 },
+  { idc: 22, maxFs: 1620, maxMbsPerSec: 20250, maxBr: 4000 },
+  { idc: 30, maxFs: 1620, maxMbsPerSec: 40500, maxBr: 10000 },
+  { idc: 31, maxFs: 3600, maxMbsPerSec: 108000, maxBr: 14000 },
+  { idc: 32, maxFs: 5120, maxMbsPerSec: 216000, maxBr: 20000 },
+  { idc: 40, maxFs: 8192, maxMbsPerSec: 245760, maxBr: 20000 },
+  { idc: 41, maxFs: 8192, maxMbsPerSec: 245760, maxBr: 50000 },
+  { idc: 42, maxFs: 8704, maxMbsPerSec: 522240, maxBr: 50000 },
+  { idc: 50, maxFs: 22080, maxMbsPerSec: 589824, maxBr: 135000 },
+  { idc: 51, maxFs: 36864, maxMbsPerSec: 983040, maxBr: 240000 },
+  { idc: 52, maxFs: 36864, maxMbsPerSec: 2073600, maxBr: 240000 },
+];
+
+/**
+ * Historical codec candidates with the level each one declares.
+ *
+ * They are kept as the *baseline* of the candidate list: a candidate is only
+ * upgraded to a higher, derived level when the resolution/framerate really
+ * needs more than the level it already declares. That way:
+ *
+ * - 1080p30 / 720p30 keep the battle-tested `avc1.640028` (level 4.0),
+ * - 1080p60 is upgraded to level 4.2 (level 4.0 does not allow 489 600 MBPS),
+ * - 4K is upgraded to level 5.1 / 5.2 (level 4.0/4.2 cannot hold 32 400 MBs).
+ */
+const LEGACY_AVC_CODECS: ReadonlyArray<{ codec: string; profile: string; levelIdc: number }> = [
+  { codec: 'avc1.640028', profile: '64', levelIdc: 40 },
+  { codec: 'avc1.4d002a', profile: '4d', levelIdc: 42 },
+  { codec: 'avc1.42001f', profile: '42', levelIdc: 31 },
+];
+
+/**
+ * Number of macroblocks (16x16 units) of a frame.
+ */
+export function macroblockCount(width: number, height: number): number {
+  const mbWidth = Math.max(1, Math.ceil(Math.max(0, width) / 16));
+  const mbHeight = Math.max(1, Math.ceil(Math.max(0, height) / 16));
+  return mbWidth * mbHeight;
+}
+
+/**
+ * Derives the MINIMUM H.264 level (`level_idc`) that is sufficient for the
+ * requested resolution, framerate and bitrate.
+ *
+ * The previous implementation only ever offered level ≤ 4.2
+ * (`avc1.640028` / `avc1.4d002a` / `avc1.42001f`), whose `MaxFS` is 8 704
+ * macroblocks. A 4K frame needs 240×135 = 32 400 macroblocks, so the 4K
+ * preset could never be encoded with WebCodecs and always fell back to the
+ * (broken) MediaRecorder path. Deriving the level fixes that:
+ *
+ * - 1920x1080@30 → level 4.0 (8 160 MBs, 244 800 MBPS)
+ * - 1920x1080@60 → level 4.2 (489 600 MBPS > 245 760)
+ * - 3840x2160@30 → level 5.1 (32 400 MBs, 972 000 MBPS)
+ * - 3840x2160@60 → level 5.2 (1 944 000 MBPS > 983 040)
+ */
+export function deriveAvcLevelIdc(
+  width: number,
+  height: number,
+  fps = 30,
+  bitrate = 0
+): number {
+  const mbs = macroblockCount(width, height);
+  const mbps = mbs * Math.max(1, Math.round(fps));
+  const brKbps = bitrate > 0 ? bitrate / 1000 : 0;
+
+  for (const level of AVC_LEVELS) {
+    if (mbs > level.maxFs) continue;
+    if (mbps > level.maxMbsPerSec) continue;
+    if (brKbps > 0 && brKbps > level.maxBr) continue;
+    return level.idc;
+  }
+  // Nothing fits (e.g. 8K): use the highest level we know about.
+  return AVC_LEVELS[AVC_LEVELS.length - 1].idc;
+}
+
+/**
+ * Builds the ordered list of H.264 codec candidates for a configuration.
+ *
+ * The level declared by each candidate is upgraded to the derived (sufficient)
+ * level when the historical one is too low, so a 4K export is encoded with a
+ * level 5.1/5.2 codec instead of being rejected outright. The historical
+ * strings are kept at the end of the list as a last resort for devices that
+ * reject the derived level.
+ */
+export function buildAvcCodecCandidates(
+  width = 1920,
+  height = 1080,
+  fps = 30,
+  bitrate = 0
+): string[] {
+  const derivedLevel = deriveAvcLevelIdc(width, height, fps, bitrate);
+  const derivedHex = derivedLevel.toString(16).padStart(2, '0');
+
+  const candidates: string[] = [];
+  for (const legacy of LEGACY_AVC_CODECS) {
+    const codec =
+      derivedLevel > legacy.levelIdc
+        ? `avc1.${legacy.profile}00${derivedHex}`
+        : legacy.codec;
+    if (!candidates.includes(codec)) candidates.push(codec);
+  }
+  // Last resort: the historical strings, in case a device rejects the level
+  // derived from the real configuration.
+  for (const legacy of LEGACY_AVC_CODECS) {
+    if (!candidates.includes(legacy.codec)) candidates.push(legacy.codec);
+  }
+  return candidates;
 }
 
 /**
@@ -319,7 +459,7 @@ export async function selectSupportedVideoConfig(
   if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
     return null;
   }
-  const codecsToTry = ['avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+  const codecsToTry = buildAvcCodecCandidates(width, height, framerate, bitrate);
   for (const codec of codecsToTry) {
     try {
       const support = await VideoEncoder.isConfigSupported({
@@ -437,7 +577,7 @@ export async function findWorkingVideoEncoderConfig(
   if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
     return null;
   }
-  const codecsToTry = ['avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+  const codecsToTry = buildAvcCodecCandidates(width, height, framerate, bitrate);
 
   for (const hw of HARDWARE_ACCELERATION_CHAIN) {
     for (const codec of codecsToTry) {
@@ -474,7 +614,8 @@ export async function findWorkingVideoEncoderConfig(
 
 /**
  * Dynamically queries VideoEncoder.isConfigSupported to find the best supported H.264 profile.
- * Prefers High Profile (avc1.640028), falls back to Main (avc1.4d002a) and Baseline (avc1.42001f).
+ * Prefers High Profile, falls back to Main and Baseline, always declaring a level that is
+ * sufficient for the requested frame size (see `buildAvcCodecCandidates`).
  * NOTE: only checks codec+dimensions (fast path). For export, prefer
  * `selectSupportedVideoConfig`, which also validates bitrate+framerate.
  */
@@ -482,7 +623,7 @@ export async function getSupportedVideoCodec(width = 1920, height = 1080): Promi
   if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
     return null;
   }
-  const codecsToTry = ['avc1.640028', 'avc1.4d002a', 'avc1.42001f'];
+  const codecsToTry = buildAvcCodecCandidates(width, height, 30, 0);
   for (const codec of codecsToTry) {
     try {
       const support = await VideoEncoder.isConfigSupported({
@@ -629,13 +770,41 @@ function seekVideoElement(video: HTMLVideoElement, time: number): Promise<void> 
 }
 
 /**
+ * Resolves the raw bytes of a media item without keeping them alive any
+ * longer than necessary.
+ *
+ * The export pipeline used to `fetch()` + `arrayBuffer()` the *whole* file for
+ * every clip (EX-07): a project with three cuts of the same 4K source
+ * downloaded and decoded the same file three times, tripling the peak RAM.
+ * Now the bytes are only materialised once per *distinct* media item and the
+ * decoded PCM buffer is released as soon as the last clip using it has been
+ * mixed.
+ */
+async function readMediaArrayBuffer(media: MediaItem): Promise<ArrayBuffer> {
+  // Some callers attach the in-memory blob to the media item; when present we
+  // avoid the network round-trip and the extra copy entirely.
+  const attached = (media as unknown as { blob?: Blob; file?: Blob }).blob ??
+    (media as unknown as { file?: Blob }).file;
+  if (attached && typeof attached.arrayBuffer === 'function') {
+    return await attached.arrayBuffer();
+  }
+
+  const response = await fetch(media.url);
+  if (!response.ok) {
+    throw new Error(`No se pudo leer el medio "${media.name}" (HTTP ${response.status})`);
+  }
+  return await response.arrayBuffer();
+}
+
+/**
  * Mixes audio from all audio/video clips into an AudioBuffer using OfflineAudioContext.
  */
 async function renderOfflineAudio(
   totalDuration: number,
   tracks: Track[],
   clips: Clip[],
-  mediaPool: MediaItem[]
+  mediaPool: MediaItem[],
+  signal?: AbortSignal
 ): Promise<AudioBuffer | null> {
   const trackMap = new Map<string, Track>();
   for (const t of tracks) trackMap.set(t.id, t);
@@ -658,14 +827,31 @@ async function renderOfflineAudio(
 
   let hasValidAudio = false;
 
+  // EX-07: decode every distinct media file at most once and release the
+  // decoded PCM as soon as the last clip that needs it has been mixed.
+  const decodedCache = new Map<string, AudioBuffer>();
+  const pendingUses = new Map<string, number>();
   for (const clip of audioClips) {
+    pendingUses.set(clip.mediaId, (pendingUses.get(clip.mediaId) ?? 0) + 1);
+  }
+
+  for (const clip of audioClips) {
+    // EX-14: honour cancellation while decoding (the decode of a large file
+    // can take seconds and used to be completely uninterruptible).
+    if (signal?.aborted) {
+      throw new Error('Exportación cancelada por el usuario');
+    }
+
     const media = mediaMap.get(clip.mediaId);
     if (!media) continue;
 
     try {
-      const response = await fetch(media.url);
-      const arrayBuffer = await response.arrayBuffer();
-      const decodedBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
+      let decodedBuffer = decodedCache.get(clip.mediaId);
+      if (!decodedBuffer) {
+        const arrayBuffer = await readMediaArrayBuffer(media);
+        decodedBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
+        decodedCache.set(clip.mediaId, decodedBuffer);
+      }
 
       const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
       const sourceNode = offlineCtx.createBufferSource();
@@ -714,16 +900,36 @@ async function renderOfflineAudio(
       const bufferDurationAvailable = Math.max(0, decodedBuffer.duration - offset);
       const playDuration = Math.min(clip.duration * speed, bufferDurationAvailable);
       if (playDuration > 0) {
-        sourceNode.start(clip.start, offset, playDuration / speed);
+        // EX-02: `duration` is expressed in *buffer* seconds and is
+        // independent of `playbackRate`. Passing `playDuration / speed` made
+        // the audio play at 1/speed² (half of the clip silent at speed 2 and
+        // an overrun at speed 0.5). `playDuration` is already expressed in
+        // buffer seconds, so it must be passed unchanged.
+        sourceNode.start(clip.start, offset, playDuration);
         hasValidAudio = true;
       }
-    } catch {
+    } catch (err) {
+      if (signal?.aborted) {
+        throw new Error('Exportación cancelada por el usuario');
+      }
       // Ignore clips whose audio cannot be decoded
+    } finally {
+      // Release the decoded PCM of this media as soon as the last clip that
+      // needs it has been processed.
+      const left = (pendingUses.get(clip.mediaId) ?? 1) - 1;
+      pendingUses.set(clip.mediaId, left);
+      if (left <= 0) {
+        decodedCache.delete(clip.mediaId);
+      }
     }
   }
 
   if (!hasValidAudio) return null;
-  return await offlineCtx.startRendering();
+  const rendered = await offlineCtx.startRendering();
+  if (signal?.aborted) {
+    throw new Error('Exportación cancelada por el usuario');
+  }
+  return rendered;
 }
 
 export interface SafeChunkLike {
@@ -803,6 +1009,12 @@ export function safeAddVideoChunk(
  * Safely adds an encoded audio chunk to mp4-muxer.
  * Guarantees that duration and timestamp are strictly finite, non-negative integer microseconds,
  * preventing analogous exceptions or chunk drops in WebKit / iOS Safari.
+ *
+ * `frameSize` MUST match the number of samples actually handed to the encoder.
+ * The export pipeline encodes 2048-sample blocks, so when the browser does not
+ * report `chunk.duration` (WebKit / iOS Safari) the fallback duration has to be
+ * 2048 samples too — assuming 1024 declared an audio track half as long as
+ * the video (A/V desync of ~50 %).
  */
 export function safeAddAudioChunk(
   muxer: {
@@ -817,7 +1029,8 @@ export function safeAddAudioChunk(
   chunk: SafeChunkLike,
   meta?: EncodedAudioChunkMetadata,
   sampleRate = 48000,
-  preAllocatedData?: Uint8Array
+  preAllocatedData?: Uint8Array,
+  frameSize = 1024
 ): void {
   let audioData: Uint8Array;
   if (preAllocatedData) {
@@ -828,7 +1041,7 @@ export function safeAddAudioChunk(
   }
 
   const safeSampleRate = Math.max(1, Math.round(sampleRate));
-  const expectedAudioDurationUs = Math.round((1024 / safeSampleRate) * 1_000_000);
+  const expectedAudioDurationUs = Math.round((frameSize / safeSampleRate) * 1_000_000);
   const rawDuration = chunk.duration;
   const durationUs =
     typeof rawDuration === 'number' && Number.isFinite(rawDuration) && rawDuration > 0
@@ -892,6 +1105,144 @@ export function toActionableExportError(
 }
 
 /**
+ * Normalises any thrown value into a readable message.
+ *
+ * `exportVideo()` may reject with a `DOMException`, a plain string or even
+ * `undefined`. Reading `.message` off a non-Error used to throw *inside the
+ * catch block* of the export modal, leaving the UI stuck in "rendering"
+ * forever (EX-23).
+ */
+export function toErrorMessage(err: unknown, fallback = 'Error durante la exportación'): string {
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === 'string' && err.length > 0) return err;
+  if (err && typeof err === 'object') {
+    const maybeMessage = (err as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string' && maybeMessage.length > 0) return maybeMessage;
+    try {
+      const serialised = JSON.stringify(err);
+      if (serialised && serialised !== '{}') return serialised;
+    } catch {
+      // ignore
+    }
+  }
+  return fallback;
+}
+
+/**
+ * Detects a user cancellation (as opposed to a genuine encoder failure).
+ * Used to make sure a cancellation is never swallowed by the MediaRecorder
+ * degradation path.
+ */
+export function isAbortLikeError(err: unknown): boolean {
+  if (!err) return false;
+  const name =
+    err instanceof DOMException ? err.name : (err as { name?: unknown }).name;
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  const message = toErrorMessage(err, '');
+  return /cancelad|canceled|cancelled|abort/i.test(message);
+}
+
+/**
+ * Seeks every video clip that is active at `time` so the frame that is about
+ * to be composited is the right one.
+ *
+ * This helper is shared by BOTH export paths. The MediaRecorder fallback used
+ * to skip it entirely, which meant every video clip was exported as a frozen
+ * frame for its whole duration (EX-01): the compositor only *requests* a seek
+ * (`syncVideoTime`) but draws the element synchronously, so it painted the
+ * previous frame while the decoder was still seeking.
+ */
+export async function seekActiveVideoClips(
+  time: number,
+  clips: Clip[],
+  mediaMap: Map<string, MediaItem>,
+  getVideoElement: (
+    media: MediaItem,
+    clipId?: string,
+    sourceStart?: number
+  ) => HTMLVideoElement
+): Promise<void> {
+  const activeVideoClips = clips.filter(
+    (c) => c.type === 'video' && time >= c.start && time < c.start + c.duration
+  );
+  if (activeVideoClips.length === 0) return;
+
+  await Promise.all(
+    activeVideoClips.map((vc) => {
+      const media = mediaMap.get(vc.mediaId);
+      if (!media) return Promise.resolve();
+      const videoEl = getVideoElement(media, vc.id, vc.sourceStart);
+      const speed = vc.speed && vc.speed > 0 ? vc.speed : 1;
+      const sourceOffset = vc.sourceStart + (time - vc.start) * speed;
+      const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
+      const clampedOffset = Math.max(0, Math.min(maxSourceTime, sourceOffset));
+      return seekVideoElement(videoEl, clampedOffset);
+    })
+  );
+}
+
+/**
+ * Gives the exporter its own isolated media-element pool.
+ *
+ * The exporter used to reuse the *global* `MediaSourcePool` of the live
+ * preview (H9 / E-08): it seeked the preview's `<video>` elements to export
+ * positions (desynchronising the preview), kept the decoders hijacked after
+ * the export and could encode a stale frame taken from the shared
+ * `lastFrameMap` cache.
+ *
+ * The pool is not injectable into `Compositor` (it is a module singleton), so
+ * the exporter temporarily routes the singleton's element/cache accessors to a
+ * private pool and restores them afterwards.
+ */
+export interface ExportPoolIsolation {
+  pool: MediaSourcePool;
+  restore(): void;
+}
+
+export function createExportPoolIsolation(): ExportPoolIsolation {
+  const pool = new MediaSourcePool();
+  const target = mediaSourcePool as unknown as {
+    getVideoElement: MediaSourcePool['getVideoElement'];
+    getImageElement: MediaSourcePool['getImageElement'];
+    storeVideoFrame: MediaSourcePool['storeVideoFrame'];
+    getLastFrame: MediaSourcePool['getLastFrame'];
+  };
+
+  const original = {
+    getVideoElement: target.getVideoElement,
+    getImageElement: target.getImageElement,
+    storeVideoFrame: target.storeVideoFrame,
+    getLastFrame: target.getLastFrame,
+  };
+
+  target.getVideoElement = (media, clipId, sourceStart) =>
+    pool.getVideoElement(media, clipId, sourceStart);
+  target.getImageElement = (media, clipId) => pool.getImageElement(media, clipId);
+  target.storeVideoFrame = (clipId, video, mediaId, force) =>
+    pool.storeVideoFrame(clipId, video, mediaId, force);
+  target.getLastFrame = (id) => pool.getLastFrame(id);
+
+  let restored = false;
+  return {
+    pool,
+    restore() {
+      if (restored) return;
+      restored = true;
+      target.getVideoElement = original.getVideoElement;
+      target.getImageElement = original.getImageElement;
+      target.storeVideoFrame = original.storeVideoFrame;
+      target.getLastFrame = original.getLastFrame;
+      // Release the exporter's own elements/decoders.
+      try {
+        pool.clear();
+      } catch {
+        // ignore
+      }
+    },
+  };
+}
+
+/**
  * Main export function using WebCodecs + mp4-muxer with MediaRecorder fallback.
  */
 export async function exportVideo(params: ExportParams): Promise<Blob> {
@@ -916,14 +1267,187 @@ export async function exportVideo(params: ExportParams): Promise<Blob> {
     // finds a working hardwareAcceleration mode before the export starts.
     const workingConfig = await findWorkingVideoEncoderConfig(width, height, bitrate, fps);
     if (workingConfig) {
-      return await exportWithWebCodecs(params, totalFrames, startTime, workingConfig);
+      try {
+        return await exportWithWebCodecs(params, totalFrames, startTime, workingConfig, fps);
+      } catch (err) {
+        // EX-04: a genuine encoder failure must degrade to the MediaRecorder
+        // path instead of failing the whole export. A user cancellation is
+        // never swallowed: aborting must abort.
+        if (params.signal?.aborted || isAbortLikeError(err)) {
+          throw err;
+        }
+        console.warn(
+          'La exportación con WebCodecs falló; se degrada a MediaRecorder como respaldo:',
+          err
+        );
+        try {
+          return await exportWithMediaRecorder(params, totalFrames, fps);
+        } catch (fallbackError) {
+          // The original WebCodecs error is the most informative one.
+          console.warn('El respaldo con MediaRecorder también falló:', fallbackError);
+          throw err;
+        }
+      }
     }
     console.warn(
       `WebCodecs no soporta ${width}x${height}@${fps}fps en este dispositivo; usando MediaRecorder como respaldo.`
     );
   }
   // Fallback: Canvas captureStream + MediaRecorder
-  return await exportWithMediaRecorder(params, totalFrames);
+  return await exportWithMediaRecorder(params, totalFrames, fps);
+}
+
+/**
+ * Number of samples per audio block handed to the AudioEncoder.
+ * The fallback duration used when the browser does not report `chunk.duration`
+ * has to match this value, otherwise the muxed audio track is shorter than
+ * the video (EX-05).
+ */
+export const AUDIO_BLOCK_SIZE = 2048;
+
+/**
+ * Encoded audio kept in memory until the muxer is created.
+ */
+interface EncodedAudioTrack {
+  codec: 'aac' | 'opus';
+  sampleRate: number;
+  chunks: Array<{
+    data: Uint8Array;
+    type: 'key' | 'delta';
+    timestamp: number;
+    duration: number | null;
+    meta?: EncodedAudioChunkMetadata;
+  }>;
+}
+
+/**
+ * Encodes the rendered audio BEFORE the muxer is created.
+ *
+ * EX-06: the muxer used to be created first (declaring the audio track) and
+ * the AudioEncoder failure was swallowed, so the MP4 ended up with a declared
+ * but empty (or truncated) audio track. Encoding first means we can decide
+ * *explicitly* whether the audio track exists: on failure the track is simply
+ * not declared, never muxed half-empty.
+ */
+async function encodeAudioTrack(
+  renderedAudio: AudioBuffer | null,
+  audioConfig: { codec: 'aac' | 'opus'; encoderCodec: string; bitrate: number } | null,
+  signal?: AbortSignal
+): Promise<EncodedAudioTrack | null> {
+  if (!renderedAudio || !audioConfig || typeof AudioEncoder === 'undefined') return null;
+
+  const chunks: EncodedAudioTrack['chunks'] = [];
+  let encoderError: Error | null = null;
+
+  const audioEncoder = new AudioEncoder({
+    output: (chunk, meta) => {
+      try {
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        chunks.push({
+          data,
+          type: chunk.type,
+          timestamp: chunk.timestamp,
+          duration: chunk.duration ?? null,
+          meta: meta ?? undefined,
+        });
+      } catch (err) {
+        console.warn('No se pudo copiar el fragmento de audio:', err);
+      }
+    },
+    error: (e) => {
+      encoderError = e instanceof Error ? e : new Error(toErrorMessage(e));
+      console.error('AudioEncoder error:', e);
+    },
+  });
+
+  try {
+    audioEncoder.configure({
+      codec: audioConfig.encoderCodec,
+      numberOfChannels: 2,
+      sampleRate: renderedAudio.sampleRate,
+      bitrate: audioConfig.bitrate,
+    });
+
+    const numFrames = renderedAudio.length;
+    const left = renderedAudio.getChannelData(0);
+    const right = renderedAudio.numberOfChannels > 1 ? renderedAudio.getChannelData(1) : left;
+
+    // Preallocate planar buffer to eliminate thousands of small allocations during export
+    const planarBuffer = new Float32Array(AUDIO_BLOCK_SIZE * 2);
+
+    for (let offset = 0; offset < numFrames; offset += AUDIO_BLOCK_SIZE) {
+      if (signal?.aborted) {
+        throw new Error('Exportación cancelada por el usuario');
+      }
+      if (encoderError) throw encoderError;
+
+      // Audio backpressure control
+      if (audioEncoder.encodeQueueSize > 8) {
+        await waitForAudioDrain(audioEncoder, 4);
+      }
+
+      const framesInChunk = Math.min(AUDIO_BLOCK_SIZE, numFrames - offset);
+      let chunkData: Float32Array;
+
+      if (framesInChunk === AUDIO_BLOCK_SIZE) {
+        for (let i = 0; i < framesInChunk; i++) {
+          planarBuffer[i] = left[offset + i];
+          planarBuffer[framesInChunk + i] = right[offset + i];
+        }
+        chunkData = planarBuffer;
+      } else {
+        // Partial tail chunk
+        chunkData = new Float32Array(framesInChunk * 2);
+        for (let i = 0; i < framesInChunk; i++) {
+          chunkData[i] = left[offset + i];
+          chunkData[framesInChunk + i] = right[offset + i];
+        }
+      }
+
+      const timestampUs = Math.round((offset / renderedAudio.sampleRate) * 1_000_000);
+      const audioData = new AudioData({
+        format: 'f32-planar',
+        sampleRate: renderedAudio.sampleRate,
+        numberOfFrames: framesInChunk,
+        numberOfChannels: 2,
+        timestamp: timestampUs,
+        data: chunkData as unknown as BufferSource,
+      });
+
+      try {
+        audioEncoder.encode(audioData);
+      } finally {
+        audioData.close();
+      }
+    }
+
+    await audioEncoder.flush();
+
+    if (encoderError) throw encoderError;
+    if (chunks.length === 0) {
+      throw new Error('El codificador de audio no produjo ningún fragmento.');
+    }
+
+    return { codec: audioConfig.codec, sampleRate: renderedAudio.sampleRate, chunks };
+  } catch (err) {
+    if (signal?.aborted) {
+      throw new Error('Exportación cancelada por el usuario');
+    }
+    // The audio track is dropped EXPLICITLY: the muxer will not declare it,
+    // so the MP4 can never contain an empty or truncated audio track.
+    console.warn(
+      'El codificador de audio falló; la exportación continuará SIN audio (no se muxará una pista vacía):',
+      err
+    );
+    return null;
+  } finally {
+    try {
+      if (audioEncoder.state !== 'closed') audioEncoder.close();
+    } catch {
+      // ignore close errors
+    }
+  }
 }
 
 /**
@@ -933,274 +1457,405 @@ async function exportWithWebCodecs(
   params: ExportParams,
   totalFrames: number,
   renderStartTime: number,
-  workingConfig: WorkingVideoEncoderConfig
+  workingConfig: WorkingVideoEncoderConfig,
+  fps: number
 ): Promise<Blob> {
   const { config, duration, tracks, clips, mediaPool, onProgress, signal } = params;
-  const fps = config.fps || 30;
   // Ensure even dimensions for H.264 hardware encoders
   const width = config.width - (config.width % 2);
   const height = config.height - (config.height % 2);
 
-  // 1. Prepare offline audio if available
-  let renderedAudio: AudioBuffer | null = null;
+  // H9 / E-08: the exporter gets its own media-element pool so the live
+  // preview keeps its decoders and its frame cache.
+  const isolation = createExportPoolIsolation();
+
+  const mediaMap = new Map<string, MediaItem>();
+  for (const m of mediaPool) mediaMap.set(m.id, m);
+
   try {
-    renderedAudio = await renderOfflineAudio(duration, tracks, clips, mediaPool);
-  } catch (err) {
-    console.warn('Offline audio render failed, exporting video without audio:', err);
-  }
-
-  // Pre-validate AudioEncoder if audio is present.
-  // Chrome/Linux has NO AAC encoder (NotSupportedError "Unsupported codec
-  // type"), which used to silently drop audio from exports. Try AAC first,
-  // then fall back to Opus (supported by Chrome everywhere; mp4-muxer can
-  // mux Opus into MP4).
-  let audioConfig: { codec: 'aac' | 'opus'; encoderCodec: string; bitrate: number } | null = null;
-  if (renderedAudio && typeof AudioEncoder !== 'undefined') {
-    const audioCandidates: Array<{ codec: 'aac' | 'opus'; encoderCodec: string; bitrate: number }> = [
-      { codec: 'aac', encoderCodec: 'mp4a.40.2', bitrate: 192_000 },
-      { codec: 'opus', encoderCodec: 'opus', bitrate: 128_000 },
-    ];
-    for (const candidate of audioCandidates) {
-      try {
-        const audioSupport = await AudioEncoder.isConfigSupported({
-          codec: candidate.encoderCodec,
-          numberOfChannels: 2,
-          sampleRate: renderedAudio.sampleRate,
-          bitrate: candidate.bitrate,
-        });
-        if (audioSupport.supported) {
-          audioConfig = candidate;
-          break;
-        }
-      } catch {
-        // Try next audio candidate
-      }
+    // 1. Prepare offline audio if available
+    let renderedAudio: AudioBuffer | null = null;
+    try {
+      renderedAudio = await renderOfflineAudio(duration, tracks, clips, mediaPool, signal);
+    } catch (err) {
+      if (signal?.aborted || isAbortLikeError(err)) throw err;
+      console.warn('Offline audio render failed, exporting video without audio:', err);
     }
-  }
+    if (signal?.aborted) {
+      throw new Error('Exportación cancelada por el usuario');
+    }
 
-  // 2. Setup mp4-muxer with stream buffering and timestamp offsets
-  const target = new ArrayBufferTarget();
-  const muxer = new Muxer({
-    target,
-    video: {
-      codec: 'avc',
-      width,
-      height,
-      frameRate: fps,
-    },
-    audio:
-      audioConfig && renderedAudio
-        ? {
-            codec: audioConfig.codec,
+    // Pre-validate AudioEncoder if audio is present.
+    // Chrome/Linux has NO AAC encoder (NotSupportedError "Unsupported codec
+    // type"), which used to silently drop audio from exports. Try AAC first,
+    // then fall back to Opus (supported by Chrome everywhere; mp4-muxer can
+    // mux Opus into MP4).
+    let audioConfig: { codec: 'aac' | 'opus'; encoderCodec: string; bitrate: number } | null = null;
+    if (renderedAudio && typeof AudioEncoder !== 'undefined') {
+      const audioCandidates: Array<{ codec: 'aac' | 'opus'; encoderCodec: string; bitrate: number }> = [
+        { codec: 'aac', encoderCodec: 'mp4a.40.2', bitrate: 192_000 },
+        { codec: 'opus', encoderCodec: 'opus', bitrate: 128_000 },
+      ];
+      for (const candidate of audioCandidates) {
+        try {
+          const audioSupport = await AudioEncoder.isConfigSupported({
+            codec: candidate.encoderCodec,
             numberOfChannels: 2,
             sampleRate: renderedAudio.sampleRate,
+            bitrate: candidate.bitrate,
+          });
+          if (audioSupport.supported) {
+            audioConfig = candidate;
+            break;
+          }
+        } catch {
+          // Try next audio candidate
+        }
+      }
+    }
+
+    // 2. Encode the audio BEFORE creating the muxer, so a failure can drop
+    //    the audio track explicitly instead of muxing a broken one (EX-06).
+    const encodedAudio = await encodeAudioTrack(renderedAudio, audioConfig, signal);
+    if (signal?.aborted) {
+      throw new Error('Exportación cancelada por el usuario');
+    }
+
+    // 3. Setup mp4-muxer with stream buffering and timestamp offsets
+    const target = new ArrayBufferTarget();
+    const muxer = new Muxer({
+      target,
+      video: {
+        codec: 'avc',
+        width,
+        height,
+        frameRate: fps,
+      },
+      audio: encodedAudio
+        ? {
+            codec: encodedAudio.codec,
+            numberOfChannels: 2,
+            sampleRate: encodedAudio.sampleRate,
           }
         : undefined,
-    fastStart: 'in-memory',
-    firstTimestampBehavior: 'offset',
-  });
-
-  // Use the encoder configuration that was deep-probed in exportVideo
-  // (codec + hardwareAcceleration validated by actually creating a real
-  // encoder and verifying it survives). This avoids the async platform
-  // encoder death ("Operation is not supported") that isConfigSupported()
-  // cannot detect.
-  const activeCodec = workingConfig.codec;
-
-  // 3. Active video decoder configuration tracking
-  // In iOS Safari / WebKit, metadata from VideoEncoder output callback is frequently
-  // omitted (undefined) or lacks decoderConfig/colorSpace. We maintain an active, valid
-  // decoderConfig so mp4-muxer always receives non-null metadata with valid colorSpace.
-  const activeDecoderConfig: VideoDecoderConfig = {
-    codec: activeCodec,
-    codedWidth: width,
-    codedHeight: height,
-    colorSpace: { ...DEFAULT_COLOR_SPACE },
-    description: getFallbackAvcDescription(width, height).buffer,
-  };
-
-  let videoChunksEncoded = 0;
-  let encoderError: Error | null = null;
-
-  const videoEncoder = new VideoEncoder({
-    output: (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => {
-      try {
-        videoChunksEncoded++;
-
-        // Adopt incoming decoderConfig if emitted by browser
-        if (meta?.decoderConfig) {
-          if (meta.decoderConfig.codec) {
-            activeDecoderConfig.codec = meta.decoderConfig.codec;
-          }
-          if (meta.decoderConfig.codedWidth) {
-            activeDecoderConfig.codedWidth = meta.decoderConfig.codedWidth;
-          }
-          if (meta.decoderConfig.codedHeight) {
-            activeDecoderConfig.codedHeight = meta.decoderConfig.codedHeight;
-          }
-          if (meta.decoderConfig.description) {
-            activeDecoderConfig.description = meta.decoderConfig.description;
-          }
-          if (meta.decoderConfig.colorSpace) {
-            activeDecoderConfig.colorSpace = sanitizeColorSpace(meta.decoderConfig.colorSpace);
-          }
-        }
-
-        const chunkData = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(chunkData);
-
-        // On keyframe, extract SPS and PPS if description was not supplied by browser
-        if (chunk.type === 'key' && !meta?.decoderConfig?.description) {
-          try {
-            const { sps, pps } = extractSpsPpsFromChunk(chunkData);
-            if (sps && pps) {
-              const record = buildAvcDecoderConfigurationRecord(sps, pps);
-              activeDecoderConfig.description = record.buffer;
-            }
-          } catch {
-            // Keep existing fallback description
-          }
-        }
-
-        // Always guarantee sanitized colorSpace
-        activeDecoderConfig.colorSpace = sanitizeColorSpace(activeDecoderConfig.colorSpace);
-
-        // Construct bulletproof metadata object for mp4-muxer
-        const sanitizedMeta: EncodedVideoChunkMetadata = {
-          ...meta,
-          decoderConfig: {
-            ...activeDecoderConfig,
-            colorSpace: { ...activeDecoderConfig.colorSpace },
-          },
-        };
-
-        safeAddVideoChunk(muxer, chunk, sanitizedMeta, fps, chunkData);
-      } catch (err) {
-        console.error('Error adding video chunk to muxer:', err);
-        encoderError = err instanceof Error ? err : new Error(String(err));
-      }
-    },
-    error: (e) => {
-      encoderError = e;
-      console.error('VideoEncoder error:', e);
-    },
-  });
-
-  // Configure with the deep-probed codec + hardwareAcceleration combination.
-  // If it still fails (encoder raced to closed), fall back to MediaRecorder
-  // instead of surfacing a raw platform error to the user.
-  try {
-    videoEncoder.configure({
-      codec: workingConfig.codec,
-      width,
-      height,
-      bitrate: config.bitrate || 6_000_000,
-      framerate: fps,
-      hardwareAcceleration: workingConfig.hardwareAcceleration,
+      fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
     });
-  } catch (err) {
-    try {
-      if (videoEncoder.state !== 'closed') videoEncoder.close();
-    } catch {
-      // ignore close errors during failed setup
-    }
-    throw toActionableExportError(err, { width, height, fps });
-  }
-  if (videoEncoder.state !== 'configured') {
-    const asyncCause = encoderError as Error | null;
-    const detail = asyncCause ? asyncCause.message : null;
-    try {
-      if (videoEncoder.state !== 'closed') videoEncoder.close();
-    } catch {
-      // ignore close errors during failed setup
-    }
-    throw toActionableExportError(
-      asyncCause ?? new Error(detail ?? 'el encoder de la plataforma se cerró al configurarse'),
-      { width, height, fps }
-    );
-  }
 
-  // 4. Setup AudioEncoder & encode audio in optimized standard frames (2048 samples)
-  let audioEncoder: AudioEncoder | null = null;
-  if (audioConfig && renderedAudio) {
-    try {
-      audioEncoder = new AudioEncoder({
-        output: (chunk, meta) => {
-          try {
-            safeAddAudioChunk(muxer, chunk, meta || undefined, renderedAudio.sampleRate);
-          } catch (e) {
-            console.warn('safeAddAudioChunk warning:', e);
+    // Feed the already-encoded audio into the muxer.
+    if (encodedAudio) {
+      for (const chunk of encodedAudio.chunks) {
+        safeAddAudioChunk(
+          muxer,
+          {
+            byteLength: chunk.data.byteLength,
+            copyTo: (dest: Uint8Array) => dest.set(chunk.data),
+            type: chunk.type,
+            timestamp: chunk.timestamp,
+            duration: chunk.duration,
+          },
+          chunk.meta,
+          encodedAudio.sampleRate,
+          chunk.data,
+          AUDIO_BLOCK_SIZE
+        );
+      }
+    }
+
+    // Use the encoder configuration that was deep-probed in exportVideo
+    // (codec + hardwareAcceleration validated by actually creating a real
+    // encoder and verifying it survives). This avoids the async platform
+    // encoder death ("Operation is not supported") that isConfigSupported()
+    // cannot detect.
+    const activeCodec = workingConfig.codec;
+
+    // 4. Active video decoder configuration tracking
+    // In iOS Safari / WebKit, metadata from VideoEncoder output callback is frequently
+    // omitted (undefined) or lacks decoderConfig/colorSpace. We maintain an active, valid
+    // decoderConfig so mp4-muxer always receives non-null metadata with valid colorSpace.
+    const activeDecoderConfig: VideoDecoderConfig = {
+      codec: activeCodec,
+      codedWidth: width,
+      codedHeight: height,
+      colorSpace: { ...DEFAULT_COLOR_SPACE },
+      description: getFallbackAvcDescription(width, height).buffer,
+    };
+
+    let videoChunksEncoded = 0;
+    let encoderError: Error | null = null;
+
+    const videoEncoder = new VideoEncoder({
+      output: (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => {
+        try {
+          videoChunksEncoded++;
+
+          // Adopt incoming decoderConfig if emitted by browser
+          if (meta?.decoderConfig) {
+            if (meta.decoderConfig.codec) {
+              activeDecoderConfig.codec = meta.decoderConfig.codec;
+            }
+            if (meta.decoderConfig.codedWidth) {
+              activeDecoderConfig.codedWidth = meta.decoderConfig.codedWidth;
+            }
+            if (meta.decoderConfig.codedHeight) {
+              activeDecoderConfig.codedHeight = meta.decoderConfig.codedHeight;
+            }
+            if (meta.decoderConfig.description) {
+              activeDecoderConfig.description = meta.decoderConfig.description;
+            }
+            if (meta.decoderConfig.colorSpace) {
+              activeDecoderConfig.colorSpace = sanitizeColorSpace(meta.decoderConfig.colorSpace);
+            }
           }
-        },
-        error: (e) => console.error('AudioEncoder error:', e),
+
+          const chunkData = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(chunkData);
+
+          // On keyframe, extract SPS and PPS if description was not supplied by browser
+          if (chunk.type === 'key' && !meta?.decoderConfig?.description) {
+            try {
+              const { sps, pps } = extractSpsPpsFromChunk(chunkData);
+              if (sps && pps) {
+                const record = buildAvcDecoderConfigurationRecord(sps, pps);
+                activeDecoderConfig.description = record.buffer;
+              }
+            } catch {
+              // Keep existing fallback description
+            }
+          }
+
+          // Always guarantee sanitized colorSpace
+          activeDecoderConfig.colorSpace = sanitizeColorSpace(activeDecoderConfig.colorSpace);
+
+          // Construct bulletproof metadata object for mp4-muxer
+          const sanitizedMeta: EncodedVideoChunkMetadata = {
+            ...meta,
+            decoderConfig: {
+              ...activeDecoderConfig,
+              colorSpace: { ...activeDecoderConfig.colorSpace },
+            },
+          };
+
+          safeAddVideoChunk(muxer, chunk, sanitizedMeta, fps, chunkData);
+        } catch (err) {
+          console.error('Error adding video chunk to muxer:', err);
+          encoderError = err instanceof Error ? err : new Error(String(err));
+        }
+      },
+      error: (e) => {
+        encoderError = e;
+        console.error('VideoEncoder error:', e);
+      },
+    });
+
+    // Configure with the deep-probed codec + hardwareAcceleration combination.
+    // If it still fails (encoder raced to closed), `exportVideo` degrades to
+    // the MediaRecorder path instead of surfacing a raw platform error.
+    try {
+      videoEncoder.configure({
+        codec: workingConfig.codec,
+        width,
+        height,
+        bitrate: config.bitrate || 6_000_000,
+        framerate: fps,
+        hardwareAcceleration: workingConfig.hardwareAcceleration,
       });
-      audioEncoder.configure({
-        codec: audioConfig.encoderCodec,
-        numberOfChannels: 2,
-        sampleRate: renderedAudio.sampleRate,
-        bitrate: audioConfig.bitrate,
-      });
+    } catch (err) {
+      try {
+        if (videoEncoder.state !== 'closed') videoEncoder.close();
+      } catch {
+        // ignore close errors during failed setup
+      }
+      throw toActionableExportError(err, { width, height, fps });
+    }
+    if (videoEncoder.state !== 'configured') {
+      const asyncCause = encoderError as Error | null;
+      try {
+        if (videoEncoder.state !== 'closed') videoEncoder.close();
+      } catch {
+        // ignore close errors during failed setup
+      }
+      throw toActionableExportError(
+        asyncCause ?? new Error('el encoder de la plataforma se cerró al configurarse'),
+        { width, height, fps }
+      );
+    }
 
-      const numFrames = renderedAudio.length;
-      const left = renderedAudio.getChannelData(0);
-      const right = renderedAudio.numberOfChannels > 1 ? renderedAudio.getChannelData(1) : left;
+    // 5. Canvas & compositor
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const compositor = new Compositor();
 
-      // AAC standard frame multiple: 2048 samples
-      const chunkSize = 2048;
-      // Preallocate planar buffer to eliminate thousands of small allocations during export
-      const planarBuffer = new Float32Array(chunkSize * 2);
-
-      for (let offset = 0; offset < numFrames; offset += chunkSize) {
-        if (signal?.aborted) break;
-
-        // Audio backpressure control
-        if (audioEncoder.encodeQueueSize > 8) {
-          await waitForAudioDrain(audioEncoder, 4);
+    // 6. Frame rendering loop
+    try {
+      for (let frameIdx = 0; frameIdx < totalFrames; frameIdx++) {
+        if (signal?.aborted) {
+          throw new Error('Exportación cancelada por el usuario');
+        }
+        if (encoderError) {
+          throw toActionableExportError(encoderError, { width, height, fps });
         }
 
-        const framesInChunk = Math.min(chunkSize, numFrames - offset);
-        let chunkData: Float32Array;
+        const t = frameIdx / fps;
 
-        if (framesInChunk === chunkSize) {
-          for (let i = 0; i < framesInChunk; i++) {
-            planarBuffer[i] = left[offset + i];
-            planarBuffer[framesInChunk + i] = right[offset + i];
-          }
-          chunkData = planarBuffer;
-        } else {
-          // Partial tail chunk
-          chunkData = new Float32Array(framesInChunk * 2);
-          for (let i = 0; i < framesInChunk; i++) {
-            chunkData[i] = left[offset + i];
-            chunkData[framesInChunk + i] = right[offset + i];
-          }
-        }
+        // Pre-seek any active video clips at this frame in parallel (matching clip.id in MediaSourcePool)
+        await seekActiveVideoClips(t, clips, mediaMap, (media, clipId, sourceStart) =>
+          isolation.pool.getVideoElement(media, clipId, sourceStart)
+        );
 
-        const timestampUs = Math.round((offset / renderedAudio.sampleRate) * 1_000_000);
-        const audioData = new AudioData({
-          format: 'f32-planar',
-          sampleRate: renderedAudio.sampleRate,
-          numberOfFrames: framesInChunk,
-          numberOfChannels: 2,
-          timestamp: timestampUs,
-          data: chunkData as unknown as BufferSource,
+        // Render frame to canvas
+        compositor.renderFrame({
+          time: t,
+          canvas,
+          tracks,
+          clips,
+          mediaPool,
+          isPlaying: false,
         });
 
+        // Control backpressure (allow hardware encoder pipeline depth up to 5)
+        await waitForEncoderDrain(videoEncoder, 5);
+
+        // Guard: if a previous async encoding error closed/reset the encoder,
+        // encode() would throw the cryptic "Encoder must be configured first".
+        // Surface the translated underlying error instead.
+        if (videoEncoder.state !== 'configured') {
+          throw toActionableExportError(
+            encoderError ??
+              new Error('el codificador se cerró inesperadamente durante la exportación'),
+            { width, height, fps }
+          );
+        }
+
+        // Create VideoFrame & encode strictly protected with try...finally
+        const timestampUs = Math.round(t * 1_000_000);
+        const frameDurationUs = Math.round(1_000_000 / fps);
+        const videoFrame = new VideoFrame(canvas, {
+          timestamp: timestampUs,
+          duration: frameDurationUs,
+        });
         try {
-          audioEncoder.encode(audioData);
+          try {
+            videoEncoder.encode(videoFrame, { keyFrame: frameIdx % (fps * 2) === 0 });
+          } catch (encodeErr) {
+            const msg = encodeErr instanceof Error ? encodeErr.message : String(encodeErr);
+            if (/configured first/i.test(msg) && encoderError) {
+              throw toActionableExportError(encoderError, { width, height, fps });
+            }
+            throw new Error(
+              `Fallo al codificar el cuadro ${frameIdx + 1}/${totalFrames}: ${msg}. ` +
+                `Prueba con resolución 1080p o 720p.`
+            );
+          }
         } finally {
-          audioData.close();
+          videoFrame.close();
+        }
+
+        // Progress reporting & ETA (throttled to avoid flooding React state updates)
+        const framesDone = frameIdx + 1;
+        const progressPercent = Math.round((framesDone / totalFrames) * 95);
+        if (framesDone === totalFrames || frameIdx % 4 === 0) {
+          const elapsedSecs = (performance.now() - renderStartTime) / 1000;
+          const fpsSpeed = framesDone / Math.max(0.001, elapsedSecs);
+          const etaSeconds = Math.max(
+            0,
+            Math.round((totalFrames - framesDone) / Math.max(0.1, fpsSpeed))
+          );
+
+          onProgress({
+            state: 'rendering',
+            progress: progressPercent,
+            currentFrame: framesDone,
+            totalFrames,
+            etaSeconds,
+          });
         }
       }
 
-      await audioEncoder.flush();
-    } catch (err) {
-      console.warn('AudioEncoder failed, proceeding with video only:', err);
-      audioEncoder = null;
-    }
-  }
+      // 7. Flush encoders and finalize muxer
+      onProgress({
+        state: 'muxing',
+        progress: 98,
+        currentFrame: totalFrames,
+        totalFrames,
+        etaSeconds: 1,
+      });
 
-  // 5. Canvas & compositor
+      try {
+        await videoEncoder.flush();
+      } catch (flushErr) {
+        // flush() rejects with the raw platform error when the GPU/driver
+        // fails mid-export (e.g. EncodingError "Operation is not supported").
+        // Prefer the error-callback cause when present, else translate.
+        throw toActionableExportError(flushErr, { width, height, fps }, encoderError);
+      }
+
+      if (encoderError) {
+        throw toActionableExportError(encoderError, { width, height, fps });
+      }
+
+      if (videoChunksEncoded === 0) {
+        throw new Error('El codificador de video no generó ningún cuadro de video.');
+      }
+
+      try {
+        muxer.finalize();
+      } catch (err) {
+        throw new Error(
+          `Error al finalizar el archivo MP4: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    } finally {
+      const videoState: string = videoEncoder.state;
+      if (videoState !== 'closed') {
+        try {
+          videoEncoder.close();
+        } catch {
+          // ignore close errors (never mask the original error)
+        }
+      }
+    }
+
+    const buffer = target.buffer;
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error('El archivo MP4 generado está vacío (0 bytes). Intenta de nuevo.');
+    }
+    const outputBlob = new Blob([buffer], { type: 'video/mp4' });
+
+    onProgress({
+      state: 'completed',
+      progress: 100,
+      currentFrame: totalFrames,
+      totalFrames,
+      etaSeconds: 0,
+      outputBlob,
+    });
+
+    return outputBlob;
+  } finally {
+    isolation.restore();
+  }
+}
+
+/**
+ * Maximum time we wait for `MediaRecorder.onstop` to fire after `stop()`.
+ * Without it a broken recorder leaves the export promise pending forever and
+ * the UI stuck in "rendering" (EX-11).
+ */
+export const RECORDER_STOP_TIMEOUT_MS = 10_000;
+
+/**
+ * Fallback export using MediaRecorder.
+ */
+async function exportWithMediaRecorder(
+  params: ExportParams,
+  totalFrames: number,
+  fps: number
+): Promise<Blob> {
+  const { config, duration, tracks, clips, mediaPool, onProgress, signal } = params;
+  const width = config.width - (config.width % 2);
+  const height = config.height - (config.height % 2);
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -1209,192 +1864,16 @@ async function exportWithWebCodecs(
   const mediaMap = new Map<string, MediaItem>();
   for (const m of mediaPool) mediaMap.set(m.id, m);
 
-  // 6. Frame rendering loop
-  try {
-    for (let frameIdx = 0; frameIdx < totalFrames; frameIdx++) {
-      if (signal?.aborted) {
-        throw new Error('Exportación cancelada por el usuario');
-      }
-      if (encoderError) {
-        throw toActionableExportError(encoderError, { width, height, fps });
-      }
-
-      const t = frameIdx / fps;
-
-      // Pre-seek any active video clips at this frame in parallel (matching clip.id in MediaSourcePool)
-      const activeVideoClips = clips.filter(
-        (c) => c.type === 'video' && t >= c.start && t < c.start + c.duration
-      );
-      if (activeVideoClips.length > 0) {
-        await Promise.all(
-          activeVideoClips.map((vc) => {
-            const media = mediaMap.get(vc.mediaId);
-            if (!media) return Promise.resolve();
-            const videoEl = mediaSourcePool.getVideoElement(media, vc.id, vc.sourceStart);
-            const speed = vc.speed && vc.speed > 0 ? vc.speed : 1;
-            const sourceOffset = vc.sourceStart + (t - vc.start) * speed;
-            const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
-            const clampedOffset = Math.max(0, Math.min(maxSourceTime, sourceOffset));
-            return seekVideoElement(videoEl, clampedOffset);
-          })
-        );
-      }
-
-      // Render frame to canvas
-      compositor.renderFrame({
-        time: t,
-        canvas,
-        tracks,
-        clips,
-        mediaPool,
-        isPlaying: false,
-      });
-
-      // Control backpressure (allow hardware encoder pipeline depth up to 5)
-      await waitForEncoderDrain(videoEncoder, 5);
-
-      // Guard: if a previous async encoding error closed/reset the encoder,
-      // encode() would throw the cryptic "Encoder must be configured first".
-      // Surface the translated underlying error instead.
-      if (videoEncoder.state !== 'configured') {
-        throw toActionableExportError(
-          encoderError ??
-            new Error('el codificador se cerró inesperadamente durante la exportación'),
-          { width, height, fps }
-        );
-      }
-
-      // Create VideoFrame & encode strictly protected with try...finally
-      const timestampUs = Math.round(t * 1_000_000);
-      const frameDurationUs = Math.round(1_000_000 / fps);
-      const videoFrame = new VideoFrame(canvas, {
-        timestamp: timestampUs,
-        duration: frameDurationUs,
-      });
-      try {
-        try {
-          videoEncoder.encode(videoFrame, { keyFrame: frameIdx % (fps * 2) === 0 });
-        } catch (encodeErr) {
-          const msg = encodeErr instanceof Error ? encodeErr.message : String(encodeErr);
-          if (/configured first/i.test(msg) && encoderError) {
-            throw toActionableExportError(encoderError, { width, height, fps });
-          }
-          throw new Error(
-            `Fallo al codificar el cuadro ${frameIdx + 1}/${totalFrames}: ${msg}. ` +
-              `Prueba con resolución 1080p o 720p.`
-          );
-        }
-      } finally {
-        videoFrame.close();
-      }
-
-      // Progress reporting & ETA (throttled to avoid flooding React state updates)
-      const framesDone = frameIdx + 1;
-      const progressPercent = Math.round((framesDone / totalFrames) * 95);
-      if (framesDone === totalFrames || frameIdx % 4 === 0) {
-        const elapsedSecs = (performance.now() - renderStartTime) / 1000;
-        const fpsSpeed = framesDone / Math.max(0.001, elapsedSecs);
-        const etaSeconds = Math.max(
-          0,
-          Math.round((totalFrames - framesDone) / Math.max(0.1, fpsSpeed))
-        );
-
-        onProgress({
-          state: 'rendering',
-          progress: progressPercent,
-          currentFrame: framesDone,
-          totalFrames,
-          etaSeconds,
-        });
-      }
-    }
-
-    // 7. Flush encoders and finalize muxer
-    onProgress({
-      state: 'muxing',
-      progress: 98,
-      currentFrame: totalFrames,
-      totalFrames,
-      etaSeconds: 1,
-    });
-
-    try {
-      await videoEncoder.flush();
-    } catch (flushErr) {
-      // flush() rejects with the raw platform error when the GPU/driver
-      // fails mid-export (e.g. EncodingError "Operation is not supported").
-      // Prefer the error-callback cause when present, else translate.
-      throw toActionableExportError(flushErr, { width, height, fps }, encoderError);
-    }
-    if (audioEncoder && audioEncoder.state !== 'closed') {
-      try {
-        await audioEncoder.flush();
-      } catch (err) {
-        console.warn('AudioEncoder flush warning:', err);
-      }
-    }
-
-    if (encoderError) {
-      throw toActionableExportError(encoderError, { width, height, fps });
-    }
-
-    if (videoChunksEncoded === 0) {
-      throw new Error('El codificador de video no generó ningún cuadro de video.');
-    }
-
-    try {
-      muxer.finalize();
-    } catch (err) {
-      throw new Error(
-        `Error al finalizar el archivo MP4: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  } finally {
-    const videoState: string = videoEncoder.state;
-    if (videoState !== 'closed') {
-      videoEncoder.close();
-    }
-    if (audioEncoder && audioEncoder.state !== 'closed') {
-      audioEncoder.close();
-    }
-  }
-
-  const buffer = target.buffer;
-  const outputBlob = new Blob([buffer], { type: 'video/mp4' });
-
-  onProgress({
-    state: 'completed',
-    progress: 100,
-    currentFrame: totalFrames,
-    totalFrames,
-    etaSeconds: 0,
-    outputBlob,
-  });
-
-  return outputBlob;
-}
-
-/**
- * Fallback export using MediaRecorder.
- */
-async function exportWithMediaRecorder(
-  params: ExportParams,
-  totalFrames: number
-): Promise<Blob> {
-  const { config, duration, tracks, clips, mediaPool, onProgress, signal } = params;
-  const fps = config.fps || 30;
-  const width = config.width - (config.width % 2);
-  const height = config.height - (config.height % 2);
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const compositor = new Compositor();
+  // H9 / E-08: isolated pool for the fallback path too, so the preview keeps
+  // its own decoders and frame cache.
+  const isolation = createExportPoolIsolation();
 
   const hasCaptureStream =
     typeof canvas.captureStream === 'function' ||
     typeof (canvas as unknown as { webkitCaptureStream?: unknown }).webkitCaptureStream === 'function';
 
   if (!hasCaptureStream) {
+    isolation.restore();
     throw new Error(
       'Tu navegador o entorno webview no soporta la captura de canvas en tiempo real (HTMLCanvasElement.captureStream). ' +
       'Para exportar videos, utiliza un navegador compatible como Google Chrome, Microsoft Edge, Firefox o Safari actualizado.'
@@ -1409,7 +1888,7 @@ async function exportWithMediaRecorder(
   // Render offline audio if available and attach to MediaStream
   let offlineAudioCtx: AudioContext | null = null;
   try {
-    const renderedAudio = await renderOfflineAudio(duration, tracks, clips, mediaPool);
+    const renderedAudio = await renderOfflineAudio(duration, tracks, clips, mediaPool, signal);
     if (renderedAudio) {
       const AudioCtx =
         window.AudioContext ||
@@ -1425,10 +1904,15 @@ async function exportWithMediaRecorder(
       source.start(0);
     }
   } catch (err) {
+    if (signal?.aborted || isAbortLikeError(err)) {
+      isolation.restore();
+      throw err;
+    }
     console.warn('Could not attach audio to MediaRecorder stream:', err);
   }
 
   if (typeof MediaRecorder === 'undefined') {
+    isolation.restore();
     throw new Error(
       'Tu navegador o entorno webview no soporta la API MediaRecorder necesaria para exportar video. ' +
       'Para exportar videos, utiliza un navegador compatible como Google Chrome, Microsoft Edge, Firefox o Safari actualizado.'
@@ -1467,6 +1951,7 @@ async function exportWithMediaRecorder(
       mimeType = recorder.mimeType || 'video/webm';
     } catch {
       const detail = err instanceof Error ? err.message : String(err);
+      isolation.restore();
       throw new Error(
         `Este navegador no soporta grabación de video (MediaRecorder: ${detail}). ` +
           `Prueba con Chrome o Edge actualizados.`
@@ -1479,50 +1964,169 @@ async function exportWithMediaRecorder(
     if (e.data && e.data.size > 0) chunks.push(e.data);
   };
 
-  recorder.onerror = (ev) => {
-    console.error('MediaRecorder error:', (ev as ErrorEvent).error ?? ev);
-  };
-
   try {
     recorder.start();
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+    isolation.restore();
     throw new Error(`No se pudo iniciar la grabación de respaldo: ${detail}`);
   }
 
   return new Promise<Blob>((resolve, reject) => {
     let frameIdx = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopTimeout: ReturnType<typeof setTimeout> | null = null;
     const intervalMs = 1000 / fps;
 
-    const intervalId = setInterval(() => {
+    // EX-12: the MediaStream tracks (canvas capture + audio destination) are
+    // never released, so the canvas kept producing frames for the whole
+    // session. They are stopped on every exit path.
+    const releaseResources = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (stopTimeout !== null) {
+        clearTimeout(stopTimeout);
+        stopTimeout = null;
+      }
+      try {
+        for (const track of stream.getTracks()) track.stop();
+      } catch {
+        // ignore
+      }
+      try {
+        canvas.width = 0;
+        canvas.height = 0;
+      } catch {
+        // ignore
+      }
+      if (offlineAudioCtx) {
+        const ctx = offlineAudioCtx;
+        offlineAudioCtx = null;
+        try {
+          void ctx.close().catch(() => {});
+        } catch {
+          // ignore
+        }
+      }
+      isolation.restore();
+    };
+
+    const resolveOnce = (blob: Blob) => {
+      if (settled) return;
+      settled = true;
+      releaseResources();
+      resolve(blob);
+    };
+
+    const rejectOnce = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      releaseResources();
+      reject(err);
+    };
+
+    // EX-11: `recorder.stop()` may throw (InvalidStateError / quota). It used
+    // to be called unguarded inside the interval, so the promise never
+    // settled and the UI was stuck in "rendering" forever.
+    const stopRecorderSafely = () => {
+      try {
+        if (recorder.state !== 'inactive') recorder.stop();
+      } catch (err) {
+        rejectOnce(
+          new Error(
+            `No se pudo finalizar la grabación de respaldo: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          )
+        );
+        return;
+      }
+      // Safety net: if `onstop` never fires the promise would hang forever.
+      stopTimeout = setTimeout(() => {
+        rejectOnce(
+          new Error(
+            'La grabación de respaldo no terminó a tiempo. Intenta de nuevo con una resolución menor.'
+          )
+        );
+      }, RECORDER_STOP_TIMEOUT_MS);
+    };
+
+    recorder.onstop = () => {
+      if (settled) return;
+      if (stopTimeout !== null) {
+        clearTimeout(stopTimeout);
+        stopTimeout = null;
+      }
+      // EX-10: an "empty" recording must not be reported as a success.
+      if (chunks.length === 0) {
+        rejectOnce(
+          new Error(
+            'La grabación de respaldo no produjo ningún dato de video (0 bytes). ' +
+              'Prueba con una resolución menor (720p) o con otro navegador.'
+          )
+        );
+        return;
+      }
+      const finalBlob = new Blob(chunks, { type: mimeType });
+      onProgress({
+        state: 'completed',
+        progress: 100,
+        currentFrame: totalFrames,
+        totalFrames,
+        etaSeconds: 0,
+        outputBlob: finalBlob,
+      });
+      resolveOnce(finalBlob);
+    };
+
+    recorder.onerror = (ev) => {
+      const detail = (ev as ErrorEvent)?.error;
+      rejectOnce(
+        new Error(
+          `Error durante la grabación de respaldo: ${
+            detail ? toErrorMessage(detail) : 'fallo desconocido del grabador'
+          }`
+        )
+      );
+    };
+
+    const step = async () => {
+      if (settled) return;
+
       if (signal?.aborted) {
-        clearInterval(intervalId);
-        recorder.stop();
-        if (offlineAudioCtx) offlineAudioCtx.close().catch(() => {});
-        reject(new Error('Exportación cancelada'));
+        stopRecorderSafely();
+        rejectOnce(new Error('Exportación cancelada por el usuario'));
         return;
       }
 
       if (frameIdx >= totalFrames) {
-        clearInterval(intervalId);
-        recorder.onstop = () => {
-          if (offlineAudioCtx) offlineAudioCtx.close().catch(() => {});
-          const finalBlob = new Blob(chunks, { type: mimeType });
-          onProgress({
-            state: 'completed',
-            progress: 100,
-            currentFrame: totalFrames,
-            totalFrames,
-            etaSeconds: 0,
-            outputBlob: finalBlob,
-          });
-          resolve(finalBlob);
-        };
-        recorder.stop();
+        stopRecorderSafely();
         return;
       }
 
       const t = frameIdx / fps;
+
+      // EX-01: the fallback MUST seek the video elements before compositing.
+      // `Compositor.renderFrame` only *requests* the seek (syncVideoTime) and
+      // paints the element synchronously, so without this await every video
+      // clip was exported as a frozen frame for its whole duration.
+      try {
+        await seekActiveVideoClips(t, clips, mediaMap, (media, clipId, sourceStart) =>
+          isolation.pool.getVideoElement(media, clipId, sourceStart)
+        );
+      } catch (err) {
+        console.warn('No se pudo preparar el fotograma para el respaldo MediaRecorder:', err);
+      }
+
+      if (signal?.aborted) {
+        stopRecorderSafely();
+        rejectOnce(new Error('Exportación cancelada por el usuario'));
+        return;
+      }
+
       compositor.renderFrame({
         time: t,
         canvas,
@@ -1539,8 +2143,16 @@ async function exportWithMediaRecorder(
         progress: progressPercent,
         currentFrame: frameIdx,
         totalFrames,
-        etaSeconds: Math.round(((totalFrames - frameIdx) * intervalMs) / 1000),
+        etaSeconds: Math.max(0, Math.round(((totalFrames - frameIdx) * intervalMs) / 1000)),
       });
-    }, intervalMs);
+
+      timer = setTimeout(() => {
+        void step();
+      }, intervalMs);
+    };
+
+    timer = setTimeout(() => {
+      void step();
+    }, 0);
   });
 }

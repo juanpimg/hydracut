@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   X, 
   Download, 
@@ -12,7 +12,59 @@ import {
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
 import { ExportConfig, ExportProgress } from '../../types/project';
-import { exportVideo, isWebCodecsSupported } from '../../core/export/webcodecsExporter';
+import { announce } from '../layout/liveRegion';
+
+/**
+ * Formats the "Tiempo restante" label of the export modal.
+ *
+ * Returns `null` when the label must be hidden (the export already finished,
+ * so an ETA of "0 s" or "Calculando..." is just noise — it used to stay
+ * showing "Calculando..." forever at 100 %).
+ */
+export function formatExportEta(
+  state: ExportProgress['state'],
+  etaSeconds: number
+): string | null {
+  if (state === 'completed' || state === 'error') return null;
+  if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) return 'Calculando...';
+  return `~${Math.round(etaSeconds)}s`;
+}
+
+/**
+ * Coarse milestones used to announce the export progress.
+ *
+ * The progress is reported on every rendered frame; announcing it frame by
+ * frame would flood the screen reader queue, so only the state transitions
+ * and the 25 % steps are announced (UI-16).
+ */
+export const EXPORT_PROGRESS_MILESTONE = 25;
+
+/**
+ * Builds the message that is announced for the given export state.
+ *
+ * Returns `null` when the state must NOT be announced (idle) and an empty
+ * string for the terminal states, which are announced through the app-wide
+ * live region instead (so they are not read twice).
+ */
+export function describeExportProgress(progress: ExportProgress): string | null {
+  switch (progress.state) {
+    case 'idle':
+      return null;
+    case 'rendering': {
+      const milestone = Math.floor(progress.progress / EXPORT_PROGRESS_MILESTONE) * EXPORT_PROGRESS_MILESTONE;
+      if (milestone <= 0) return 'Exportando vídeo…';
+      return `Exportando vídeo: ${milestone} %`;
+    }
+    case 'muxing':
+      return 'Generando el archivo MP4 final…';
+    case 'completed':
+    case 'error':
+      // Announced once through the app-wide live region.
+      return '';
+    default:
+      return null;
+  }
+}
 
 export const ExportModal: React.FC = () => {
   const project = useProjectStore((s) => s.project);
@@ -31,12 +83,50 @@ export const ExportModal: React.FC = () => {
   });
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const downloadUrlRef = useRef<string | null>(null);
 
   const isEmptyProject = project.clips.length === 0;
 
-  useEffect(() => {
-    isWebCodecsSupported().then(setHasWebCodecs);
+  /**
+   * Releases the object URL of the previous export. Without this the whole
+   * exported video stayed in RAM for the whole session (EX-08).
+   */
+  const revokeDownloadUrl = useCallback(() => {
+    if (downloadUrlRef.current) {
+      try {
+        URL.revokeObjectURL(downloadUrlRef.current);
+      } catch {
+        // ignore
+      }
+      downloadUrlRef.current = null;
+    }
   }, []);
+
+  /**
+   * The exporter (and `mp4-muxer` with it) is loaded ON DEMAND.
+   *
+   * The export pipeline is ~22 KB gzip of code that is useless until the user
+   * actually exports something, so it is kept out of the initial bundle
+   * (B-10 / F6). The capability probe is only run when the modal is opened.
+   */
+  useEffect(() => {
+    if (!isExportModalOpen) return;
+    let cancelled = false;
+    import('../../core/export/webcodecsExporter')
+      .then((mod) => mod.isWebCodecsSupported())
+      .then((supported) => {
+        if (!cancelled) setHasWebCodecs(supported);
+      })
+      .catch(() => {
+        if (!cancelled) setHasWebCodecs(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExportModalOpen]);
+
+  // Revoke the object URL when the modal unmounts.
+  useEffect(() => revokeDownloadUrl, [revokeDownloadUrl]);
 
   // Close on Escape (unless an export is actively rendering)
   useEffect(() => {
@@ -49,6 +139,25 @@ export const ExportModal: React.FC = () => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isExportModalOpen, progressState.state, setExportModalOpen]);
+
+  /**
+   * UI-16: the export progress is announced to the screen readers on the
+   * state transitions and on the coarse milestones (never on every frame).
+   *
+   * The milestones are announced by the live region of the modal itself
+   * (see the `role="status"` block below); the terminal states are announced
+   * through the app-wide live region, so they are heard even after the modal
+   * is closed.
+   */
+  const liveMessage = useMemo(() => describeExportProgress(progressState) ?? '', [progressState]);
+
+  useEffect(() => {
+    if (progressState.state === 'completed') {
+      announce('Exportación completada: el vídeo MP4 se ha descargado');
+    } else if (progressState.state === 'error') {
+      announce(`Error al exportar: ${progressState.error ?? 'error desconocido'}`);
+    }
+  }, [progressState.state, progressState.error]);
 
   if (!isExportModalOpen) return null;
 
@@ -87,18 +196,30 @@ export const ExportModal: React.FC = () => {
 
     abortControllerRef.current = new AbortController();
 
+    // EX-08: a new export releases the object URL of the previous one, so the
+    // previous video does not stay in RAM.
+    revokeDownloadUrl();
+
+    // The duration shown in the summary and the duration that is exported come
+    // from the SAME source (`project.duration`).
+    const exportDuration = project.duration;
+
     setProgressState({
       state: 'rendering',
       progress: 0,
       currentFrame: 0,
-      totalFrames: Math.round(project.duration * fps),
+      totalFrames: Math.round(exportDuration * fps),
       etaSeconds: 0,
     });
 
+    // The exporter (and `mp4-muxer`) is loaded on demand: it is ~22 KB gzip
+    // of code that is useless until the user exports something (F6).
+    let exporter: typeof import('../../core/export/webcodecsExporter') | null = null;
     try {
-      const blob = await exportVideo({
+      exporter = await import('../../core/export/webcodecsExporter');
+      const blob = await exporter.exportVideo({
         config,
-        duration: project.duration,
+        duration: exportDuration,
         tracks: project.tracks,
         clips: project.clips,
         mediaPool: project.mediaPool,
@@ -109,6 +230,7 @@ export const ExportModal: React.FC = () => {
       // Auto download
       const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
       const url = URL.createObjectURL(blob);
+      downloadUrlRef.current = url;
       const a = document.createElement('a');
       a.href = url;
       a.download = `${project.name.toLowerCase().replace(/\s+/g, '_')}_${resolutionPreset}.${extension}`;
@@ -120,11 +242,24 @@ export const ExportModal: React.FC = () => {
         ...prev,
         state: 'completed',
         progress: 100,
+        // The export is over: no ETA left (the label used to stay at
+        // "Calculando..." forever).
+        etaSeconds: 0,
         outputBlob: blob,
         downloadUrl: url,
       }));
     } catch (err) {
-      if ((err as Error).name === 'AbortError' || (err as Error).message.includes('cancelada')) {
+      // EX-23: the error may not be an `Error` (a string, a DOMException or
+      // even `undefined`); reading `.message` off it used to throw *inside*
+      // this catch and left the modal stuck in "rendering" forever.
+      const rawMessage = err instanceof Error ? err.message : String(err ?? '');
+      const errorName = (err as { name?: string } | null | undefined)?.name;
+      const isAbort =
+        (exporter ? exporter.isAbortLikeError(err) : false) ||
+        errorName === 'AbortError' ||
+        errorName === 'TimeoutError' ||
+        /cancelad|canceled|cancelled|abort/i.test(rawMessage);
+      if (isAbort) {
         setProgressState({
           state: 'idle',
           progress: 0,
@@ -133,10 +268,13 @@ export const ExportModal: React.FC = () => {
           etaSeconds: 0,
         });
       } else {
+        const message = exporter
+          ? exporter.toErrorMessage(err, 'Error durante la exportación')
+          : rawMessage || 'Error durante la exportación';
         setProgressState((prev) => ({
           ...prev,
           state: 'error',
-          error: (err as Error).message || 'Error durante la exportación',
+          error: message,
         }));
       }
     }
@@ -311,6 +449,16 @@ export const ExportModal: React.FC = () => {
           ) : (
             /* Progress view */
             <div className="py-4 space-y-4">
+              {/*
+                UI-16: the progress is exposed to the screen readers through a
+                polite live region. It only carries the COARSE milestones (the
+                state transitions and the 25 % steps): announcing every frame
+                would flood the announcement queue.
+              */}
+              <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+                {liveMessage}
+              </div>
+
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-300 font-medium">
                   {progressState.state === 'rendering' && 'Codificando fotogramas con GPU...'}
@@ -344,12 +492,14 @@ export const ExportModal: React.FC = () => {
                     {progressState.currentFrame} / {progressState.totalFrames}
                   </span>
                 </div>
-                <div>
-                  <span>Tiempo restante:</span>{' '}
-                  <span className="font-mono text-slate-200">
-                    {progressState.etaSeconds > 0 ? `~${progressState.etaSeconds}s` : 'Calculando...'}
-                  </span>
-                </div>
+                {formatExportEta(progressState.state, progressState.etaSeconds) !== null && (
+                  <div>
+                    <span>Tiempo restante:</span>{' '}
+                    <span className="font-mono text-slate-200">
+                      {formatExportEta(progressState.state, progressState.etaSeconds)}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {progressState.state === 'completed' && (
@@ -400,6 +550,7 @@ export const ExportModal: React.FC = () => {
           ) : (
             <button
               onClick={() => {
+                revokeDownloadUrl();
                 setProgressState({ state: 'idle', progress: 0, currentFrame: 0, totalFrames: 0, etaSeconds: 0 });
                 setExportModalOpen(false);
               }}
@@ -413,3 +564,9 @@ export const ExportModal: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * Default export: the modal is loaded with `React.lazy()` so the exporter and
+ * `mp4-muxer` never reach the initial bundle (F3/B-10).
+ */
+export default ExportModal;

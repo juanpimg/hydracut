@@ -94,6 +94,9 @@ function createMockDOM() {
   return { mockDoc, mockWin, MockNode, MockElement, MockHTMLElement, MockHTMLButtonElement };
 }
 
+/** Instance type of the mocked `<button>` element used by the DOM mock. */
+type MockButton = InstanceType<ReturnType<typeof createMockDOM>['MockHTMLButtonElement']>;
+
 describe('Challenger Stress Verification: Video Sync, Compositor & React Render Isolation', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -347,15 +350,17 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
       expect(freshCurrentTime).toBe(10.0);
     });
 
-    it('proves that the proposed fix eliminates both defects and guarantees >=300ms cooldown across 1,000 frames', () => {
-      let lastRateChange = 0;
-      let isCorrecting = false;
-      let lastHardSeek = -Infinity;
+    it('enforces the >=300ms rate-change cooldown on the PRODUCTION syncVideoTime across 1,000 jittered frames after an early-runtime hard seek', () => {
+      // A dedicated pool so the per-element sync state is isolated from the
+      // cases above. This test exercises the REAL implementation: the previous
+      // version of this test re-implemented `syncVideoTime` locally and
+      // asserted its own copy, which proved nothing about production code.
+      const prodPool = new MediaSourcePool();
       const history: Array<{ rate: number; time: number }> = [];
 
       let curRate = 1.0;
-      let curTime = 10.0;
-      const testVideo = {
+      let curTime = 15.0;
+      const prodVideo = {
         readyState: 4,
         paused: false,
         seeking: false,
@@ -370,73 +375,15 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
         pause: vi.fn(),
       } as unknown as HTMLVideoElement;
 
-      // Fixed syncVideoTime logic
-      const fixedSync = (video: HTMLVideoElement, targetTime: number, isPlaying: boolean, speed = 1) => {
-        if (!isPlaying || video.seeking || video.paused) return;
-        const now = simulatedPerfNow;
-        const drift = video.currentTime - targetTime;
-        const absDrift = Math.abs(drift);
-
-        if (absDrift > 1.50) {
-          if (now - lastHardSeek > 1500) {
-            lastHardSeek = now;
-            video.currentTime = targetTime;
-            isCorrecting = false;
-            lastRateChange = now;
-          }
-          return;
-        }
-
-        const DEADBAND_ENTER = 0.20;
-        const DEADBAND_EXIT = 0.08;
-        const RATE_CHANGE_COOLDOWN = 300;
-
-        if (!isCorrecting) {
-          if (absDrift <= DEADBAND_ENTER) {
-            if (Math.abs(video.playbackRate - speed) > 0.01) {
-              if (now - lastRateChange >= RATE_CHANGE_COOLDOWN) {
-                video.playbackRate = speed;
-                lastRateChange = now;
-              }
-            }
-            return;
-          }
-          isCorrecting = true;
-        } else {
-          if (absDrift <= DEADBAND_EXIT) {
-            isCorrecting = false;
-            if (Math.abs(video.playbackRate - speed) > 0.01) {
-              if (now - lastRateChange >= RATE_CHANGE_COOLDOWN) {
-                video.playbackRate = speed;
-                lastRateChange = now;
-              }
-            }
-            return;
-          }
-        }
-
-        let targetRate: number;
-        if (absDrift <= 0.60) {
-          targetRate = drift < 0 ? speed * 1.06 : Math.max(0.25, speed * 0.94);
-        } else {
-          targetRate = drift < 0 ? speed * 1.20 : Math.max(0.25, speed * 0.80);
-        }
-
-        if (Math.abs(video.playbackRate - targetRate) > 0.01) {
-          if (now - lastRateChange >= RATE_CHANGE_COOLDOWN) {
-            video.playbackRate = targetRate;
-            lastRateChange = now;
-          }
-        }
-      };
-
-      // 1. Verify early page load hard seek works immediately when now = 500ms
+      // 1. Early page runtime (performance.now() = 500ms, i.e. < 1500ms): a
+      //    massive desync must hard-seek immediately and must NOT touch the rate.
       simulatedPerfNow = 500;
-      curTime = 15.0;
-      fixedSync(testVideo, 10.0, true, 1.0);
-      expect(curTime).toBe(10.0); // Hard seek SUCCEEDS immediately!
+      prodPool.syncVideoTime(prodVideo, 10.0, true, 1.0);
+      expect(curTime).toBe(10.0);
+      expect(history.length).toBe(0);
 
-      // 2. Verify 1,000 frames of random jitter with cooldown strictly >= 300ms
+      // 2. 1,000 frames of random clock jitter against the production
+      //    implementation: consecutive rate mutations must be >= 300ms apart.
       let frameTime = 1000;
       let seed = 42;
       const pseudoRandom = () => {
@@ -450,14 +397,22 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
         const jitterMagnitude = 0.05 + pseudoRandom() * 0.25;
         const jitterSign = pseudoRandom() > 0.5 ? 1 : -1;
         curTime = 10.0 + (frame * 0.016666) + (jitterSign * jitterMagnitude);
-        fixedSync(testVideo, 10.0 + (frame * 0.016666), true, 1.0);
+        prodPool.syncVideoTime(prodVideo, 10.0 + (frame * 0.016666), true, 1.0);
       }
 
-      // Assert zero cooldown violations across all 1,000 frames!
+      // The production implementation must have reacted at least once, otherwise
+      // the cooldown assertion below would be vacuous.
       expect(history.length).toBeGreaterThan(0);
       for (let i = 1; i < history.length; i++) {
         const interval = history[i].time - history[i - 1].time;
         expect(interval).toBeGreaterThanOrEqual(299.9);
+      }
+
+      // Every mutation must have restored the native rate or applied one of the
+      // documented correction rates (0.94x / 1.06x / 0.80x / 1.20x).
+      const allowed = [1.0, 0.94, 1.06, 0.8, 1.2];
+      for (const entry of history) {
+        expect(allowed.some((r) => Math.abs(entry.rate - r) < 0.001)).toBe(true);
       }
     });
   });
@@ -726,6 +681,54 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
   // =========================================================================
   describe('Harness 3: MobileBottomBar Render Isolation Stress Suite', () => {
     let mockDOM: ReturnType<typeof createMockDOM>;
+    let root: ReturnType<typeof ReactDOM.createRoot> | null = null;
+
+    /**
+     * Mounts the REAL `MobileBottomBar` and counts the React *commits* of its
+     * subtree through `React.Profiler`.
+     *
+     * Why not a wrapper counter: a wrapper component only re-renders when its
+     * PARENT re-renders. A re-render of `MobileBottomBar` alone never touches
+     * the wrapper, so the old counter stayed at 1 even if the bar re-rendered
+     * 600 times (the counter was measuring the wrong component).
+     * `React.Profiler.onRender` fires on every commit that touches the profiled
+     * subtree, which is the observable this test needs.
+     */
+    const mountBottomBar = () => {
+      const commits: number[] = [];
+      const container = mockDOM.mockDoc.createElement('div');
+      root = ReactDOM.createRoot(container as unknown as HTMLElement);
+      root.render(
+        React.createElement(
+          React.Profiler,
+          {
+            id: 'mobile-bottom-bar',
+            onRender: () => {
+              commits.push(1);
+            },
+          },
+          React.createElement(MobileBottomBar, { onOpenSheet: () => {} })
+        )
+      );
+      return { commits, container };
+    };
+
+    /** Finds a rendered element whose `aria-label` starts with `prefix`. */
+    const findByLabel = (node: unknown, prefix: string): MockButton | null => {
+      const el = node as
+        | { getAttribute?: (name: string) => string | null; childNodes?: unknown[] }
+        | null;
+      if (!el) return null;
+      if (typeof el.getAttribute === 'function') {
+        const label = el.getAttribute('aria-label');
+        if (label && label.startsWith(prefix)) return el as MockButton;
+      }
+      for (const child of el.childNodes ?? []) {
+        const found = findByLabel(child, prefix);
+        if (found) return found;
+      }
+      return null;
+    };
 
     beforeEach(() => {
       mockDOM = createMockDOM();
@@ -737,9 +740,18 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
       (globalThis as Record<string, unknown>).HTMLButtonElement = mockDOM.MockHTMLButtonElement;
 
       useProjectStore.getState().resetProject();
+      // Deterministic clock state through the PUBLIC API only.
+      masterClock.pause();
+      masterClock.seek(0);
     });
 
     afterEach(() => {
+      // Unmount: `MobileSplitButton` subscribes to `masterClock` and would leak
+      // its listeners (and the React root) into the following tests.
+      if (root) {
+        root.unmount();
+        root = null;
+      }
       delete (globalThis as Record<string, unknown>).document;
       delete (globalThis as Record<string, unknown>).window;
       delete (globalThis as Record<string, unknown>).Node;
@@ -748,9 +760,7 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
       delete (globalThis as Record<string, unknown>).HTMLButtonElement;
     });
 
-    it('asserts strictly 0 React re-renders across 600 ticks of simulated 60 FPS playback', async () => {
-      let renderCount = 0;
-
+    it('asserts strictly 0 React commits of the MobileBottomBar subtree across 600 ticks of simulated 60 FPS playback', async () => {
       // Populate project with clips so split button has data to inspect
       useProjectStore.getState().addTrack('video', 'V1');
       const trackId = useProjectStore.getState().project.tracks[0].id;
@@ -779,38 +789,42 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
         },
       }));
 
-      const MonitoredBar: React.FC<{ onOpenSheet: () => void }> = (props) => {
-        renderCount++;
-        return React.createElement(MobileBottomBar, props);
-      };
-
-      const container = mockDOM.mockDoc.createElement('div');
-      const root = ReactDOM.createRoot(container as unknown as HTMLElement);
-
-      // Mount
-      root.render(React.createElement(MonitoredBar, { onOpenSheet: () => {} }));
+      const { commits, container } = mountBottomBar();
 
       // Wait for initial mount
       await new Promise((r) => setTimeout(r, 60));
-      expect(renderCount).toBe(1);
+      expect(commits.length).toBe(1);
 
-      // Simulate 600 ticks of 60 FPS playback (10 seconds)
+      // Simulate 600 ticks of 60 FPS playback (10 seconds) through the PUBLIC
+      // clock API (`seek()` notifies the time subscribers; the private
+      // `notifyTime()` is never called from a test).
       // Playhead crosses into c1 (t=1.0s to t=6.0s) and out of c1 (t=6.0s to 10.0s)
       for (let tick = 0; tick < 600; tick++) {
-        const time = tick * (1 / 60);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (masterClock as any).notifyTime(time);
+        masterClock.seek((tick * (1 / 60)) % 30);
       }
 
       await new Promise((r) => setTimeout(r, 60));
 
-      // CRUCIAL ASSERTION: ZERO RE-RENDERS
-      expect(renderCount).toBe(1);
+      // CRUCIAL ASSERTION: the subtree was never re-rendered (zero extra commits).
+      expect(commits.length).toBe(1);
+
+      // The clock subscription is still alive: the split button state is
+      // updated IMPERATIVELY (DOM mutation), not through a React re-render.
+      const splitButton = findByLabel(container, 'Dividir en cabezal');
+      expect(splitButton).not.toBeNull();
+      // The playhead is at ~10s, outside the 1s..6s clip -> the button is disabled.
+      expect(splitButton!.disabled).toBe(true);
+      expect(splitButton!.getAttribute('aria-label')).toContain('no disponible');
+
+      // Moving the playhead INSIDE the clip flips the button, still without a commit.
+      masterClock.seek(3.0);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(splitButton!.disabled).toBe(false);
+      expect(splitButton!.getAttribute('aria-label')).toBe('Dividir en cabezal');
+      expect(commits.length).toBe(1);
     });
 
     it('updates SplitButton disabled DOM attribute imperatively without re-rendering component', async () => {
-      let buttonRenderCount = 0;
-
       // Add a clip from 2.0s to 6.0s
       useProjectStore.getState().addTrack('video', 'V1');
       const trackId = useProjectStore.getState().project.tracks[0].id;
@@ -839,31 +853,28 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
         },
       }));
 
-      const MonitoredBar: React.FC<{ onOpenSheet: () => void }> = (props) => {
-        buttonRenderCount++;
-        return React.createElement(MobileBottomBar, props);
-      };
-
-      const container = mockDOM.mockDoc.createElement('div');
-      const root = ReactDOM.createRoot(container as unknown as HTMLElement);
-      root.render(React.createElement(MonitoredBar, { onOpenSheet: () => {} }));
+      const { commits, container } = mountBottomBar();
 
       await new Promise((r) => setTimeout(r, 60));
-      expect(buttonRenderCount).toBe(1);
+      expect(commits.length).toBe(1);
+
+      const splitButton = findByLabel(container, 'Dividir en cabezal');
+      expect(splitButton).not.toBeNull();
 
       // Clock tick at t = 1.0s (outside clip): button should be disabled
-      vi.spyOn(masterClock, 'getTime').mockReturnValue(1.0);
-      vi.spyOn(masterClock, 'getIsPlaying').mockReturnValue(false); // Immediate update on pause/scrub
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (masterClock as any).notifyTime(1.0);
+      masterClock.seek(1.0);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(splitButton!.disabled).toBe(true);
+      expect(splitButton!.getAttribute('aria-label')).toContain('no disponible');
 
       // Clock tick at t = 4.0s (inside clip): button should enable
-      vi.spyOn(masterClock, 'getTime').mockReturnValue(4.0);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (masterClock as any).notifyTime(4.0);
+      masterClock.seek(4.0);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(splitButton!.disabled).toBe(false);
+      expect(splitButton!.getAttribute('aria-label')).toBe('Dividir en cabezal');
 
-      // Component re-renders must remain 1 throughout these transitions!
-      expect(buttonRenderCount).toBe(1);
+      // All of it happened through DOM mutations: not one single React commit.
+      expect(commits.length).toBe(1);
     });
   });
 });

@@ -1,13 +1,400 @@
 import { create } from 'zustand';
-import { AspectRatio, Clip, MediaItem, Project, Track, TrackType } from '../types/project';
-import { autosaveProject } from '../core/storage/projectStorage';
+import {
+  AspectRatio,
+  Clip,
+  MediaItem,
+  MediaStatus,
+  MediaType,
+  OverlapPolicy,
+  Project,
+  Track,
+  TrackType,
+  TrashEntry,
+} from '../types/project';
+import {
+  autosaveProject,
+  deleteMediaFiles,
+  flushAutosave,
+  relinkMediaBytes,
+  revokeAllObjectUrls,
+  revokeProjectObjectUrls,
+  subscribeStorageEvents,
+} from '../core/storage/projectStorage';
+import type { StorageScope } from '../core/storage/projectStorage';
 import { calculateSnapping } from '../core/utils/math';
 import { mediaSourcePool } from '../core/engine/MediaSourcePool';
+import { compositor } from '../core/engine/Compositor';
+import { audioEngine } from '../core/engine/AudioEngine';
 import { masterClock } from '../core/engine/MasterClock';
 
 export interface HistoryState {
   tracks: Track[];
   clips: Clip[];
+  /**
+   * Media pool snapshot (S-01).
+   * `MediaItem` objects are immutable by contract, so a SHALLOW array copy is enough:
+   * it avoids deep-copying megabytes of base64 filmstrips on every history push.
+   */
+  mediaPool: MediaItem[];
+  /**
+   * Media trash snapshot (F2). The trash is part of the undoable state: undoing
+   * a removal brings the media back AND empties the trash, redo re-fills it.
+   */
+  trash: TrashEntry[];
+}
+
+/** Maximum number of undo entries kept in the history stack. */
+export const HISTORY_LIMIT = 30;
+
+/**
+ * Window (ms) during which consecutive `updateClip` calls on the same clip are
+ * coalesced into a single undo entry (S-02). A slider drag therefore produces
+ * ONE undo step instead of one per tick.
+ */
+export const UPDATE_COALESCE_WINDOW_MS = 400;
+
+/**
+ * Compatibility matrix between a track type and the media type it can host.
+ * Audio media only fits on audio tracks; video/image media only fits on video
+ * tracks; text clips only fit on text tracks.
+ */
+export function isTrackTypeCompatible(trackType: TrackType, mediaType: MediaType | Clip['type']): boolean {
+  if (mediaType === 'audio') return trackType === 'audio';
+  if (mediaType === 'text') return trackType === 'text';
+  return trackType === 'video';
+}
+
+/** Track type required to host a given media type. */
+export function trackTypeForMedia(mediaType: MediaType | Clip['type']): TrackType {
+  if (mediaType === 'audio') return 'audio';
+  if (mediaType === 'text') return 'text';
+  return 'video';
+}
+
+/**
+ * Duration (seconds) used for a project WITHOUT content (KI-01 / S-06 / B-06).
+ * It keeps the player and the timeline usable instead of degenerate.
+ */
+export const DEFAULT_EMPTY_PROJECT_DURATION = 30;
+
+/**
+ * Minimum duration (seconds) of a project that DOES have content. A zero or
+ * negative clip extent must never produce a zero/negative duration (that would
+ * render an empty export).
+ */
+export const MIN_PROJECT_DURATION = 1;
+
+/**
+ * Computes the duration of a project from the REAL extent of its content
+ * (KI-01 / S-06 / B-06).
+ *
+ * The old implementation used a hard-coded floor of 15 s plus an unconditional
+ * +5 s of "breathing room", so a project with a single 5 s clip was exported
+ * as a 20 s video with a 15 s black tail (4x the export time and file size).
+ *
+ * The contract is now:
+ * - no clips            -> `DEFAULT_EMPTY_PROJECT_DURATION` (30 s)
+ * - with content        -> `ceil(max(clip.start + clip.duration) + padding)`
+ * - padding is opt-in   -> `project.endPaddingSeconds` (default 0)
+ * - always finite and never negative (a clip with a 0/negative duration can
+ *   only shrink the extent, never invert it).
+ */
+export function computeProjectDuration(
+  clips: Array<Pick<Clip, 'start' | 'duration'>> | null | undefined,
+  endPaddingSeconds: number = 0
+): number {
+  if (!clips || clips.length === 0) return DEFAULT_EMPTY_PROJECT_DURATION;
+
+  let maxEnd = 0;
+  for (const clip of clips) {
+    const start = Number.isFinite(clip.start) ? Math.max(0, clip.start) : 0;
+    const duration = Number.isFinite(clip.duration) ? Math.max(0, clip.duration) : 0;
+    const end = start + duration;
+    if (end > maxEnd) maxEnd = end;
+  }
+
+  const padding = Number.isFinite(endPaddingSeconds) ? Math.max(0, endPaddingSeconds) : 0;
+  // `Math.ceil` keeps the frame count integral (a clip ending at 4.2 s gives
+  // a duration of 5 s, not 4.2 s).
+  const total = Math.ceil(maxEnd + padding);
+  return Math.max(MIN_PROJECT_DURATION, total);
+}
+
+/**
+ * Clamps a time value to a finite, non-negative number (S-19).
+ * `Math.max(0, NaN) === NaN`, so NaN has to be filtered out explicitly before
+ * it can reach the timeline state.
+ */
+export function toFiniteTime(time: number, fallback: number = 0): number {
+  if (!Number.isFinite(time)) return fallback;
+  return Math.max(0, time);
+}
+
+/* ------------------------------------------------------------------ */
+/* F1 — Explicit overlap policy                                        */
+/* ------------------------------------------------------------------ */
+
+/** Policy applied when a project does not define one (the safest one). */
+export const DEFAULT_OVERLAP_POLICY: OverlapPolicy = 'block';
+
+/**
+ * Result of `addClipFromMedia`.
+ *
+ * The UI needs to know WHY an insertion did not happen: a silent no-op is
+ * indistinguishable from a broken app (B-08).
+ */
+export type AddClipFromMediaResult =
+  | { ok: true; clipId: string }
+  | { ok: false; reason: string };
+
+/** Tolerance (seconds) used when comparing the edges of two intervals. */
+const OVERLAP_EPSILON = 1e-6;
+
+/** Minimum duration (seconds) of a clip that survives a trim. */
+const MIN_SURVIVING_CLIP_DURATION = 0.05;
+
+/** End (exclusive) of a clip on the timeline. */
+export function clipEnd(clip: Clip): number {
+  return clip.start + clip.duration;
+}
+
+/**
+ * True when the half-open intervals `[aStart, aEnd)` and `[bStart, bEnd)`
+ * overlap. Two clips that only touch (the end of one is the start of the
+ * other) do NOT overlap.
+ */
+export function intervalsOverlap(
+  aStart: number,
+  aEnd: number,
+  bStart: number,
+  bEnd: number
+): boolean {
+  return aStart < bEnd - OVERLAP_EPSILON && bStart < aEnd - OVERLAP_EPSILON;
+}
+
+/**
+ * Clips of `trackId` that overlap the `[start, start + duration)` interval.
+ */
+export function findOverlappingClips(
+  clips: Clip[],
+  trackId: string,
+  start: number,
+  duration: number,
+  excludeClipId?: string
+): Clip[] {
+  const end = start + duration;
+  return clips.filter(
+    (clip) =>
+      clip.trackId === trackId &&
+      clip.id !== excludeClipId &&
+      intervalsOverlap(clip.start, clipEnd(clip), start, end)
+  );
+}
+
+export interface OverwriteInsertResult {
+  /** The clips of the project after the insertion. */
+  clips: Clip[];
+  /** Clips that were shortened (the head or the tail was cut). */
+  trimmed: Clip[];
+  /** Clips that were removed completely (fully covered by the new clip). */
+  removed: Clip[];
+}
+
+/**
+ * `overwrite` policy: the new clip wins the overlapped region and the
+ * existing clip is trimmed (the part that is not overlapped survives as a
+ * separate clip when the new clip lands in the middle of it).
+ *
+ * Nothing is lost: the material before the insertion point stays in place and
+ * the material after it is moved right, next to the new clip.
+ */
+export function applyOverwriteInsert(
+  clips: Clip[],
+  trackId: string,
+  start: number,
+  duration: number
+): OverwriteInsertResult {
+  const end = start + duration;
+  const result: Clip[] = [];
+  const trimmed: Clip[] = [];
+  const removed: Clip[] = [];
+
+  for (const clip of clips) {
+    if (clip.trackId !== trackId || !intervalsOverlap(clip.start, clipEnd(clip), start, end)) {
+      result.push(clip);
+      continue;
+    }
+
+    const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+    const originalEnd = clipEnd(clip);
+    const pieces: Clip[] = [];
+
+    // Head: the part of the existing clip BEFORE the new clip.
+    if (clip.start < start - OVERLAP_EPSILON) {
+      const headDuration = start - clip.start;
+      if (headDuration >= MIN_SURVIVING_CLIP_DURATION) {
+        const head: Clip = { ...clip, duration: headDuration };
+        pieces.push(head);
+        trimmed.push(head);
+      }
+    }
+
+    // Tail: the part of the existing clip AFTER the new clip.
+    if (originalEnd > end + OVERLAP_EPSILON) {
+      const tailDuration = originalEnd - end;
+      const tail: Clip = {
+        ...clip,
+        id: `${clip.id}_overwrite_${Math.random().toString(36).substring(2, 8)}`,
+        start: end,
+        duration: tailDuration,
+        sourceStart: clip.sourceStart + (end - clip.start) * speed,
+      };
+      pieces.push(tail);
+      trimmed.push(tail);
+    }
+
+    if (pieces.length === 0) {
+      // The existing clip was fully covered by the new one.
+      removed.push(clip);
+      continue;
+    }
+    result.push(...pieces);
+  }
+
+  return { clips: result, trimmed, removed };
+}
+
+export interface RippleInsertResult {
+  /** The clips of the project after the insertion. */
+  clips: Clip[];
+  /** Clips that moved to the right to make room. */
+  shifted: Clip[];
+  /** New clips created by splitting a clip cut in half by the insertion. */
+  created: Clip[];
+}
+
+/**
+ * `ripple` policy: the clips that follow the insertion point move to the
+ * right so the new clip has room. A clip cut in half by the insertion point
+ * is split: its head stays in place and its tail moves with the rest.
+ */
+export function applyRippleInsert(
+  clips: Clip[],
+  trackId: string,
+  start: number,
+  duration: number
+): RippleInsertResult {
+  const result: Clip[] = [];
+  const shifted: Clip[] = [];
+  const created: Clip[] = [];
+
+  for (const clip of clips) {
+    if (clip.trackId !== trackId) {
+      result.push(clip);
+      continue;
+    }
+
+    const end = clipEnd(clip);
+    if (end <= start + OVERLAP_EPSILON) {
+      // Entirely before the insertion point: it does not move.
+      result.push(clip);
+      continue;
+    }
+
+    if (clip.start >= start - OVERLAP_EPSILON) {
+      // After the insertion point: it moves to the right.
+      const moved: Clip = { ...clip, start: clip.start + duration };
+      result.push(moved);
+      shifted.push(moved);
+      continue;
+    }
+
+    // The clip straddles the insertion point: it is split in two.
+    const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+    const headDuration = start - clip.start;
+    const tailDuration = end - start;
+
+    if (headDuration >= MIN_SURVIVING_CLIP_DURATION) {
+      result.push({ ...clip, duration: headDuration });
+    }
+
+    const tail: Clip = {
+      ...clip,
+      id: `${clip.id}_ripple_${Math.random().toString(36).substring(2, 8)}`,
+      start: start + duration,
+      duration: tailDuration,
+      sourceStart: clip.sourceStart + headDuration * speed,
+    };
+    result.push(tail);
+    shifted.push(tail);
+    created.push(tail);
+  }
+
+  return { clips: result, shifted, created };
+}
+
+/**
+ * Human readable reason of an overlap refusal (shown in the UI).
+ */
+export function buildOverlapRefusalReason(
+  media: MediaItem,
+  track: Track,
+  conflicts: Clip[],
+  start: number,
+  end: number
+): string {
+  const conflict = conflicts[0];
+  const conflictLabel = conflict ? `«${conflict.name}»` : 'otro clip';
+  const conflictRange = conflict
+    ? ` (${formatTimelineTime(conflict.start)}–${formatTimelineTime(clipEnd(conflict))})`
+    : '';
+  return (
+    `No se puede insertar «${media.name}» en «${track.name}»: se solapa con ${conflictLabel}${conflictRange}. ` +
+    `El clip entraría de ${formatTimelineTime(start)} a ${formatTimelineTime(end)}. ` +
+    `Muévelo a otro momento o cambia la política de solapamiento a «Sobrescribir» o «Ripple» en el Inspector.`
+  );
+}
+
+/**
+ * Formats a time (seconds) as `m:ss` for the user facing messages.
+ */
+export function formatTimelineTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(m)}:${pad(s)}`;
+}
+
+/**
+ * Persistence failure surfaced to the user (S-08).
+ *
+ * The storage layer publishes the failures through `subscribeStorageEvents`;
+ * the store keeps the LAST one so the UI can warn the user that their work is
+ * NOT being saved (a quota error used to be invisible: it only reached
+ * `console.error`).
+ */
+export interface StorageErrorState {
+  /** Human readable message, ready to show in the UI. */
+  message: string;
+  /** True when the failure was a storage quota exhaustion. */
+  quotaExceeded: boolean;
+  /** Timestamp of the failure (ms since the epoch). */
+  at: number;
+  /** Where the failure happened: autosave | save | delete | import | export | media. */
+  scope: StorageScope;
+}
+
+/**
+ * Options of the trim actions.
+ *
+ * `snap: false` disables the magnetic snapping: a keyboard trim must move the
+ * edge exactly one frame, never jump to the playhead or to the nearest edge.
+ */
+export interface TrimOptions {
+  /** `false` = no magnetic snapping (frame exact). Defaults to `true`. */
+  snap?: boolean;
 }
 
 export interface ProjectState {
@@ -20,6 +407,29 @@ export interface ProjectState {
   snappingGuideTime: number | null;
   past: HistoryState[];
   future: HistoryState[];
+
+  // Coalescing state for `updateClip` (S-02): consecutive edits to the same
+  // clip inside UPDATE_COALESCE_WINDOW_MS share a single history entry.
+  historyCoalesceKey: string | null;
+  historyCoalesceAt: number;
+
+  /** Last refusal/incoherence signal surfaced by the store (e.g. locked track). */
+  lastError: string | null;
+
+  /**
+   * Last persistence failure (S-08). `null` when everything is fine.
+   * The UI must show it: a quota error means the work is NOT being saved.
+   */
+  storageError: StorageErrorState | null;
+
+  /**
+   * Timestamp of the last SUCCESSFUL persistence write.
+   *
+   * `project.updatedAt` is optimistic (it changes on every mutation, even if
+   * the write fails), so it can NOT be used to tell the user that the work is
+   * safe. This field is only updated when the write really reached the disk.
+   */
+  lastSavedAt: number | null;
 
   // Actions
   setProject: (project: Project) => void;
@@ -36,6 +446,31 @@ export interface ProjectState {
   addMediaItem: (item: MediaItem) => void;
   removeMediaItem: (mediaId: string) => void;
 
+  /**
+   * Media trash (F2).
+   * `removeMediaItem` does NOT destroy anything: it moves the media (and its
+   * clips) to `project.trash`. The bytes stay in OPFS until the trash is
+   * purged.
+   */
+  restoreFromTrash: (mediaId: string) => boolean;
+  /** Physically deletes every trashed media (OPFS blob + object URL). */
+  purgeTrash: () => number;
+  /** Physically deletes one trashed media (OPFS blob + object URL). */
+  purgeTrashedMedia: (mediaId: string) => boolean;
+
+  /**
+   * Availability of a media item (F3).
+   * `missing` = the bytes are gone, `error` = the file cannot be decoded.
+   */
+  setMediaStatus: (mediaId: string, status: MediaStatus) => void;
+
+  /**
+   * Replaces the bytes of a media item with a new local file (F3).
+   * The media keeps its id (so its clips keep working) and its clips are NOT
+   * re-added to the timeline.
+   */
+  relinkMedia: (mediaId: string, file: File) => Promise<boolean>;
+
   // Tracks
   addTrack: (type: TrackType, name?: string) => void;
   removeTrack: (trackId: string) => void;
@@ -49,17 +484,30 @@ export interface ProjectState {
 
   // Clips
   addClip: (clip: Clip) => void;
-  addClipFromMedia: (media: MediaItem, trackId?: string, startTime?: number) => void;
+  /**
+   * Inserts a clip from a media item honouring the overlap policy (F1).
+   * Returns the outcome so the UI can explain a refusal.
+   */
+  addClipFromMedia: (
+    media: MediaItem,
+    trackId?: string,
+    startTime?: number
+  ) => AddClipFromMediaResult;
   addTextClip: (text?: string, startTime?: number) => void;
   updateClip: (clipId: string, updates: Partial<Clip>) => void;
   removeClip: (clipId: string) => void;
   moveClip: (clipId: string, newStart: number, newTrackId?: string) => void;
   commitClipChange: () => void;
-  trimClipStart: (clipId: string, newStart: number) => void;
-  trimClipEnd: (clipId: string, newEnd: number) => void;
+  trimClipStart: (clipId: string, newStart: number, options?: TrimOptions) => void;
+  trimClipEnd: (clipId: string, newEnd: number, options?: TrimOptions) => void;
   splitClip: (clipId: string, splitTime?: number) => void;
   splitAtPlayhead: () => void;
   deleteSelectedClip: () => void;
+
+  /**
+   * Changes the overlap policy of the project (F1).
+   */
+  setOverlapPolicy: (policy: OverlapPolicy) => void;
 
   // Undo / Redo
   undo: () => void;
@@ -69,6 +517,12 @@ export interface ProjectState {
   // commitClipChange() closes the gesture without pushing.
   historyGesturePending: boolean;
   beginClipGesture: () => void;
+
+  /** Clears the `lastError` signal. */
+  clearLastError: () => void;
+
+  /** Clears the `storageError` signal (the UI dismisses the warning). */
+  clearStorageError: () => void;
 
   // Project persistence
   recalculateDuration: () => void;
@@ -92,10 +546,133 @@ const INITIAL_PROJECT: Project = {
   tracks: DEFAULT_TRACKS,
   clips: [],
   mediaPool: [],
-  duration: 30,
+  duration: DEFAULT_EMPTY_PROJECT_DURATION,
+  // No tail: the export must match the content the user sees (KI-01).
+  endPaddingSeconds: 0,
+  // F1: the safest overlap policy. The user can change it in the Inspector.
+  overlapPolicy: DEFAULT_OVERLAP_POLICY,
+  // F2: the media trash starts empty.
+  trash: [],
   createdAt: Date.now(),
   updatedAt: Date.now(),
 };
+
+/* ------------------------------------------------------------------ */
+/* Engine / storage lifecycle helpers (module level, F1..F4)          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Number of persistence failures observed so far.
+ *
+ * `autosaveProject` resolves in BOTH cases (a successful write and a failed
+ * one): the failure is reported through the storage event channel, not
+ * through a rejected promise. This counter is the only reliable way to tell a
+ * saved project from a project that silently failed to reach the disk.
+ */
+let storageFailureCounter = 0;
+
+/** True once the storage event subscription has been installed (F4). */
+let storageSubscriptionInstalled = false;
+
+/** True once the unload flush listener has been installed (F3). */
+let unloadFlushInstalled = false;
+
+/**
+ * Runs an engine cleanup routine.
+ *
+ * A cleanup must NEVER break the operation that triggered it: a single
+ * misbehaving media element (or a partial DOM implementation) cannot leave
+ * the store in a broken state.
+ */
+function runEngineCleanup(name: string, fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    console.warn(`[store] ${name} failed:`, err);
+  }
+}
+
+/**
+ * Releases the pooled engine resources of a clip that leaves the project.
+ *
+ * `mediaSourcePool.releaseClip` frees the elements of that clip; when the
+ * clip was the LAST user of its media, the media level resources (elements
+ * created without a clip id and the cached frames) are released too.
+ */
+function releaseClipResources(clip: Clip, survivingClips: Clip[]): void {
+  runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(clip.id));
+  if (!clip.mediaId) return;
+  const stillUsed = survivingClips.some((c) => c.mediaId === clip.mediaId);
+  if (!stillUsed) {
+    runEngineCleanup('mediaSourcePool.release', () => mediaSourcePool.release(clip.mediaId));
+  }
+}
+
+/**
+ * Persists the project and marks it as saved ONLY when the write really
+ * succeeded (F2).
+ *
+ * A failed write (quota exceeded, IndexedDB unavailable) must never leave the
+ * project looking "saved": the optimistic `project.updatedAt` says nothing
+ * about the disk.
+ */
+function persistProject(project: Project): void {
+  // F3: the unload flush is armed with the first write (it is installed once
+  // and it survives every store reset).
+  installAutosaveFlushOnUnload();
+  const failuresBefore = storageFailureCounter;
+  void autosaveProject(project).then(() => {
+    // A failure was published while the write was in flight: the project is
+    // NOT on the disk, so it must not be marked as saved.
+    if (storageFailureCounter !== failuresBefore) return;
+    useProjectStore.setState({ lastSavedAt: Date.now() });
+  });
+}
+
+/**
+ * Installs the storage event subscription (F2/F4).
+ *
+ * It is installed EXACTLY ONCE at module level: it survives every store
+ * reset and it is never re-created by a store write (a subscription per write
+ * would leak a listener on every mutation).
+ */
+function installStorageSubscription(): void {
+  if (storageSubscriptionInstalled) return;
+  storageSubscriptionInstalled = true;
+  subscribeStorageEvents((event) => {
+    if (event.type !== 'error') return;
+    storageFailureCounter += 1;
+    useProjectStore.setState({
+      storageError: {
+        message: event.message,
+        quotaExceeded: event.quotaExceeded,
+        at: event.at,
+        scope: event.scope,
+      },
+    });
+  });
+}
+
+/**
+ * Flushes the pending autosave when the page goes away (F3).
+ *
+ * `autosaveProject` is debounced 500 ms and IndexedDB writes are NOT
+ * guaranteed during `beforeunload`: without this flush a change made right
+ * before closing the tab is lost.
+ *
+ * The listener is installed once (F4) and it is idempotent: `flushAutosave`
+ * consumes the pending snapshot, so a double flush is harmless.
+ */
+export function installAutosaveFlushOnUnload(): void {
+  if (unloadFlushInstalled) return;
+  if (typeof window === 'undefined') return;
+  unloadFlushInstalled = true;
+  const flush = () => {
+    void flushAutosave();
+  };
+  window.addEventListener('beforeunload', flush);
+  window.addEventListener('pagehide', flush);
+}
 
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: INITIAL_PROJECT,
@@ -108,6 +685,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   past: [],
   future: [],
   historyGesturePending: false,
+  historyCoalesceKey: null,
+  historyCoalesceAt: 0,
+  lastError: null,
+  storageError: null,
+  lastSavedAt: null,
+
+  clearLastError: () => set({ lastError: null }),
+  clearStorageError: () => set({ storageError: null }),
 
   beginClipGesture: () => {
     if (get().historyGesturePending) return;
@@ -115,15 +700,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({ historyGesturePending: true });
   },
   setProject: (project) => {
-    set({ project });
-    autosaveProject(project);
+    set({ project, lastError: null });
+    persistProject(project);
   },
 
   setProjectName: (name) => {
     set((state) => {
       const updated = { ...state.project, name, updatedAt: Date.now() };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
   },
 
@@ -144,12 +729,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         resolution: { width, height },
         updatedAt: Date.now(),
       };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
   },
 
-  setCurrentTime: (currentTime) => set({ currentTime: Math.max(0, currentTime) }),
+  // S-19: `Math.max(0, NaN) === NaN`, so the value is filtered explicitly.
+  setCurrentTime: (currentTime) => set({ currentTime: toFiniteTime(currentTime) }),
   setIsPlaying: (isPlaying) => set({ isPlaying }),
   setZoom: (zoom) => set({ zoom: Math.max(10, Math.min(250, zoom)) }),
   toggleSnap: () => set((state) => ({ snapEnabled: !state.snapEnabled })),
@@ -161,10 +747,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const currentSnap: HistoryState = {
       tracks: JSON.parse(JSON.stringify(project.tracks)),
       clips: JSON.parse(JSON.stringify(project.clips)),
+      // Shallow copy: MediaItem objects are immutable (S-01).
+      mediaPool: [...project.mediaPool],
+      // The trash is undoable state too (F2).
+      trash: [...(project.trash ?? [])],
     };
     const newPast = [...past, currentSnap];
-    if (newPast.length > 30) newPast.shift();
-    set({ past: newPast, future: [] });
+    if (newPast.length > HISTORY_LIMIT) newPast.shift();
+    // Any explicit history push closes the current `updateClip` coalescing group.
+    set({ past: newPast, future: [], historyCoalesceKey: null, historyCoalesceAt: 0 });
   },
 
   undo: () => {
@@ -175,16 +766,34 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const currentSnap: HistoryState = {
       tracks: JSON.parse(JSON.stringify(project.tracks)),
       clips: JSON.parse(JSON.stringify(project.clips)),
+      mediaPool: [...project.mediaPool],
+      trash: [...(project.trash ?? [])],
     };
     const updated: Project = {
       ...project,
       tracks: JSON.parse(JSON.stringify(previous.tracks)),
       clips: JSON.parse(JSON.stringify(previous.clips)),
+      // Restore the media pool together with the clips so no clip is orphaned (S-01).
+      mediaPool: [...previous.mediaPool],
+      // The trash is restored too (F2): undoing a removal empties it.
+      trash: [...(previous.trash ?? [])],
       updatedAt: Date.now(),
     };
-    set({ project: updated, past: newPast, future: [currentSnap, ...future], selectedClipId: null, historyGesturePending: false });
+    set({
+      project: updated,
+      past: newPast,
+      future: [currentSnap, ...future],
+      selectedClipId: null,
+      // S-19: the snapping guide belongs to the state that is being undone.
+      snappingGuideTime: null,
+      historyGesturePending: false,
+      historyCoalesceKey: null,
+      historyCoalesceAt: 0,
+      // F6: a successful undo clears the stale refusal of a previous action.
+      lastError: null,
+    });
     get().recalculateDuration();
-    autosaveProject(updated);
+    persistProject(updated);
   },
 
   redo: () => {
@@ -195,19 +804,37 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const currentSnap: HistoryState = {
       tracks: JSON.parse(JSON.stringify(project.tracks)),
       clips: JSON.parse(JSON.stringify(project.clips)),
+      mediaPool: [...project.mediaPool],
+      trash: [...(project.trash ?? [])],
     };
     const updated: Project = {
       ...project,
       tracks: JSON.parse(JSON.stringify(next.tracks)),
       clips: JSON.parse(JSON.stringify(next.clips)),
+      mediaPool: [...next.mediaPool],
+      trash: [...(next.trash ?? [])],
       updatedAt: Date.now(),
     };
-    set({ project: updated, past: [...past, currentSnap], future: newFuture, historyGesturePending: false });
+    set({
+      project: updated,
+      past: [...past, currentSnap],
+      future: newFuture,
+      // S-19: the snapping guide belongs to the state that is being redone.
+      snappingGuideTime: null,
+      historyGesturePending: false,
+      historyCoalesceKey: null,
+      historyCoalesceAt: 0,
+      // F6: a successful redo clears the stale refusal of a previous action.
+      lastError: null,
+    });
     get().recalculateDuration();
-    autosaveProject(updated);
+    persistProject(updated);
   },
 
   addMediaItem: (item) => {
+    // The media pool is part of the history snapshot (S-01): importing a file is
+    // undoable and can never leave a clip pointing at a missing asset.
+    get().pushHistory();
     set((state) => {
       const updatedPool = [...state.project.mediaPool, item];
       const updated: Project = {
@@ -215,26 +842,177 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         mediaPool: updatedPool,
         updatedAt: Date.now(),
       };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
   },
 
   removeMediaItem: (mediaId) => {
+    // F2: the removed item is captured BEFORE it is filtered out of the pool:
+    // it goes to the trash together with the clips that used it.
+    const state = get();
+    const removed = state.project.mediaPool.find((m) => m.id === mediaId);
+    if (!removed) return;
+    const removedClips = state.project.clips.filter((c) => c.mediaId === mediaId);
+
     get().pushHistory();
-    set((state) => {
-      const updatedPool = state.project.mediaPool.filter((m) => m.id !== mediaId);
-      const updatedClips = state.project.clips.filter((c) => c.mediaId !== mediaId);
+    set((s) => {
+      const updatedPool = s.project.mediaPool.filter((m) => m.id !== mediaId);
+      const updatedClips = s.project.clips.filter((c) => c.mediaId !== mediaId);
+      const trash: TrashEntry[] = [
+        ...(s.project.trash ?? []),
+        { media: removed, clips: removedClips, deletedAt: Date.now() },
+      ];
       const updated: Project = {
-        ...state.project,
+        ...s.project,
         mediaPool: updatedPool,
         clips: updatedClips,
+        trash,
         updatedAt: Date.now(),
       };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
     get().recalculateDuration();
+    // F2: the pooled elements/frames of that media die with it, but the BYTES
+    // stay in OPFS: the media can be restored from the trash. The physical
+    // deletion happens on purge (and only then).
+    runEngineCleanup('mediaSourcePool.release', () => mediaSourcePool.release(mediaId));
+    void deleteMediaFiles([removed], 'trash');
+  },
+
+  restoreFromTrash: (mediaId) => {
+    const state = get();
+    const entry = (state.project.trash ?? []).find((e) => e.media.id === mediaId);
+    if (!entry) return false;
+
+    get().pushHistory();
+    set((s) => {
+      const updatedPool = [...s.project.mediaPool, entry.media];
+      const updatedClips = [...s.project.clips, ...entry.clips];
+      const updatedTrash = (s.project.trash ?? []).filter((e) => e.media.id !== mediaId);
+      const updated: Project = {
+        ...s.project,
+        mediaPool: updatedPool,
+        clips: updatedClips,
+        trash: updatedTrash,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    get().recalculateDuration();
+    return true;
+  },
+
+  purgeTrash: () => {
+    const trash = get().project.trash ?? [];
+    if (trash.length === 0) return 0;
+
+    get().pushHistory();
+    set((s) => {
+      const updated: Project = {
+        ...s.project,
+        trash: [],
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    // The physical deletion: the OPFS blob is gone and the object URL revoked.
+    void deleteMediaFiles(
+      trash.map((entry) => entry.media),
+      'purge'
+    );
+    return trash.length;
+  },
+
+  purgeTrashedMedia: (mediaId) => {
+    const trash = get().project.trash ?? [];
+    const entry = trash.find((e) => e.media.id === mediaId);
+    if (!entry) return false;
+
+    get().pushHistory();
+    set((s) => {
+      const updated: Project = {
+        ...s.project,
+        trash: (s.project.trash ?? []).filter((e) => e.media.id !== mediaId),
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    void deleteMediaFiles([entry.media], 'purge');
+    return true;
+  },
+
+  setMediaStatus: (mediaId, status) => {
+    const state = get();
+    const inPool = state.project.mediaPool.some((m) => m.id === mediaId);
+    const inTrash = (state.project.trash ?? []).some((e) => e.media.id === mediaId);
+    if (!inPool && !inTrash) return;
+
+    // A status that does not change is not an edit: no write, no autosave
+    // storm (the engine reports the same failure once per pooled element).
+    const current = inPool
+      ? state.project.mediaPool.find((m) => m.id === mediaId)?.status
+      : (state.project.trash ?? []).find((e) => e.media.id === mediaId)?.media.status;
+    if ((current ?? 'ok') === status) return;
+
+    set((s) => {
+      const updatedPool = s.project.mediaPool.map((m) =>
+        m.id === mediaId ? { ...m, status } : m
+      );
+      const updatedTrash = (s.project.trash ?? []).map((entry) =>
+        entry.media.id === mediaId
+          ? { ...entry, media: { ...entry.media, status } }
+          : entry
+      );
+      const updated: Project = {
+        ...s.project,
+        mediaPool: updatedPool,
+        trash: updatedTrash,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated };
+    });
+  },
+
+  relinkMedia: async (mediaId, file) => {
+    if (!file) return false;
+    const state = get();
+    const media =
+      state.project.mediaPool.find((m) => m.id === mediaId) ??
+      (state.project.trash ?? []).find((e) => e.media.id === mediaId)?.media;
+    if (!media) return false;
+
+    const relinked = await relinkMediaBytes(media, file, state.project.id);
+    if (!relinked) {
+      const message = `No se pudo revincular «${media.name}»: el archivo no se pudo guardar.`;
+      set({ lastError: message });
+      return false;
+    }
+
+    set((s) => {
+      const updatedPool = s.project.mediaPool.map((m) => (m.id === mediaId ? relinked : m));
+      const updatedTrash = (s.project.trash ?? []).map((entry) =>
+        entry.media.id === mediaId ? { ...entry, media: relinked } : entry
+      );
+      const updated: Project = {
+        ...s.project,
+        mediaPool: updatedPool,
+        trash: updatedTrash,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    // The pooled elements still point at the OLD bytes: they are released so
+    // the engine rebuilds them with the new URL (otherwise the clip would
+    // keep rendering the dead source).
+    runEngineCleanup('mediaSourcePool.release', () => mediaSourcePool.release(mediaId));
+    return true;
   },
 
   addTrack: (type, name) => {
@@ -269,13 +1047,26 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         tracks: newTracks,
         updatedAt: Date.now(),
       };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
   },
 
   removeTrack: (trackId) => {
+    const track = get().project.tracks.find((t) => t.id === trackId);
+    if (!track) return;
+    // S-03: a locked track freezes move/trim/split/remove. Removing it would
+    // destroy the clips it protects, so the store refuses (guard lives here
+    // because the UI is not the only caller).
+    if (track.isLocked) {
+      const message = `La pista "${track.name}" está bloqueada: desbloquéala para poder eliminarla.`;
+      console.warn(message);
+      set({ lastError: message });
+      return;
+    }
     get().pushHistory();
+    // F1: the clips that die with the track release their pooled resources.
+    const dyingClips = get().project.clips.filter((c) => c.trackId === trackId);
     set((state) => {
       const updatedTracks = state.project.tracks.filter((t) => t.id !== trackId);
       const updatedClips = state.project.clips.filter((c) => c.trackId !== trackId);
@@ -285,10 +1076,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         clips: updatedClips,
         updatedAt: Date.now(),
       };
-      autosaveProject(updated);
-      return { project: updated, selectedClipId: null };
+      persistProject(updated);
+      return { project: updated, selectedClipId: null, lastError: null };
     });
     get().recalculateDuration();
+    const survivors = get().project.clips;
+    for (const clip of dyingClips) {
+      releaseClipResources(clip, survivors);
+    }
   },
 
   deleteTrack: (trackId) => {
@@ -296,12 +1091,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   duplicateTrack: (trackId) => {
+    // S-17: validate BEFORE pushing the history snapshot. Pushing first left a
+    // phantom undo entry for a duplicate that never happened and, worse, it
+    // wiped the `future` stack (destroying a redo the user could still do).
+    const sourceTrack = get().project.tracks.find((t) => t.id === trackId);
+    if (!sourceTrack) return;
+
     get().pushHistory();
     set((state) => {
-      const sourceTrack = state.project.tracks.find((t) => t.id === trackId);
-      if (!sourceTrack) return state;
-
       const trackIdx = state.project.tracks.findIndex((t) => t.id === trackId);
+      if (trackIdx === -1) return state;
+
       const newTrackId = `track_${sourceTrack.type}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const newTrack: Track = {
         ...sourceTrack,
@@ -325,8 +1125,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         clips: [...state.project.clips, ...duplicatedClips],
         updatedAt: Date.now(),
       };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
     get().recalculateDuration();
   },
@@ -350,8 +1150,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         tracks,
         updatedAt: Date.now(),
       };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
   },
 
@@ -360,34 +1160,44 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   toggleTrackMute: (trackId) => {
+    // S-18: mute/lock/visibility are edits: they push history so they can be
+    // undone and so an unrelated undo cannot silently revert them.
+    if (!get().project.tracks.some((t) => t.id === trackId)) return;
+    get().pushHistory();
     set((state) => {
       const updatedTracks = state.project.tracks.map((t) =>
         t.id === trackId ? { ...t, isMuted: !t.isMuted } : t
       );
       const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
   },
 
   toggleTrackLock: (trackId) => {
+    // S-18: same as `toggleTrackMute`.
+    if (!get().project.tracks.some((t) => t.id === trackId)) return;
+    get().pushHistory();
     set((state) => {
       const updatedTracks = state.project.tracks.map((t) =>
         t.id === trackId ? { ...t, isLocked: !t.isLocked } : t
       );
       const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
-      autosaveProject(updated);
-      return { project: updated };
+      persistProject(updated);
+      return { project: updated, lastError: null };
     });
   },
 
   toggleTrackVisibility: (trackId) => {
+    // S-18: same as `toggleTrackMute`.
+    if (!get().project.tracks.some((t) => t.id === trackId)) return;
+    get().pushHistory();
     set((state) => {
       const updatedTracks = state.project.tracks.map((t) =>
         t.id === trackId ? { ...t, isVisible: !t.isVisible } : t
       );
       const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
-      autosaveProject(updated);
+      persistProject(updated);
       return { project: updated };
     });
   },
@@ -397,28 +1207,66 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((state) => {
       const updatedClips = [...state.project.clips, clip];
       const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
-      autosaveProject(updated);
-      return { project: updated, selectedClipId: clip.id };
+      persistProject(updated);
+      return { project: updated, selectedClipId: clip.id, lastError: null };
     });
     get().recalculateDuration();
   },
 
   addClipFromMedia: (media, targetTrackId, startTime) => {
     const { project, currentTime } = get();
-    // Find compatible track
-    let track = targetTrackId ? project.tracks.find((t) => t.id === targetTrackId) : null;
+    // F1: the policy is a property of the project (default: the safest one).
+    const policy: OverlapPolicy = project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
+
+    // S-12 / B-04: never create a clip on a track that cannot render it.
+    // A video clip on an audio track is never composited (silent data loss),
+    // and an audio clip on a video track is ignored by the compositor.
+    const requiredType = trackTypeForMedia(media.type);
+    const compatibleTracks = project.tracks.filter((t) => t.type === requiredType);
+
+    let track: Track | undefined;
+    const requested = targetTrackId ? project.tracks.find((t) => t.id === targetTrackId) : undefined;
+    if (requested && isTrackTypeCompatible(requested.type, media.type)) {
+      track = requested;
+    }
     if (!track) {
-      if (media.type === 'audio') {
-        track = project.tracks.find((t) => t.type === 'audio');
-      } else {
-        track = project.tracks.find((t) => t.type === 'video');
-      }
+      // Prefer an unlocked compatible track, but fall back to any compatible one.
+      track = compatibleTracks.find((t) => !t.isLocked) ?? compatibleTracks[0];
     }
 
-    if (!track) return;
+    if (!track) {
+      const message =
+        media.type === 'audio'
+          ? `No hay ninguna pista de audio para "${media.name}". Crea una pista de audio antes de insertarlo.`
+          : `No hay ninguna pista de vídeo para "${media.name}". Crea una pista de vídeo antes de insertarlo.`;
+      console.warn(message);
+      set({ lastError: message });
+      return { ok: false, reason: message };
+    }
+
+    // The refusal is published AFTER the clip is added: `addClip` clears the
+    // stale error of a previous action (F6) and the message of THIS action
+    // must survive it.
+    let refusal: string | null = null;
+    if (requested && requested.type !== requiredType) {
+      refusal = `"${media.name}" es ${media.type === 'audio' ? 'audio' : 'vídeo'} y no puede colocarse en la pista "${requested.name}".`;
+      console.warn(refusal);
+    }
 
     const startPos = startTime !== undefined ? startTime : currentTime;
     const duration = media.duration > 0 ? media.duration : 5;
+    const start = Math.max(0, startPos);
+    const end = start + duration;
+
+    // F1: the overlap is resolved BEFORE the clip is created, according to
+    // the policy of the project.
+    const conflicts = findOverlappingClips(project.clips, track.id, start, duration);
+    if (conflicts.length > 0 && policy === 'block') {
+      const reason = buildOverlapRefusalReason(media, track, conflicts, start, end);
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
 
     const newClip: Clip = {
       id: 'clip_' + Math.random().toString(36).substring(2, 9),
@@ -426,7 +1274,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       mediaId: media.id,
       name: media.name,
       type: media.type,
-      start: Math.max(0, startPos),
+      start,
       duration: duration,
       sourceStart: 0,
       sourceDuration: duration,
@@ -438,7 +1286,46 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       muted: false,
     };
 
-    get().addClip(newClip);
+    // F1: `overwrite` trims the existing clips, `ripple` moves them aside.
+    let updatedClips = project.clips;
+    if (conflicts.length > 0 && policy === 'overwrite') {
+      const overwrite = applyOverwriteInsert(project.clips, track.id, start, duration);
+      updatedClips = overwrite.clips;
+      // The clips that disappeared release their pooled resources.
+      for (const clip of overwrite.removed) {
+        runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(clip.id));
+      }
+    } else if (conflicts.length > 0 && policy === 'ripple') {
+      updatedClips = applyRippleInsert(project.clips, track.id, start, duration).clips;
+    }
+
+    get().pushHistory();
+    set((state) => {
+      const updated: Project = {
+        ...state.project,
+        clips: [...updatedClips, newClip],
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, selectedClipId: newClip.id, lastError: null };
+    });
+    get().recalculateDuration();
+    if (refusal) set({ lastError: refusal });
+    return { ok: true, clipId: newClip.id };
+  },
+
+  setOverlapPolicy: (policy) => {
+    // A policy is a project SETTING, not an edit: it does not consume an undo
+    // entry (the same reason the project name does not).
+    set((state) => {
+      const updated: Project = {
+        ...state.project,
+        overlapPolicy: policy,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
   },
 
   addTextClip: (text = 'Título Nuevo', startTime) => {
@@ -485,13 +1372,62 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   updateClip: (clipId, updates) => {
-    set((state) => {
-      const updatedClips = state.project.clips.map((c) =>
-        c.id === clipId ? { ...c, ...updates } : c
-      );
-      const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
-      autosaveProject(updated);
-      return { project: updated };
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) return;
+
+    const now = Date.now();
+    // While a drag/trim gesture is open the gesture owns the history entry.
+    const inGesture = state.historyGesturePending;
+    // S-02: consecutive edits of the same clip inside the coalescing window
+    // share ONE history entry, so a slider drag does not flood the undo stack.
+    const canCoalesce =
+      !inGesture &&
+      state.historyCoalesceKey === clipId &&
+      now - state.historyCoalesceAt <= UPDATE_COALESCE_WINDOW_MS;
+
+    if (!inGesture && !canCoalesce) {
+      get().pushHistory();
+    }
+
+    // S-04: changing the speed rescales the clip duration so the invariant
+    // `sourceStart + duration * speed <= sourceDuration` always holds.
+    const nextUpdates: Partial<Clip> = { ...updates };
+    const currentSpeed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+    if (updates.speed !== undefined) {
+      const requestedSpeed = updates.speed;
+      if (typeof requestedSpeed !== 'number' || !Number.isFinite(requestedSpeed) || requestedSpeed <= 0) {
+        delete nextUpdates.speed;
+      } else if (requestedSpeed !== currentSpeed) {
+        // Keep the same source window, rescale the timeline duration.
+        const sourceWindow = clip.duration * currentSpeed;
+        const available = clip.sourceDuration - clip.sourceStart;
+        const maxDuration = Number.isFinite(available) && available > 0 ? available / requestedSpeed : Infinity;
+        let newDuration = sourceWindow / requestedSpeed;
+        if (Number.isFinite(maxDuration)) {
+          newDuration = Math.min(newDuration, maxDuration);
+        }
+        if (nextUpdates.duration === undefined) {
+          nextUpdates.duration = Math.max(0, newDuration);
+        } else if (Number.isFinite(maxDuration)) {
+          // An explicit duration must respect the same source window.
+          nextUpdates.duration = Math.min(nextUpdates.duration, maxDuration);
+        }
+        nextUpdates.speed = requestedSpeed;
+      }
+    }
+
+    set((s) => {
+      const updatedClips = s.project.clips.map((c) => (c.id === clipId ? { ...c, ...nextUpdates } : c));
+      const updated = { ...s.project, clips: updatedClips, updatedAt: Date.now() };
+      persistProject(updated);
+      return {
+        project: updated,
+        historyCoalesceKey: inGesture ? null : clipId,
+        historyCoalesceAt: inGesture ? 0 : now,
+        // F6: a successful edit clears the stale refusal of a previous action.
+        lastError: null,
+      };
     });
     get().recalculateDuration();
   },
@@ -500,16 +1436,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const clip = get().project.clips.find((c) => c.id === clipId);
     if (clip && get().project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
     get().pushHistory();
-    mediaSourcePool.releaseClip(clipId);
     set((state) => {
       const updatedClips = state.project.clips.filter((c) => c.id !== clipId);
       const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
-      autosaveProject(updated);
+      persistProject(updated);
       return {
         project: updated,
         selectedClipId: state.selectedClipId === clipId ? null : state.selectedClipId,
+        // F6: a successful removal clears the stale refusal of a previous action.
+        lastError: null,
       };
     });
+    // F1: the pooled resources of the clip die with it (and the media level
+    // ones when the clip was the last user of that media).
+    if (clip) {
+      releaseClipResources(clip, get().project.clips);
+    }
     get().recalculateDuration();
   },
 
@@ -522,13 +1464,42 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const sourceTrack = project.tracks.find((t) => t.id === clip.trackId);
     if (sourceTrack?.isLocked) return;
 
+    // S-19: `Math.max(0, NaN) === NaN`, so a non-finite time is refused
+    // instead of poisoning the timeline state.
+    if (!Number.isFinite(newStart)) {
+      const message = 'No se puede mover el clip a un tiempo no válido.';
+      console.warn(message);
+      set({ lastError: message });
+      return;
+    }
+
     // Locked-track guard: never move a clip onto a locked track.
     // Keep the clip on its current track and only apply the time change.
     let effectiveTrackId = newTrackId || clip.trackId;
+    // The refusal of THIS action is published with the move: a move that
+    // succeeds clears the stale error of a previous action (F6).
+    let refusal: string | null = null;
     if (newTrackId && newTrackId !== clip.trackId) {
       const target = project.tracks.find((t) => t.id === newTrackId);
       if (!target || target.isLocked) {
         effectiveTrackId = clip.trackId;
+      } else if (!isTrackTypeCompatible(target.type, clip.type)) {
+        // S-22: the UI filters the drops, but the store must not allow a
+        // programmatic move to place a video clip on an audio track (the
+        // compositor would never render it: silent data loss).
+        // Same policy as `addClipFromMedia`: redirect to a compatible track
+        // and report the refusal.
+        const requiredType = trackTypeForMedia(clip.type);
+        const compatibleTracks = project.tracks.filter((t) => t.type === requiredType);
+        const replacement = compatibleTracks.find((t) => !t.isLocked) ?? compatibleTracks[0];
+        effectiveTrackId = replacement ? replacement.id : clip.trackId;
+
+        const clipKind =
+          clip.type === 'audio' ? 'audio' : clip.type === 'text' ? 'texto' : 'vídeo';
+        const trackKind =
+          target.type === 'audio' ? 'audio' : target.type === 'text' ? 'texto' : 'vídeo';
+        refusal = `Un clip de ${clipKind} no puede colocarse en la pista "${target.name}" (${trackKind}).`;
+        console.warn(refusal);
       }
     }
 
@@ -544,7 +1515,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clip.duration
     );
 
-    const finalStart = Math.max(0, snap.snappedTime);
+    const finalStart = toFiniteTime(snap.snappedTime, clip.start);
     const snapGuide = snap.didSnap && snap.snapTargetTime !== undefined ? snap.snapTargetTime : null;
 
     set((state) => {
@@ -559,22 +1530,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         return c;
       });
       const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
-      return { project: updated, snappingGuideTime: snapGuide };
+      return { project: updated, snappingGuideTime: snapGuide, lastError: refusal };
     });
   },
 
   commitClipChange: () => {
     get().recalculateDuration();
-    autosaveProject(get().project);
-    set({ snappingGuideTime: null, historyGesturePending: false });
+    persistProject(get().project);
+    set({ snappingGuideTime: null, historyGesturePending: false, historyCoalesceKey: null, historyCoalesceAt: 0 });
   },
 
-  trimClipStart: (clipId, newStart) => {
+  trimClipStart: (clipId, newStart, options) => {
     const { project, snapEnabled, currentTime, zoom } = get();
     const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
     if (project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
 
+    // S-19: refuse a non-finite trim target instead of writing NaN.
+    if (!Number.isFinite(newStart)) return;
+
+    // F5: the keyboard path asks for a frame exact trim: the magnetic
+    // snapping is disabled (`snap: false`), otherwise a single arrow press
+    // can jump the edge to the playhead or to the nearest edge.
+    const useSnapping = options?.snap !== false && snapEnabled;
     const snap = calculateSnapping(
       newStart,
       project.clips,
@@ -582,9 +1560,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       currentTime,
       zoom,
       12,
-      snapEnabled
+      useSnapping
     );
-    const targetStart = Math.max(0, snap.snappedTime);
+    const targetStart = toFiniteTime(snap.snappedTime, clip.start);
     const snapGuide = snap.didSnap && snap.snapTargetTime !== undefined ? snap.snapTargetTime : null;
 
     // End point remains unchanged
@@ -609,16 +1587,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           ? { ...c, start: effectiveStart, duration: newDuration, sourceStart: newSourceStart }
           : c
       );
-      return { project: { ...state.project, clips: updatedClips }, snappingGuideTime: snapGuide };
+      // S-05: a trim is an edit, so the project must rise in the projects gallery.
+      return {
+        project: { ...state.project, clips: updatedClips, updatedAt: Date.now() },
+        snappingGuideTime: snapGuide,
+        // F6: a successful trim clears the stale refusal of a previous action.
+        lastError: null,
+      };
     });
   },
 
-  trimClipEnd: (clipId, newEnd) => {
+  trimClipEnd: (clipId, newEnd, options) => {
     const { project, snapEnabled, currentTime, zoom } = get();
     const clip = project.clips.find((c) => c.id === clipId);
     if (!clip) return;
     if (project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
 
+    // S-19: refuse a non-finite trim target instead of writing NaN.
+    if (!Number.isFinite(newEnd)) return;
+
+    // F5: the keyboard path asks for a frame exact trim: the magnetic
+    // snapping is disabled (`snap: false`), otherwise a single arrow press
+    // can jump the edge to the playhead or to the nearest edge.
+    const useSnapping = options?.snap !== false && snapEnabled;
     const snap = calculateSnapping(
       newEnd,
       project.clips,
@@ -626,10 +1617,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       currentTime,
       zoom,
       12,
-      snapEnabled
+      useSnapping
     );
-    const targetEnd = snap.snappedTime;
+    const targetEnd = toFiniteTime(snap.snappedTime, clip.start + clip.duration);
     const snapGuide = snap.didSnap && snap.snapTargetTime !== undefined ? snap.snapTargetTime : null;
+
+    // F1: the clip was trimmed away completely (an "empty" clip renders
+    // nothing): it leaves the timeline and its pooled resources are released
+    // with it.
+    if (targetEnd <= clip.start) {
+      get().removeClip(clipId);
+      return;
+    }
 
     if (targetEnd <= clip.start + 0.1) return; // Min 0.1s
 
@@ -639,12 +1638,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (newDuration > maxDuration && clip.type !== 'text') {
       newDuration = maxDuration;
     }
+    // S-19: never write a non-finite duration into the timeline.
+    if (!Number.isFinite(newDuration) || newDuration <= 0) return;
 
     set((state) => {
       const updatedClips = state.project.clips.map((c) =>
         c.id === clipId ? { ...c, duration: newDuration } : c
       );
-      return { project: { ...state.project, clips: updatedClips }, snappingGuideTime: snapGuide };
+      // S-05: a trim is an edit, so the project must rise in the projects gallery.
+      return {
+        project: { ...state.project, clips: updatedClips, updatedAt: Date.now() },
+        snappingGuideTime: snapGuide,
+        // F6: a successful trim clears the stale refusal of a previous action.
+        lastError: null,
+      };
     });
   },
 
@@ -655,7 +1662,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (project.tracks.find((t) => t.id === clip.trackId)?.isLocked) return;
 
     const cutPoint = splitTime !== undefined ? splitTime : currentTime;
+    // S-19: refuse a non-finite cut point instead of poisoning the timeline.
+    if (!Number.isFinite(cutPoint)) return;
     const clipEnd = clip.start + clip.duration;
+    if (!Number.isFinite(clipEnd)) return;
 
     // Check if cut point is inside clip with at least 0.05s buffer on each side
     if (cutPoint <= clip.start + 0.05 || cutPoint >= clipEnd - 0.05) {
@@ -686,11 +1696,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         }
       : undefined;
 
+    // S-13: partition the synchronised words between both halves.
+    // `WordTiming.start/end` are ABSOLUTE timeline times, so they are kept as-is
+    // and only assigned to the half that contains them. A word that straddles
+    // the cut point goes to the first half.
+    const firstWords = clip.words ? clip.words.filter((w) => w.start < cutPoint) : undefined;
+    const secondWords = clip.words ? clip.words.filter((w) => w.start >= cutPoint) : undefined;
+
     // Modify original clip as first part
     const updatedClip1: Clip = {
       ...clip,
       duration: firstDuration,
       transition: clip1Transition,
+      ...(firstWords ? { words: firstWords } : {}),
     };
 
     // Create second clip
@@ -703,14 +1721,16 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       duration: secondDuration,
       sourceStart: secondSourceStart,
       transition: clip2Transition,
+      ...(secondWords ? { words: secondWords } : {}),
     };
 
     set((state) => {
       const updatedClips = state.project.clips.map((c) => (c.id === clipId ? updatedClip1 : c));
       updatedClips.push(updatedClip2);
       const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
-      autosaveProject(updated);
-      return { project: updated, selectedClipId: clip2Id };
+      persistProject(updated);
+      // F6: a successful split clears the stale refusal of a previous action.
+      return { project: updated, selectedClipId: clip2Id, lastError: null };
     });
     get().recalculateDuration();
   },
@@ -746,21 +1766,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   recalculateDuration: () => {
-    set((state) => {
-      let maxEnd = 15; // Minimum 15 seconds
-      for (const c of state.project.clips) {
-        const end = c.start + c.duration;
-        if (end > maxEnd) maxEnd = end;
-      }
-      // Add 5 seconds breathing room
-      const totalDuration = Math.ceil(maxEnd + 5);
-      if (state.project.duration === totalDuration) return {};
-      const updated = { ...state.project, duration: totalDuration };
-      return { project: updated };
-    });
+    // KI-01 / S-06 / B-06: the duration is the REAL extent of the content.
+    // The old implementation used a hard-coded floor of 15 s plus an
+    // unconditional +5 s of "breathing room", so a single 5 s clip produced a
+    // 20 s export (4x the export time and file size, with a black tail).
+    const { project } = get();
+    const totalDuration = computeProjectDuration(project.clips, project.endPaddingSeconds ?? 0);
+    if (project.duration === totalDuration) return;
+    const updated: Project = { ...project, duration: totalDuration };
+    set({ project: updated });
+    // The duration is part of the persisted project: keep the gallery in sync.
+    persistProject(updated);
   },
 
   resetProject: () => {
+    // F1: the engine is reset with the project. Without this the pooled
+    // elements, the cached frame of the compositor and the audio graph of the
+    // PREVIOUS project survive forever (memory leak + ghost rendering).
+    runEngineCleanup('mediaSourcePool.clear', () => mediaSourcePool.clear());
+    runEngineCleanup('compositor.clear', () => compositor.clear());
+    runEngineCleanup('audioEngine.stopAll', () => audioEngine.stopAll());
+    // Every object URL of the previous project is dead now.
+    revokeAllObjectUrls();
     set({
       project: {
         ...INITIAL_PROJECT,
@@ -774,11 +1801,29 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       past: [],
       future: [],
       historyGesturePending: false,
+      historyCoalesceKey: null,
+      historyCoalesceAt: 0,
+      lastError: null,
+      // The new project is not on the disk yet.
+      lastSavedAt: null,
     });
-    autosaveProject(get().project);
+    persistProject(get().project);
   },
 
   loadProject: (loadedProject) => {
+    // F1: the engine is reset BEFORE the new project is loaded, otherwise the
+    // elements and the cached frame of the previous project are reused for
+    // the new one (the player would paint the last frame of another project).
+    const previousProjectId = get().project.id;
+    runEngineCleanup('mediaSourcePool.clear', () => mediaSourcePool.clear());
+    runEngineCleanup('compositor.clear', () => compositor.clear());
+    runEngineCleanup('audioEngine.stopAll', () => audioEngine.stopAll());
+    // The object URLs of the previous project are dead. They are NOT revoked
+    // when the same project is reloaded: in that case the rehydrated project
+    // still uses them.
+    if (previousProjectId && previousProjectId !== loadedProject.id) {
+      revokeProjectObjectUrls(previousProjectId);
+    }
     set({
       project: loadedProject,
       selectedClipId: null,
@@ -787,8 +1832,44 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       past: [],
       future: [],
       historyGesturePending: false,
+      historyCoalesceKey: null,
+      historyCoalesceAt: 0,
+      lastError: null,
+      // The loaded project is not on the disk yet (it is written right after).
+      lastSavedAt: null,
     });
     get().recalculateDuration();
-    autosaveProject(loadedProject);
+    persistProject(loadedProject);
   },
 }));
+
+/* ------------------------------------------------------------------ */
+/* Module level wiring (F2/F3/F4)                                       */
+/* ------------------------------------------------------------------ */
+
+// The storage event subscription is installed ONCE: it survives every store
+// reset and it is never re-created by a store write (F4).
+installStorageSubscription();
+
+// The unload flush is installed once as well (F3/F4).
+installAutosaveFlushOnUnload();
+
+/**
+ * F3: a media that fails to load or decode is flagged in the project, so the
+ * UI can warn the user ("medio ausente") instead of rendering a black and
+ * silent clip without any explanation (B-14).
+ *
+ * The subscription is installed ONCE (module level): a listener per store
+ * write would leak a listener on every mutation.
+ */
+mediaSourcePool.onMediaError((info) => {
+  const state = useProjectStore.getState();
+  const media =
+    state.project.mediaPool.find((m) => m.id === info.mediaId) ??
+    (state.project.trash ?? []).find((e) => e.media.id === info.mediaId)?.media;
+  if (!media) return;
+  // A media already flagged as `missing` keeps that status: the file is gone,
+  // a decode error on top of it does not change the diagnosis.
+  if (media.status === 'missing') return;
+  state.setMediaStatus(info.mediaId, 'error');
+});

@@ -12,6 +12,8 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
   const playheadRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
+  /** Abort controller of the drag gesture in progress (if any). */
+  const gestureRef = useRef<AbortController | null>(null);
 
   // Direct 60 FPS update via MasterClock subscription: ZERO React re-renders
   useEffect(() => {
@@ -30,14 +32,31 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
     return unsub;
   }, [zoom]);
 
-  const handleDragStart = (e: React.MouseEvent | React.PointerEvent) => {
+  // Unmount safety net: a drag in progress must not leave window listeners
+  // behind (they would keep seeking on a dead playhead).
+  useEffect(() => {
+    return () => {
+      gestureRef.current?.abort();
+      gestureRef.current = null;
+    };
+  }, []);
+
+  const handleDragStart = (e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
 
     const startX = e.clientX;
     const initialTime = masterClock.getTime();
 
-    const onMove = (moveEvent: MouseEvent | PointerEvent) => {
+    // Pointer events only: pointermove/pointerup already cover mouse, touch
+    // and pen. Registering mousemove *and* pointermove used to seek twice per
+    // event.
+    gestureRef.current?.abort();
+    const controller = new AbortController();
+    gestureRef.current = controller;
+    const { signal } = controller;
+
+    const onMove = (moveEvent: PointerEvent) => {
       const deltaX = moveEvent.clientX - startX;
       const deltaTime = pixelsToTime(deltaX, zoomRef.current);
       const newTime = Math.max(0, initialTime + deltaTime);
@@ -46,18 +65,13 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
     };
 
     const onUp = () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
+      controller.abort();
+      if (gestureRef.current === controller) gestureRef.current = null;
     };
 
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
+    window.addEventListener('pointermove', onMove, { signal });
+    window.addEventListener('pointerup', onUp, { signal });
+    window.addEventListener('pointercancel', onUp, { signal });
   };
 
   return (
@@ -71,7 +85,6 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
     >
       {/* Triangular / Pill Head with Touch Hitbox */}
       <div
-        onMouseDown={handleDragStart}
         onPointerDown={handleDragStart}
         className="relative -left-[7px] w-[15px] h-[18px] bg-red-500 rounded-b cursor-ew-resize pointer-events-auto flex items-center justify-center shadow-lg group hover:bg-red-400 touch-none transition select-none before:absolute before:-inset-2 before:z-30"
       >

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X,
   FolderKanban,
@@ -34,6 +35,15 @@ import {
   rehydrateProjectMedia,
 } from '../../core/storage/projectStorage';
 import { ProjectMetadata, AspectRatio } from '../../types/project';
+import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
+import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { moveFocusWithin } from '../../hooks/useFocusTrap';
+import { announce } from '../layout/liveRegion';
+
+/** Width of the per-project export menu, in px. */
+const EXPORT_MENU_WIDTH = 160;
+/** Height of the per-project export menu, in px (2 items). */
+const EXPORT_MENU_HEIGHT = 84;
 
 export const ProjectsModal: React.FC = () => {
   const { isProjectsModalOpen, setProjectsModalOpen } = useUIStore();
@@ -57,6 +67,41 @@ export const ProjectsModal: React.FC = () => {
   const [exportMenuId, setExportMenuId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const exportMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * UI-08: the modal declared `role="dialog" aria-modal="true"` but never
+   * moved the focus inside, never trapped it and never restored it.
+   */
+  const handleEscape = useCallback(() => {
+    if (exportMenuId) {
+      // The export menu is a nested overlay: it closes first.
+      setExportMenuId(null);
+      return;
+    }
+    if (deleteTarget) {
+      setDeleteTarget(null);
+    } else if (editingId) {
+      setEditingId(null);
+    } else {
+      setProjectsModalOpen(false);
+    }
+  }, [exportMenuId, deleteTarget, editingId, setProjectsModalOpen]);
+
+  const dialogRef = useFocusTrap<HTMLDivElement>(isProjectsModalOpen, { onEscape: handleEscape });
+
+  const {
+    position: exportMenuPosition,
+    update: updateExportMenuPosition,
+  } = useAnchoredMenu(exportMenuId !== null, exportMenuTriggerRef, {
+    menuWidth: EXPORT_MENU_WIDTH,
+    menuHeight: EXPORT_MENU_HEIGHT,
+    align: 'end',
+    preferredPlacement: 'top',
+    gap: 6,
+    padding: 8,
+  });
 
   const refreshList = useCallback(async () => {
     try {
@@ -77,23 +122,8 @@ export const ProjectsModal: React.FC = () => {
     }
   }, [isProjectsModalOpen, refreshList]);
 
-  // Handle ESC key to close modal
-  useEffect(() => {
-    if (!isProjectsModalOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (deleteTarget) {
-          setDeleteTarget(null);
-        } else if (editingId) {
-          setEditingId(null);
-        } else {
-          setProjectsModalOpen(false);
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isProjectsModalOpen, deleteTarget, editingId, setProjectsModalOpen]);
+  // The staged dismissal of the ESC key is handled by the focus trap
+  // (`useFocusTrap`), which also moves/traps/restores the focus (UI-08).
 
   if (!isProjectsModalOpen) return null;
 
@@ -206,6 +236,7 @@ export const ProjectsModal: React.FC = () => {
       }
       exportProjectToFile(proj, ext);
       setExportMenuId(null);
+      announce(`Proyecto exportado como .${ext}`);
     } catch (err) {
       alert('Error al exportar el proyecto: ' + (err as Error).message);
     }
@@ -313,16 +344,18 @@ export const ProjectsModal: React.FC = () => {
 
   return (
     <div
+      ref={dialogRef}
       data-testid="projects-modal"
       role="dialog"
       aria-modal="true"
       aria-labelledby="projects-modal-title"
-      className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 select-none animate-fadeIn"
+      tabIndex={-1}
+      className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 select-none animate-fadeIn focus:outline-none"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-4xl max-h-[90vh] shadow-2xl flex flex-col overflow-hidden relative">
+      <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-4xl max-h-[90dvh] shadow-2xl flex flex-col overflow-hidden relative">
         {/* Drag Overlay visual cue */}
         {isDragging && (
           <div className="absolute inset-0 bg-cyan-950/80 border-2 border-dashed border-cyan-400 z-50 rounded-2xl flex flex-col items-center justify-center pointer-events-none p-6 text-center backdrop-blur-sm animate-scaleUp">
@@ -353,7 +386,7 @@ export const ProjectsModal: React.FC = () => {
 
           <button
             onClick={() => setProjectsModalOpen(false)}
-            className="text-slate-400 hover:text-white p-2 rounded-lg hover:bg-dark-800 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="text-slate-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-dark-800 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             title="Cerrar modal (Esc)"
             aria-label="Cerrar ventana de proyectos"
           >
@@ -369,7 +402,7 @@ export const ProjectsModal: React.FC = () => {
               onClick={handleCreateNew}
               disabled={loading}
               data-testid="projects-new-btn"
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-xs rounded-lg shadow-md shadow-cyan-500/20 active:scale-95 transition min-h-[36px]"
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-xs rounded-lg shadow-md shadow-cyan-500/20 active:scale-95 transition min-h-[44px] focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             >
               <Plus size={15} />
               <span>Nuevo Proyecto</span>
@@ -378,7 +411,7 @@ export const ProjectsModal: React.FC = () => {
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-2 bg-dark-800 hover:bg-dark-750 text-slate-200 hover:text-white font-medium text-xs rounded-lg border border-dark-700 active:scale-95 transition min-h-[36px]"
+              className="flex items-center gap-1.5 px-3 py-2 bg-dark-800 hover:bg-dark-750 text-slate-200 hover:text-white font-medium text-xs rounded-lg border border-dark-700 active:scale-95 transition min-h-[44px] focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             >
               <Upload size={14} className="text-cyan-400" />
               <span>Importar (.hydra / .json)</span>
@@ -402,7 +435,7 @@ export const ProjectsModal: React.FC = () => {
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Buscar proyecto por nombre..."
               data-testid="projects-search"
-              className="w-full bg-dark-950 border border-dark-800 focus:border-cyan-500/50 text-slate-200 placeholder-slate-500 pl-8 pr-3 py-1.5 rounded-lg text-xs outline-none transition"
+              className="w-full bg-dark-950 border border-dark-800 focus:border-cyan-500/50 text-slate-200 placeholder-slate-500 pl-8 pr-3 py-1.5 min-h-[40px] rounded-lg text-xs outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-400"
             />
           </div>
         </div>
@@ -423,7 +456,7 @@ export const ProjectsModal: React.FC = () => {
               {!searchQuery && (
                 <button
                   onClick={handleCreateNew}
-                  className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-semibold transition"
+                  className="px-4 py-2 min-h-[44px] bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                 >
                   Crear Proyecto Ahora
                 </button>
@@ -463,14 +496,14 @@ export const ProjectsModal: React.FC = () => {
                             />
                             <button
                               onClick={() => commitRename(p.id)}
-                              className="p-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded transition"
+                              className="min-w-[36px] min-h-[36px] flex items-center justify-center bg-cyan-600 hover:bg-cyan-500 text-white rounded transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                               title="Guardar nombre"
                             >
                               <Check size={13} />
                             </button>
                             <button
                               onClick={() => setEditingId(null)}
-                              className="p-1 bg-dark-800 hover:bg-dark-700 text-slate-300 rounded transition"
+                              className="min-w-[36px] min-h-[36px] flex items-center justify-center bg-dark-800 hover:bg-dark-700 text-slate-300 rounded transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                               title="Cancelar"
                             >
                               <X size={13} />
@@ -486,7 +519,7 @@ export const ProjectsModal: React.FC = () => {
                             </h3>
                             <button
                               onClick={() => startRenaming(p)}
-                              className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-white p-1 rounded transition"
+                              className="opacity-0 group-hover:opacity-100 focus:opacity-100 min-w-[32px] min-h-[32px] flex items-center justify-center text-slate-400 hover:text-white rounded transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                               title="Renombrar proyecto"
                             >
                               <Pencil size={11} />
@@ -541,7 +574,7 @@ export const ProjectsModal: React.FC = () => {
                         <button
                           onClick={() => handleLoadProject(p.id)}
                           disabled={loading}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm active:scale-95 transition"
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                           title="Cargar y abrir proyecto"
                         >
                           <FolderOpen size={13} />
@@ -555,8 +588,9 @@ export const ProjectsModal: React.FC = () => {
                         <button
                           onClick={() => handleDuplicate(p.id)}
                           disabled={loading}
-                          className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded-md transition"
+                          className="min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded-md transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                           title="Duplicar proyecto"
+                          aria-label={`Duplicar proyecto ${p.name}`}
                         >
                           <Copy size={13} />
                         </button>
@@ -564,41 +598,34 @@ export const ProjectsModal: React.FC = () => {
                         {/* Export Menu trigger */}
                         <div className="relative">
                           <button
-                            onClick={() =>
-                              setExportMenuId(exportMenuId === p.id ? null : p.id)
-                            }
-                            className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded-md transition"
+                            onClick={(e) => {
+                              const trigger = e.currentTarget;
+                              if (exportMenuId === p.id) {
+                                setExportMenuId(null);
+                                return;
+                              }
+                              exportMenuTriggerRef.current = trigger;
+                              updateExportMenuPosition();
+                              setExportMenuId(p.id);
+                            }}
+                            aria-haspopup="menu"
+                            aria-expanded={exportMenuId === p.id}
+                            aria-label={`Exportar ${p.name}`}
+                            data-testid={`project-export-button-${p.id}`}
+                            className="min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded-md transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                             title="Exportar archivo de proyecto"
                           >
                             <Download size={13} />
                           </button>
-
-                          {exportMenuId === p.id && (
-                            <div className="absolute right-0 bottom-full mb-1 bg-dark-850 border border-dark-750 rounded-lg shadow-xl py-1 z-30 min-w-[125px]">
-                              <button
-                                onClick={() => handleExport(p.id, 'hydra')}
-                                className="w-full px-3 py-1.5 text-left text-[11px] text-slate-200 hover:bg-dark-750 hover:text-white flex items-center justify-between"
-                              >
-                                <span>Archivo .hydra</span>
-                                <span className="text-[9px] font-mono text-cyan-400">Nativo</span>
-                              </button>
-                              <button
-                                onClick={() => handleExport(p.id, 'json')}
-                                className="w-full px-3 py-1.5 text-left text-[11px] text-slate-200 hover:bg-dark-750 hover:text-white flex items-center justify-between"
-                              >
-                                <span>Archivo .json</span>
-                                <span className="text-[9px] font-mono text-slate-400">JSON</span>
-                              </button>
-                            </div>
-                          )}
                         </div>
 
                         {/* Delete button */}
                         <button
                           onClick={() => setDeleteTarget(p)}
                           disabled={loading}
-                          className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition"
+                          className="min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                           title="Eliminar proyecto"
+                          aria-label={`Eliminar proyecto ${p.name}`}
                         >
                           <Trash2 size={13} />
                         </button>
@@ -631,14 +658,14 @@ export const ProjectsModal: React.FC = () => {
                 <button
                   onClick={() => setDeleteTarget(null)}
                   disabled={loading}
-                  className="px-3.5 py-1.5 bg-dark-800 hover:bg-dark-750 text-slate-300 rounded-lg text-xs font-medium transition"
+                  className="px-3.5 py-1.5 min-h-[44px] bg-dark-800 hover:bg-dark-750 text-slate-300 rounded-lg text-xs font-medium transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                 >
                   Cancelar
                 </button>
                 <button
                   onClick={confirmDelete}
                   disabled={loading}
-                  className="px-3.5 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-bold transition shadow-md shadow-red-500/20"
+                  className="px-3.5 py-1.5 min-h-[44px] bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-bold transition shadow-md shadow-red-500/20 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                 >
                   {loading ? 'Eliminando...' : 'Sí, Eliminar'}
                 </button>
@@ -647,6 +674,60 @@ export const ProjectsModal: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/*
+        UI-02: the per-project export menu used to live inside the card, whose
+        `overflow: hidden` clipped 100 % of it (the backup of a project was
+        impossible). It is rendered in a portal with `position: fixed`.
+      */}
+      {exportMenuId &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <>
+            <div
+              className="fixed inset-0 z-[80]"
+              onClick={() => setExportMenuId(null)}
+              aria-hidden="true"
+              data-testid="project-export-backdrop"
+            />
+            <div
+              ref={exportMenuRef}
+              role="menu"
+              aria-label="Exportar proyecto"
+              data-testid="project-export-menu"
+              style={{
+                top: `${exportMenuPosition?.top ?? 0}px`,
+                left: `${exportMenuPosition?.left ?? 0}px`,
+                maxHeight: exportMenuPosition ? `${exportMenuPosition.maxHeight}px` : undefined,
+              }}
+              className="fixed z-[90] min-w-[160px] overflow-y-auto bg-dark-850 border border-dark-750 rounded-lg shadow-xl py-1 animate-scaleUp"
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  moveFocusWithin(exportMenuRef.current, '[role="menuitem"]', e.key === 'ArrowDown' ? 'next' : 'prev');
+                }
+              }}
+            >
+              <button
+                role="menuitem"
+                onClick={() => handleExport(exportMenuId, 'hydra')}
+                className="w-full px-3 py-2 min-h-[44px] text-left text-[11px] text-slate-200 hover:bg-dark-750 hover:text-white flex items-center justify-between focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              >
+                <span>Archivo .hydra</span>
+                <span className="text-[9px] font-mono text-cyan-400">Nativo</span>
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => handleExport(exportMenuId, 'json')}
+                className="w-full px-3 py-2 min-h-[44px] text-left text-[11px] text-slate-200 hover:bg-dark-750 hover:text-white flex items-center justify-between focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              >
+                <span>Archivo .json</span>
+                <span className="text-[9px] font-mono text-slate-400">JSON</span>
+              </button>
+            </div>
+          </>,
+          document.body
+        )}
     </div>
   );
 };

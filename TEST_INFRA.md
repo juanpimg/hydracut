@@ -1,160 +1,206 @@
-# TEST_INFRA — HydraCut Studio Test Architecture & E2E Testing Framework
+# TEST_INFRA — Infraestructura de pruebas de HydraCut Studio
 
-## 1. Overview & Objectives
-
-This document establishes the comprehensive 4-tier test architecture and verification framework for **HydraCut Studio**, addressing the stability, robustness, and multi-device responsiveness requirements (R1 through R6) defined in `ORIGINAL_REQUEST.md` and specified in `PROJECT.md`.
-
-The testing infrastructure guarantees:
-- **Opaque-Box Verification**: Tests validate observable contracts, behaviors, state transitions, and layout invariants derived strictly from authoritative specifications (`ORIGINAL_REQUEST.md` and `PROJECT.md`), avoiding coupling to fragile internal implementation details.
-- **Complete 4-Tier Coverage**: Systematic partitioning from single-feature contracts (Tier 1), boundary/extreme stress conditions (Tier 2), cross-subsystem pairwise interactions (Tier 3), to real-world multi-device editing workflows (Tier 4).
-- **Strict Isolation**: Every test is self-contained with independent state setup in `beforeEach`, clean mock restoration in `afterEach`, and zero test order dependencies.
-- **Deterministic CI Execution**: Native execution through the project's standard test runner (`npm test` via Vitest) and type validation via `tsc`.
+> **Este documento describe la infraestructura de pruebas REAL del proyecto.**
+> Todo comando que aparece aquí es ejecutable y todo fichero que se menciona
+> existe en el repositorio. Las antiguas referencias a una arquitectura E2E de
+> 4 niveles (`src/tests/e2e/tier1-features.test.ts` …) y a `TEST_READY.md`
+> correspondían a una suite que **nunca se creó**: se eliminaron de esta
+> documentación el 2026-10-19.
 
 ---
 
-## 2. 4-Tier Test Architecture
+## 1. Panorama
 
-```
-+-----------------------------------------------------------------------+
-|  Tier 4: Real-World Scenarios (End-to-End Workloads)                  |
-|  - Complete iPhone SE, iPhone 13 Landscape, iPad 768px sessions       |
-|  - Safari iOS WebKit media ingestion & export                         |
-|  - Live orientation rotation during active playback                   |
-+-----------------------------------------------------------------------+
-                                  ▲
-+-----------------------------------------------------------------------+
-|  Tier 3: Pairwise Cross-Feature Combinations                          |
-|  - Audio playback while resizing landscape <-> portrait (R1 x R4)     |
-|  - Touch addition during headless audio engine run (R1 x R5)          |
-|  - Export trigger on mobile landscape without captureStream (R2 x R4) |
-|  - Narrow timeline scrubbing under suspended audio (R1 x R3)          |
-|  - Media touch add on tablet layout followed by export check (R5 x R6)|
-+-----------------------------------------------------------------------+
-                                  ▲
-+-----------------------------------------------------------------------+
-|  Tier 2: Boundary & Corner Cases (>=5 per feature)                    |
-|  - R1: Thrown constructors, rapid play/pause spam, extreme gain/vol   |
-|  - R2: Missing APIs, corrupt media, single-pixel canvas, zero duration|
-|  - R3: 320x568 min viewport, 471px breakpoint edge, 50+ clip scroll   |
-|  - R4: 500px boundary height, 926x390 ultrawide, 250px crushed height |
-|  - R5: 50 rapid taps, simultaneous delete+tap, missing media IDs      |
-|  - R6: 767px vs 768px vs 769px, 200-char titles, rapid ratio toggles  |
-+-----------------------------------------------------------------------+
-                                  ▲
-+-----------------------------------------------------------------------+
-|  Tier 1: Feature Coverage (>=5 per feature for R1 through R6)         |
-|  - R1: Web Audio fault tolerance, dual-clock, safe graph, stopAll     |
-|  - R2: captureStream detection, MIME checks, Safari MP4, fallbacks    |
-|  - R3: Strict flex containment (w-full max-w-full min-w-0), 0px over  |
-|  - R4: useIsMobile landscape detection (<=500px), canvas h >= 150px   |
-|  - R5: MediaItemCard onClick addition, stopPropagation on delete/plus |
-|  - R6: Header 768px tablet containment, compact input, export button  |
-+-----------------------------------------------------------------------+
-```
+HydraCut Studio verifica su comportamiento con **dos capas complementarias**:
 
-### Tier 1: Feature Coverage (>= 5 tests per requirement)
-- **R1 (Audio Engine & Clock)**: Safe `AudioContext` acquisition, dual-clock fallback via `performance.now()`, suspended/closed state resilience, null-safe gain graph, clean teardown via `stopAll()`.
-- **R2 (Defensive Samples & Export)**: Explicit capability detection for `captureStream`, MIME checking (`isTypeSupported`) with MP4 candidates for Safari, graceful sample media generation with fallback items, descriptive Spanish export error handling.
-- **R3 (Strict Mobile Timeline Containment)**: Viewport containment at 320px, 360px, 390px, 471px, toolbar compacting, invariant `scrollWidth === clientWidth` (0px horizontal overflow).
-- **R4 (Mobile Landscape Adaptation)**: Landscape detection in `useIsMobile` (`innerHeight <= 500` or `(max-height: 500px)`), compact toolbar/timeline, canvas visible height guarantee >= 150px (and > 120px on 320px height), non-zero canvas dimensions.
-- **R5 (Touch Accessibility in Media Gallery)**: Direct `onClick` timeline addition on `MediaItemCard`, `e.stopPropagation()` on nested buttons (`Plus`, `Trash2`), always-visible mobile add control (`md:hidden`), keyboard/ARIA accessibility.
-- **R6 (Tablet Header Adaptation)**: Header width containment at 768px portrait, text label migration from `sm:` to `lg:`, input compaction (`w-28 md:w-36 lg:w-52`), unclipped and accessible export button.
+| Capa | Motor | Entorno | Qué cubre | Comando |
+|------|-------|----------|-----------|---------|
+| **A. Suites unitarias e integración** | [Vitest](https://vitest.dev) 2.x | Node.js (sin DOM real) | Algoritmos, stores, motor de medios, compositor, pipeline de export, persistencia | `npm test` |
+| **B. E2E en navegador real** | Scripts Node + `puppeteer-core` | Chrome/Chromium real | Layout responsive, reproducción, deshacer/rehacer, persistencia, exportación MP4 | `npm run test:browser` |
 
-### Tier 2: Boundary & Corner Cases (>= 5 tests per requirement)
-- Tests system behavior under stress, invalid or extreme inputs, degenerate conditions, and edge boundaries (e.g. 500px vs 501px height, 767px vs 768px width, 200-character project titles, rapid event bursts, null/undefined APIs).
+No hay un tercer nivel: no existe `src/tests/e2e/` ni `TEST_READY.md`.
 
-### Tier 3: Pairwise Cross-Feature Interactions
-- Tests combinations of two or more features operating simultaneously to identify state leaks, race conditions, and unhandled cross-module dependencies.
+### 1.1 Estado actual (medido el 2026-10-19)
 
-### Tier 4: Real-World Application Scenarios (>= 5 workloads)
-- Tests realistic end-to-end user workflows executed across simulated real devices (iPhone SE 320x568, iPhone 13 Landscape 844x390, iPad Portrait 768x1024, Safari iOS WebKit, Dynamic Orientation Rotation).
-
----
-
-## 3. Requirements Traceability Matrix
-
-| Requirement | Title | Tier 1 Tests | Tier 2 Tests | Tier 3 Tests | Tier 4 Workloads |
-|-------------|-------|--------------|--------------|--------------|------------------|
-| **R1** | Web Audio Fault Tolerance | 6 tests | 5 tests | 4 tests | Workloads 1, 4, 5 |
-| **R2** | Defensive Sample & Export | 6 tests | 5 tests | 3 tests | Workloads 3, 4 |
-| **R3** | Strict Mobile Timeline Containment | 5 tests | 5 tests | 3 tests | Workloads 1, 5 |
-| **R4** | Mobile Landscape Support | 5 tests | 5 tests | 3 tests | Workloads 2, 5 |
-| **R5** | Media Gallery Touch Accessibility | 5 tests | 5 tests | 3 tests | Workloads 1, 2, 4 |
-| **R6** | Adaptive Tablet Header (768px) | 5 tests | 5 tests | 2 tests | Workload 3 |
-| **Total** | Full Suite Coverage | **32 tests** | **30 tests** | **8 tests** | **5 workloads** |
-
----
-
-## 4. Test Environment & Mocking Strategy
-
-### 4.1 Test Runner & Execution
-- **Framework**: Vitest (`vitest run`) running in Node.js environment.
-- **Command**: `npm test` or `npx vitest run src/tests/e2e/`.
-- **TypeScript Checking**: `npx tsc --noEmit` verifies strict types with zero compilation errors.
-
-### 4.2 Browser API Polyfilling & Mocking Strategy
-Because Vitest executes headlessly in Node.js:
-1. **Web Audio API**:
-   - `window.AudioContext` and `window.webkitAudioContext` are mocked via clean classes with configurable states (`running`, `suspended`, `closed`), currentTime counters, and controllable `resume()` / `createGain()` behaviors.
-   - Fault injection: constructor throws, `resume()` rejects, destination is disconnected.
-2. **Canvas & Media Capture**:
-   - `HTMLCanvasElement.prototype.captureStream` and `webkitCaptureStream` are controlled per test scenario to verify capability detection and fallback triggers.
-   - `MediaRecorder` and `MediaRecorder.isTypeSupported` are mocked to emulate Chrome (VP9/VP8/WebM), Safari iOS (MP4 only, WebM unsupported), and unsupported legacy webviews.
-3. **Viewport & Responsive Geometry**:
-   - `window.innerWidth`, `window.innerHeight`, `window.matchMedia`, and DOM container properties (`clientWidth`, `scrollWidth`, `clientHeight`, `scrollHeight`) are configured per test device profile.
-4. **State Isolation**:
-   - Zustand stores (`useProjectStore`, `useUIStore`) are reset prior to each test using store reset methods (`resetProject()`, state overrides).
-   - Global polyfills are deleted or restored to original values in `afterEach` hooks.
-
----
-
-## 5. Authoritative Expected Output Derivation
-
-All expected outcomes are derived directly from the authoritative specifications:
-1. **R1**: `PROJECT.md § Interface Contracts` and `ORIGINAL_REQUEST.md § R1`:
-   - `getAudioContext()` must return `AudioContext | null`, never throwing.
-   - `getTime()` must advance smoothly using `performance.now()` fallback when Web Audio is missing or suspended.
-   - `audioEngine.stopAll()` must cleanly cease audio playback and reset nodes on player unmount.
-2. **R2**: `PROJECT.md § Feature Inventory (Features 5–8)` and `ORIGINAL_REQUEST.md § R2`:
-   - `isCanvasCaptureSupported()` returns boolean without throwing.
-   - `getSupportedVideoMimeType()` evaluates candidates `['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm', 'video/mp4;codecs=avc1', 'video/mp4']` and returns valid MIME or null.
-   - Sample media generation produces fallback assets when canvas capture fails.
-   - Exporter produces descriptive Spanish error when canvas capture is unsupported.
-3. **R3**: `ORIGINAL_REQUEST.md § R3 & Acceptance Criteria`:
-   - Containment: `scrollWidth === clientWidth` on viewport widths 320px to 471px (0px overflow-x).
-4. **R4**: `ORIGINAL_REQUEST.md § R4 & Acceptance Criteria`:
-   - `useIsMobile(768)` evaluates to `true` when `window.innerHeight <= 500`.
-   - Player canvas visible height is >= 150px on 844x390 and > 120px on 568x320.
-5. **R5**: `ORIGINAL_REQUEST.md § R5 & Acceptance Criteria`:
-   - Direct click/tap on `MediaItemCard` container calls `addClipFromMedia`.
-   - Clicking `Trash2` calls `stopPropagation()` and does not add a clip.
-6. **R6**: `ORIGINAL_REQUEST.md § R6 & Acceptance Criteria`:
-   - At 768px portrait, header elements do not clip, input width is compacted, export button is accessible.
-
----
-
-## 6. Test Suite Inventory & Runner Commands
-
-### 6.1 Test Suites in `src/tests/e2e/`
-- `src/tests/e2e/tier1-features.test.ts`: Tier 1 Feature Coverage (32 tests across R1–R6).
-- `src/tests/e2e/tier2-boundary.test.ts`: Tier 2 Boundary & Corner Cases (30 tests across R1–R6).
-- `src/tests/e2e/tier3-pairwise.test.ts`: Tier 3 Cross-Feature Interactions (8 tests).
-- `src/tests/e2e/tier4-scenarios.test.ts`: Tier 4 Real-World Application Workloads (5 end-to-end scenarios).
-
-### 6.2 Running Tests
 ```bash
-# Run all tests in the project (baseline unit tests + all E2E tiers)
+$ npm test
+ Test Files  21 passed (21)
+      Tests  399 passed (399)
+```
+
+> El número exacto cambia cada vez que el equipo añade una suite. **Ejecuta
+> `npx vitest run` para obtener el número vigente**; esta cifra es una foto, no
+> una promesa.
+
+---
+
+## 2. Capa A — Suites unitarias e integración (Vitest)
+
+### 2.1 Configuración
+
+La configuración vive en el bloque `test` de `vite.config.ts`:
+
+```ts
+test: {
+  environment: 'node',        // sin jsdom: los tests que necesitan DOM lo simulan a mano
+  globals: false,             // imports explícitos: import { describe, it, expect } from 'vitest'
+  include: ['src/tests/**/*.test.ts'],
+  exclude: ['src/tests/browser/**', 'node_modules/**', 'dist/**', '**/*.d.ts'],
+  testTimeout: 15_000,        // la simulación de 10 minutos de reproducción necesita ~1,6 s
+  hookTimeout: 15_000,
+  coverage: { provider: 'v8', include: ['src/**/*.{ts,tsx}'], exclude: ['src/tests/**', 'dist/**', '**/*.d.ts', ...] },
+}
+```
+
+`src/tests/browser/**` está excluido a propósito: son scripts `.mjs` de Node
+para el harness de navegador, **no** suites de Vitest.
+
+### 2.2 Suites existentes
+
+| Fichero | Tests | Qué verifica |
+|---------|-------|--------------|
+| `src/tests/audioEngine-hardening.test.ts` | 11 | Tolerancia a fallos de la Web Audio API, fallback de reloj dual |
+| `src/tests/challenger-stress.test.ts` | 13 | Estrés adversarial de `MasterClock`/`AudioEngine`, latencia de `togglePlay()` |
+| `src/tests/challenger-stress-verification.test.ts` | 14 | `MediaSourcePool.syncVideoTime` (histeresis, cooldown, seeks), compositor sin asignaciones, aislamiento de render de `MobileBottomBar` |
+| `src/tests/clipGestures.test.ts` | 8 | Historial por gesto (drag/trim con un único undo) |
+| `src/tests/data-integrity.test.ts` | 22 | Integridad del estado: mediaPool en el historial, clips, pistas bloqueadas |
+| `src/tests/engine-correctness.test.ts` | 35 | Corrección del motor: failover de reloj, resync en seek, liberación de recursos |
+| `src/tests/engine.test.ts` | 30 | Orden de capas del compositor, jerarquía de pistas, **contrato real del exportador** (dimensiones pares y audio planar `f32-planar`) |
+| `src/tests/exporterConfig.test.ts` | 14 | Sonda de encoder, selección de config AVC, traducción de errores |
+| `src/tests/export-pipeline.test.ts` | 32 | Pipeline de export: fallback a MediaRecorder, nivel AVC, duración de audio, muxing |
+| `src/tests/features.test.ts` | 17 | Waveforms, transiciones, snapping, controles de velocidad |
+| `src/tests/lifecycle-integration.test.ts` | 22 | Ciclo de vida: liberación de recursos, errores de persistencia, autosave al cerrar |
+| `src/tests/perf-storage.test.ts` | 34 | Object URLs, miniaturas, autosave con debounce, escritura atómica del índice |
+| `src/tests/playback-acceptance.test.ts` | 24 | Aceptación de reproducción 60 FPS (R1–R5), incl. simulación de 10 minutos y aislamiento de render |
+| `src/tests/projectStorage-hardening.test.ts` | 4 | Endurecimiento de `projectStorage` |
+| `src/tests/projectStorage.test.ts` | 18 | Persistencia multi-proyecto (IndexedDB + OPFS) |
+| `src/tests/quality-guard.test.ts` | 5 | **Guarda de calidad del propio suite** (ver §5) |
+| `src/tests/render-scale.test.ts` | 16 | `computeRenderScale`: el preview se rasteriza a la resolución de pantalla |
+| `src/tests/timeline-duration.test.ts` | 27 | Duración real del proyecto, duplicación de pistas, estados deshacibles, `NaN` |
+| `src/tests/timeline.test.ts` | 27 | Utilidades de tiempo, snapping magnético, operaciones del store, jerarquía de pistas |
+| `src/tests/ui-a11y.test.ts` | 24 | Accesibilidad: menús anclados, focus trap, live region, disponibilidad del botón Dividir |
+| `src/tests/welcome.test.ts` | 2 | Estado de la pantalla de bienvenida |
+
+### 2.3 Ejecutar
+
+```bash
+# Suite completa (desde apps/hydra-cut)
 npm test
 
-# Run only E2E test suites
-npx vitest run src/tests/e2e/
+# Un fichero o un patrón
+npx vitest run src/tests/engine.test.ts
+npx vitest run src/tests/timeline
 
-# Run a specific tier
-npx vitest run src/tests/e2e/tier1-features.test.ts
-npx vitest run src/tests/e2e/tier2-boundary.test.ts
-npx vitest run src/tests/e2e/tier3-pairwise.test.ts
-npx vitest run src/tests/e2e/tier4-scenarios.test.ts
+# Ver el nombre de cada test (TAP)
+npx vitest run --reporter=verbose src/tests/quality-guard.test.ts
 
-# Verify TypeScript compilation and bundling
-npm run build
+# Comprobación de tipos (sin emitir ficheros)
+npm run typecheck          # == tsc --noEmit
 ```
+
+---
+
+## 3. Capa B — E2E en navegador real
+
+### 3.1 Ficheros
+
+| Fichero | Contenido |
+|---------|-----------|
+| `scripts/browser-test.mjs` | CLI: lanza el runner y propaga los argumentos |
+| `src/tests/browser/run-all.mjs` | Runner: levanta (o reutiliza) el servidor de Vite, abre Chrome, ejecuta las suites e imprime el informe |
+| `src/tests/browser/browser-harness.mjs` | Utilidades compartidas: arranque del dev server, lanzamiento de Chrome, selectores, diagnósticos |
+| `src/tests/browser/suite-layout.mjs` | Layout responsive (6 viewports × 2 `devicePixelRatio`) |
+| `src/tests/browser/suite-playback.mjs` | Reproducción, deshacer/rehacer y persistencia |
+| `src/tests/browser/suite-export.mjs` | Pipeline de exportación MP4 |
+| `src/tests/browser/suite-known-issues.mjs` | Defectos conocidos (informativo; con `--strict` fallan) |
+
+### 3.2 Ejecutar
+
+```bash
+# Todas las suites
+npm run test:browser
+
+# Una sola suite
+npm run test:browser layout
+npm run test:browser playback
+npm run test:browser export
+npm run test:browser known-issues
+
+# Con el navegador visible
+npm run test:browser -- --headed
+
+# Los "defectos conocidos" también hacen fallar la ejecución
+npm run test:browser -- --strict
+```
+
+Variables de entorno:
+
+| Variable | Por defecto | Uso |
+|----------|-------------|-----|
+| `HYDRA_CHROME_PATH` | `/usr/bin/google-chrome-stable` | Ruta del binario de Chrome/Chromium |
+| `HYDRA_DEV_HOST` | `127.0.0.1` | Host del servidor de desarrollo |
+| `HYDRA_DEV_PORT` | `5199` | Puerto del servidor de desarrollo |
+| `HYDRA_BASE_URL` | `http://<host>:<puerto>/` | URL base si el servidor ya está levantado |
+| `HYDRA_STRICT` | `0` | Equivale a `--strict` |
+
+> **El E2E de navegador NO forma parte de CI** (necesita un binario de Chrome).
+> Se ejecuta a mano antes de cada entrega. Véase `.github/workflows/ci.yml`.
+
+---
+
+## 4. Mapeo de los 4 niveles conceptuales a la realidad
+
+El plan original de pruebas describía 4 niveles. La implementación real los
+cubre así:
+
+| Nivel conceptual | Dónde vive hoy |
+|------------------|----------------|
+| **Nivel 1 — Cobertura de funcionalidad** (R1–R6) | Suites de Vitest de la capa A: `features`, `audioEngine-hardening`, `engine-correctness`, `ui-a11y`, `timeline`, `exporterConfig` |
+| **Nivel 2 — Casos límite y de esquina** | `challenger-stress`, `challenger-stress-verification`, `data-integrity`, `timeline-duration`, `perf-storage`, `projectStorage-hardening`, `engine.test.ts` (contrato del exportador) |
+| **Nivel 3 — Interacciones entre subsistemas** | `lifecycle-integration`, `playback-acceptance`, `export-pipeline`, `engine-correctness` |
+| **Nivel 4 — Escenarios reales multi-dispositivo** | Harness de navegador (`src/tests/browser/`): 6 viewports × 2 `devicePixelRatio` (layout), reproducción, persistencia y exportación real en MP4 |
+
+---
+
+## 5. Guarda de calidad del propio suite
+
+`src/tests/quality-guard.test.ts` impide que la suite vuelva a mentir:
+
+1. **Sin ficheros huérfanos**: todo `*.test.ts` de `src/tests/` declara al menos
+   un `describe()`.
+2. **Sin módulos de producción sin test**: todo `.ts` de `src/core/` y
+   `src/store/` lo importa al menos un test (con una lista blanca corta y
+   justificada para las excepciones).
+3. **Sin reimplementaciones de producción**: si un test define localmente una
+   función con el mismo nombre que un export de producción, o si su cuerpo
+   comparte ≥ 4 constantes numéricas distintivas con una función de producción,
+   la guarda falla indicando fichero y función.
+
+> La guarda existe porque el proyecto llegó a publicar una "evidencia de
+> verificación" que reimplementaba 58 líneas de `MediaSourcePool.syncVideoTime`
+> y verificaba su propia copia. Ese tipo de test pasa siempre y no prueba nada.
+
+---
+
+## 6. Integración continua
+
+`.github/workflows/ci.yml` ejecuta, en cada `push` y `pull_request`:
+
+```bash
+npm ci → npm run typecheck → npm test → npm run build
+```
+
+* Node 20 (`actions/setup-node@v4`), `actions/checkout@v4`.
+* El E2E de navegador queda **fuera** del pipeline a propósito (requiere Chrome).
+
+---
+
+## 7. Huecos conocidos
+
+| Hueco | Estado | Nota |
+|-------|--------|------|
+| **ESLint / lint** | ❌ No instalado | No hay dependencia de ESLint ni script de lint. El `build` ejecuta `tsc && vite build`: `tsc` sí valida los tipos, pero **no hay analysis estático de estilo**. Cualquier afirmación de "0 lint warnings" es falsa. |
+| **Cobertura** | ⚠️ Configurada, no activada | El bloque `coverage` de `vite.config.ts` está listo, pero el proveedor (`@vitest/coverage-v8`) **no está instalado**. Para usarlo: `npm i -D @vitest/coverage-v8` y luego `npx vitest run --coverage`. |
+| **E2E en CI** | ❌ Fuera del pipeline | Requiere un Chrome real; hoy es un paso manual. |
+| **Tests de `src/core/utils/thumbnails.ts`** | ⚠️ En lista blanca | Genera DataURLs con Canvas/Image: sin navegador real no hay nada que afirmar. Queda en la lista blanca de `quality-guard.test.ts` con su justificación. |
+| **Previsibilidad temporal** | ⚠️ Parcial | Las pruebas de latencia (`challenger-stress`) dependen de la carga de la máquina. |

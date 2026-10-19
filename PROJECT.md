@@ -1,5 +1,13 @@
 # Project: HydraCut Studio — Stability, Robustness & Multi-Device Responsiveness
 
+> **Nota de verificación (2026-10-19).** Este documento es la especificación de
+> requisitos (R1–R6) del proyecto, no un informe de estado. La petición original
+> vive en `.agents/teamwork/ORIGINAL_REQUEST.md`. Para saber **qué está
+> realmente verificado y con qué comando**, véase [`TEST_INFRA.md`](./TEST_INFRA.md):
+> las suites de Vitest (`npm test`) y el harness de navegador real
+> (`npm run test:browser`). La suite E2E de 4 niveles prevista como
+> `src/tests/e2e/` y el fichero `TEST_READY.md` nunca existieron.
+
 ## Architecture
 HydraCut Studio is a web-based non-linear video editor built with React, TypeScript, Tailwind CSS, Zustand, and WebCodecs/Web Audio.
 Key subsystems:
@@ -25,20 +33,20 @@ Key subsystems:
 | 9 | Mobile Timeline Strict Flex Containment | Apply `w-full max-w-full min-w-0` to `Timeline` container to prevent layout blowing out parent width | M2 | ORIGINAL_REQUEST § R3 |
 | 10 | TimelineToolbar Narrow Viewport Adaptation | Compact button spacing, conditional visibility of duplicate controls on < 480px, guaranteeing `scrollWidth === clientWidth` (320px–471px) | M2 | ORIGINAL_REQUEST § R3 |
 | 11 | Mobile Landscape Detection in `useIsMobile` | Detect viewport height <= 500px and landscape orientation `(max-height: 500px)` | M2 | ORIGINAL_REQUEST § R4 |
-| 12 | Landscape Canvas Dimension Guarantee | Compact timeline and toolbars in landscape/reduced height, guaranteeing player canvas visible height >= 150px (and > 120px) | M2 | ORIGINAL_REQUEST § R4 |
+| 12 | Landscape Canvas Dimension Guarantee | Compact timeline and toolbars in landscape/reduced height, guaranteeing the player monitor keeps a usable visible height (container `min-h-[140px]` in compact mode, `min-h-[180px]` in portrait) | M2 | ORIGINAL_REQUEST § R4 |
 | 13 | Touch Interaction in MediaItemCard | Direct `onClick` addition to timeline from card container, without requiring hover or HTML5 Drag & Drop | M2 | ORIGINAL_REQUEST § R5 |
 | 14 | Event Propagation Control in Media Cards | `e.stopPropagation()` on nested buttons (`Plus`, `Trash2`) to avoid accidental timeline addition on deletion | M2 | ORIGINAL_REQUEST § R5 |
-| 15 | Always-Visible Mobile Media Actions | Dedicated touch-friendly add button visible on mobile viewports (`md:hidden`) | M2 | ORIGINAL_REQUEST § R5 |
-| 16 | Tablet Header Adaptive Containment | Migrate desktop text from `sm:` to `lg:`, compact project input and export button, add `overflow-x-auto no-scrollbar` for 768px tablet portrait | M2 | ORIGINAL_REQUEST § R6 |
-| 17 | E2E Acceptance Verification | Pass 100% of E2E tests covering R1–R6, clean `npm run build`, and multi-device criteria | M3 | ORIGINAL_REQUEST Acceptance Criteria |
+| 15 | Always-Visible Mobile Media Actions | The quick-action overlay stays visible on devices without hover (`[@media(hover:none)]`) and the "Añadir" button is shown below 768 px (`hidden max-[767px]:flex`); it used to be `md:hidden`, which hid it on touch tablets | M2 | ORIGINAL_REQUEST § R5 |
+| 16 | Tablet Header Adaptive Containment | Horizontal scroll contained in the header (`overflow-x-auto no-scrollbar`), compact project input (`w-32 sm:w-44 md:w-52`) and labels hidden below their breakpoint (`hidden sm:inline` / `hidden md:inline`) | M2 | ORIGINAL_REQUEST § R6 |
+| 17 | E2E Acceptance Verification | Pass 100% of E2E tests covering R1–R6, clean `npm run build`, and multi-device criteria (harness de navegador en `src/tests/browser/`) | M3 | ORIGINAL_REQUEST Acceptance Criteria |
 
 ## Milestones
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
 | M1 | Audio Engine & Media Export Defensive Safeguards | R1, R2: MasterClock, AudioEngine, PreviewPlayer, sampleMedia, webcodecsExporter | none | IN_PROGRESS |
 | M2 | Responsive Layouts, Tablet Header & Media Touch Accessibility | R3, R4, R5, R6: Timeline, TimelineToolbar, useIsMobile, MainLayout, MobileCapCutLayout, Header, MediaItemCard | none | IN_PROGRESS |
-| M3 | Final Acceptance & E2E Test Pass | 100% E2E test pass (Tiers 1–4), production build verification, multi-device criteria | M1, M2, E2E Testing Track | PLANNED |
-| E2E | E2E Testing Track | Opaque-box test suite (Tiers 1–4) covering R1–R6, test runner, TEST_READY.md | none | IN_PROGRESS |
+| M3 | Final Acceptance & E2E Test Pass | 100% E2E test pass, production build verification, multi-device criteria | M1, M2, E2E Testing Track | PLANNED |
+| E2E | E2E Testing Track | Opaque-box test suite covering R1–R6. ⚠️ La suite prevista como `src/tests/e2e/` (4 tiers) **nunca se creó**: la verificación real son las suites de Vitest (`src/tests/*.test.ts`) y el harness de navegador (`src/tests/browser/`, `npm run test:browser`). Ver `TEST_INFRA.md`. | none | IN_PROGRESS |
 
 ## Code Layout
 - `src/core/engine/MasterClock.ts` (Owned by M1)
@@ -54,7 +62,7 @@ Key subsystems:
 - `src/components/mobile/MobileCapCutLayout.tsx` (Owned by M2)
 - `src/components/layout/Header.tsx` (Owned by M2)
 - `src/components/media/MediaItemCard.tsx` (Owned by M2)
-- `src/tests/` (Unit tests owned by M1/M2 for their modules; E2E tests owned by E2E Testing Track in `src/tests/e2e/`)
+- `src/tests/` — Suites unitarias y de integración de Vitest (`*.test.ts`), la guarda de calidad `quality-guard.test.ts` y el harness E2E de navegador (`src/tests/browser/`, ejecutado con `npm run test:browser`).
 
 ## Interface Contracts
 ### MasterClock ↔ AudioEngine & Players
