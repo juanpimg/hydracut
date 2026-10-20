@@ -1,21 +1,111 @@
-import { 
-  Sliders, 
-  Trash2, 
-  Volume2, 
-  VolumeX, 
-  Type, 
-  Maximize2, 
-  AlignLeft, 
-  AlignCenter, 
+import {
+  Sliders,
+  Trash2,
+  Volume2,
+  VolumeX,
+  Type,
+  Maximize2,
+  AlignLeft,
+  AlignCenter,
   AlignRight,
   Sparkles,
   Gauge,
   Layers,
+  Palette,
   AlertTriangle
 } from 'lucide-react';
-import { OverlapPolicy, TransitionType } from '../../types/project';
+import { useEffect, useState } from 'react';
+import { ClipColorFilters, OverlapPolicy, TransitionType } from '../../types/project';
 import { DEFAULT_OVERLAP_POLICY, useProjectStore } from '../../store/useProjectStore';
 import { formatDuration } from '../../core/utils/time';
+import {
+  COLOR_FILTER_PRESETS,
+  COLOR_FILTER_PRESET_ORDER,
+  COLOR_FILTER_UNSUPPORTED_MESSAGE,
+  getCanvasFilterSupport,
+  matchColorFilterPreset,
+  type ColorFilterKey,
+  type ColorFilterPresetId,
+} from '../../core/utils/colorFilters';
+
+/**
+ * The six sliders of the "Color" section (F9).
+ *
+ * They live at module level (not inside the component) so that rendering the
+ * inspector never allocates them again.
+ */
+const COLOR_SLIDERS: ReadonlyArray<{
+  key: ColorFilterKey;
+  label: string;
+  ariaLabel: string;
+  min: number;
+  max: number;
+  step: number;
+  neutral: number;
+  format: (value: number) => string;
+}> = [
+  {
+    key: 'brightness',
+    label: 'Brillo',
+    ariaLabel: 'Brillo del clip',
+    min: 0,
+    max: 2,
+    step: 0.01,
+    neutral: 1,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'contrast',
+    label: 'Contraste',
+    ariaLabel: 'Contraste del clip',
+    min: 0,
+    max: 2,
+    step: 0.01,
+    neutral: 1,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'saturation',
+    label: 'Saturación',
+    ariaLabel: 'Saturación del clip',
+    min: 0,
+    max: 2,
+    step: 0.01,
+    neutral: 1,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'temperature',
+    label: 'Temperatura',
+    ariaLabel: 'Temperatura del clip',
+    min: -1,
+    max: 1,
+    step: 0.01,
+    neutral: 0,
+    format: (v) =>
+      v > 0.01 ? `Cálido ${Math.round(v * 100)}%` : v < -0.01 ? `Frío ${Math.round(-v * 100)}%` : 'Neutra',
+  },
+  {
+    key: 'grayscale',
+    label: 'Blanco y negro',
+    ariaLabel: 'Blanco y negro del clip',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    neutral: 0,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+  {
+    key: 'sepia',
+    label: 'Sepia',
+    ariaLabel: 'Sepia del clip',
+    min: 0,
+    max: 1,
+    step: 0.01,
+    neutral: 0,
+    format: (v) => `${Math.round(v * 100)}%`,
+  },
+];
 
 /** Human readable description of every overlap policy (F1). */
 export const OVERLAP_POLICY_LABELS: Record<OverlapPolicy, { label: string; hint: string }> = {
@@ -41,6 +131,19 @@ export const ClipInspector: React.FC = () => {
   const mediaPool = useProjectStore((s) => s.project.mediaPool);
   const overlapPolicy = useProjectStore((s) => s.project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY);
   const setOverlapPolicy = useProjectStore((s) => s.setOverlapPolicy);
+
+  /**
+   * F9 · Does the browser support `ctx.filter`?
+   *
+   * `null` = still unknown (the probe runs on mount). The controls stay
+   * disabled until the answer is known, so the user never gets a control
+   * that silently does nothing.
+   */
+  const [filterSupport, setFilterSupport] = useState<boolean | null>(null);
+  useEffect(() => {
+    setFilterSupport(getCanvasFilterSupport());
+  }, []);
+  const colorFiltersEnabled = filterSupport === true;
 
   const policySection = (
     <div className="space-y-2 mt-auto pt-3 mb-1" data-testid="overlap-policy-section">
@@ -88,6 +191,10 @@ export const ClipInspector: React.FC = () => {
   const isVideoOrImage = clip.type === 'video' || clip.type === 'image';
   const hasAudio = clip.type === 'video' || clip.type === 'audio';
   const isText = clip.type === 'text';
+
+  // F9: the preset that matches the current filters (`null` = a custom
+  // combination of the sliders).
+  const selectedColorPreset = matchColorFilterPreset(clip.filters);
 
   // F3: the media of the selected clip is not usable.
   const clipMedia = clip.mediaId ? mediaPool.find((m) => m.id === clip.mediaId) : undefined;
@@ -445,6 +552,100 @@ export const ClipInspector: React.FC = () => {
           >
             Restablecer Transformación
           </button>
+        </div>
+      )}
+
+      {/* F9 · COLOR FILTERS */}
+      {isVideoOrImage && (
+        <div className="space-y-3 mb-4" data-testid="inspector-color-section">
+          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Palette size={13} className="text-fuchsia-400" />
+            <span>Color del Clip</span>
+          </div>
+
+          <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+            {/* Preset */}
+            <div>
+              <label htmlFor={`clip-color-preset-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+                Preset de color:
+              </label>
+              <select
+                id={`clip-color-preset-${clip.id}`}
+                data-testid="clip-color-preset"
+                aria-label="Preset de color del clip"
+                disabled={!colorFiltersEnabled}
+                value={selectedColorPreset ?? 'custom'}
+                onChange={(e) => {
+                  const preset = COLOR_FILTER_PRESETS[e.target.value as ColorFilterPresetId];
+                  if (!preset) return;
+                  updateClip(clip.id, {
+                    filters: preset.id === 'original' ? undefined : { ...preset.filters },
+                  });
+                }}
+                className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-500 disabled:opacity-50"
+              >
+                {COLOR_FILTER_PRESET_ORDER.map((presetId) => (
+                  <option key={presetId} value={presetId}>
+                    {COLOR_FILTER_PRESETS[presetId].label}
+                  </option>
+                ))}
+                {selectedColorPreset === null && <option value="custom">Personalizado</option>}
+              </select>
+            </div>
+
+            {/* Individual filters */}
+            {COLOR_SLIDERS.map((slider) => {
+              const value = clip.filters?.[slider.key] ?? slider.neutral;
+              return (
+                <div key={slider.key}>
+                  <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+                    <label htmlFor={`clip-color-${slider.key}-${clip.id}`}>{slider.label}:</label>
+                    <span className="font-mono text-slate-300">{slider.format(value)}</span>
+                  </div>
+                  <input
+                    id={`clip-color-${slider.key}-${clip.id}`}
+                    data-testid={`clip-color-${slider.key}`}
+                    type="range"
+                    min={slider.min}
+                    max={slider.max}
+                    step={slider.step}
+                    value={value}
+                    disabled={!colorFiltersEnabled}
+                    aria-label={slider.ariaLabel}
+                    onChange={(e) => {
+                      const next: ClipColorFilters = { ...(clip.filters ?? {}) };
+                      next[slider.key] = parseFloat(e.target.value);
+                      updateClip(clip.id, { filters: next });
+                    }}
+                    className="w-full h-1.5 bg-dark-750 accent-fuchsia-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-fuchsia-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  />
+                </div>
+              );
+            })}
+
+            {/* Reset colour */}
+            <button
+              onClick={() => updateClip(clip.id, { filters: undefined })}
+              data-testid="clip-color-reset"
+              aria-label="Restablecer los filtros de color del clip"
+              disabled={!colorFiltersEnabled}
+              className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-fuchsia-400 focus-visible:outline-none disabled:opacity-50"
+            >
+              Restablecer color
+            </button>
+          </div>
+
+          {/* The browser cannot filter: the controls are disabled AND the
+              reason is explained (a silent no-op is not acceptable). */}
+          {filterSupport === false && (
+            <p
+              role="status"
+              data-testid="clip-color-unsupported"
+              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+            >
+              {COLOR_FILTER_UNSUPPORTED_MESSAGE}
+            </p>
+          )}
         </div>
       )}
 

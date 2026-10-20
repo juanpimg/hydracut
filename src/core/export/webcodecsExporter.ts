@@ -3,6 +3,7 @@ import { Clip, ExportConfig, ExportProgress, MediaItem, Track } from '../../type
 import { Compositor } from '../engine/Compositor';
 import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
 import { applyDetuneToParam, resolvePlayback } from '../utils/playbackRate';
+import { buildCssFilterString, getCanvasFilterSupport } from '../utils/colorFilters';
 
 export interface ExportParams {
   config: ExportConfig;
@@ -12,6 +13,27 @@ export interface ExportParams {
   mediaPool: MediaItem[];
   onProgress: (progress: ExportProgress) => void;
   signal?: AbortSignal;
+}
+
+/**
+ * The colour filter (F9) that the EXPORT applies to a clip.
+ *
+ * The export does NOT have its own compositing code: it renders every frame
+ * with the very same `Compositor` class the preview uses (`renderFrame`),
+ * so the pixels of the exported MP4 are filtered exactly like the pixels of
+ * the preview.
+ *
+ * This helper exists to make that contract explicit and testable: it derives
+ * the filter of a clip through the SAME production helper the compositor
+ * uses (`buildCssFilterString`), so `resolveClipColorFilter(clip)` and the
+ * preview can be compared literally.
+ *
+ * Returns `''` when the clip has no filters (or when the browser cannot
+ * filter at all: then the preview is unfiltered too, so both agree).
+ */
+export function resolveClipColorFilter(clip: Clip): string {
+  if (!getCanvasFilterSupport()) return '';
+  return buildCssFilterString(clip.filters);
 }
 
 /**
@@ -1716,6 +1738,9 @@ async function exportWithWebCodecs(
         );
 
         // Render frame to canvas
+        // F9: the colour filters of the clip are applied by the compositor
+        // itself (the SAME class the preview uses), so the exported pixels are
+        // filtered exactly like the previewed ones.
         compositor.renderFrame({
           time: t,
           canvas,
@@ -2138,6 +2163,9 @@ async function exportWithMediaRecorder(
         return;
       }
 
+      // F9: the colour filters are applied by the compositor (same code path
+      // as the preview), so the MediaRecorder fallback exports the same
+      // filtered pixels as the WebCodecs path.
       compositor.renderFrame({
         time: t,
         canvas,

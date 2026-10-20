@@ -108,6 +108,12 @@ export interface Clip {
   positionY: number;      // Offset vertical desde el centro en px
   muted: boolean;
 
+  /**
+   * F9 · Colour filters. Optional: a clip without filters is drawn with the
+   * neutral values (no filtering at all).
+   */
+  filters?: ClipColorFilters;
+
   // Transiciones y Velocidad
   transition?: ClipTransition;
   speed?: number;         // Factor de velocidad (ej. 0.5, 1, 1.5, 2). Default 1
@@ -129,6 +135,32 @@ export interface Clip {
   text?: string;
   textStyle?: TextStyle;
   words?: WordTiming[];
+}
+
+/**
+ * F9 · Colour filters of a clip.
+ *
+ * Every value is OPTIONAL and its absence means "neutral" (the clip is drawn
+ * exactly as it comes out of the decoder):
+ *
+ * - `brightness`  1 = neutral (range 0..2)
+ * - `contrast`    1 = neutral (range 0..2)
+ * - `saturation`  1 = neutral (range 0..2)
+ * - `temperature` 0 = neutral (range -1..1, cool -> warm)
+ * - `grayscale`   0 = none   (range 0..1)
+ * - `sepia`       0 = none   (range 0..1)
+ *
+ * The values are applied by the `Compositor`, which is the ONLY drawing path
+ * of the app: the preview AND the export go through it, so the two can never
+ * diverge (the same rule the playback speed follows).
+ */
+export interface ClipColorFilters {
+  brightness?: number;  // 1 = neutral; range ~0..2
+  contrast?: number;    // 1 = neutral; range ~0..2
+  saturation?: number;  // 1 = neutral; range 0..2
+  temperature?: number; // 0 = neutral; range -1..1 (cool -> warm)
+  grayscale?: number;   // 0 = none;   range 0..1
+  sepia?: number;       // 0 = none;   range 0..1
 }
 
 export interface Track {

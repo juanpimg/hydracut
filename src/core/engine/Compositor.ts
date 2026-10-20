@@ -1,5 +1,11 @@
 import { Clip, MediaItem, Track } from '../../types/project';
 import { mediaSourcePool } from './MediaSourcePool';
+import {
+  clampFilterValue,
+  getCanvasFilterSupport,
+  resolveColorFilter,
+  type ResolvedColorFilter,
+} from '../utils/colorFilters';
 
 export interface RenderOptions {
   time: number;
@@ -237,6 +243,26 @@ export class Compositor {
   private activeVideoKeys: Set<string> = new Set();
   private prewarmKeys: Set<string> = new Set();
 
+  /**
+   * F9 · The colour filter of every clip, cached.
+   *
+   * The CSS filter string of a clip is ONLY rebuilt when the values of the
+   * clip change: the hot path of the compositor (60 fps) must not allocate
+   * (nor re-parse a filter string) on every frame.
+   */
+  private filterCache: Map<
+    string,
+    {
+      brightness: number;
+      contrast: number;
+      saturation: number;
+      temperature: number;
+      grayscale: number;
+      sepia: number;
+      resolved: ResolvedColorFilter;
+    }
+  > = new Map();
+
   // Dirty-checking state
   private lastRenderedTime = -1;
   private lastRenderedCanvasRef: HTMLCanvasElement | OffscreenCanvas | null = null;
@@ -273,6 +299,72 @@ export class Compositor {
     this.lastHadUnreadyVideo = false;
     this.activeVideoKeys.clear();
     this.prewarmKeys.clear();
+    this.filterCache.clear();
+  }
+
+  /**
+   * Drops the cached filters of the clips that no longer exist.
+   */
+  private pruneFilterCache(clips: Clip[]): void {
+    const alive = new Set<string>();
+    for (let i = 0; i < clips.length; i++) alive.add(clips[i].id);
+    for (const id of this.filterCache.keys()) {
+      if (!alive.has(id)) this.filterCache.delete(id);
+    }
+  }
+
+  /**
+   * F9 · Returns the colour filter of a clip, using the per-clip cache.
+   *
+   * Returns `null` when the clip has no filters at all (the common case:
+   * nothing is allocated and nothing is drawn).
+   *
+   * The cache is keyed by the clip id and validated against the SIX numeric
+   * values of the clip, so a slider drag rebuilds the filter exactly once
+   * per change and never on a frame that did not change anything.
+   */
+  private resolveClipFilter(clip: Clip): ResolvedColorFilter | null {
+    const filters = clip.filters;
+    if (!filters) return null;
+
+    const brightness = clampFilterValue('brightness', filters.brightness);
+    const contrast = clampFilterValue('contrast', filters.contrast);
+    const saturation = clampFilterValue('saturation', filters.saturation);
+    const temperature = clampFilterValue('temperature', filters.temperature);
+    const grayscale = clampFilterValue('grayscale', filters.grayscale);
+    const sepia = clampFilterValue('sepia', filters.sepia);
+
+    const cached = this.filterCache.get(clip.id);
+    if (
+      cached &&
+      cached.brightness === brightness &&
+      cached.contrast === contrast &&
+      cached.saturation === saturation &&
+      cached.temperature === temperature &&
+      cached.grayscale === grayscale &&
+      cached.sepia === sepia
+    ) {
+      return cached.resolved;
+    }
+
+    const resolved = resolveColorFilter({
+      brightness,
+      contrast,
+      saturation,
+      temperature,
+      grayscale,
+      sepia,
+    });
+    this.filterCache.set(clip.id, {
+      brightness,
+      contrast,
+      saturation,
+      temperature,
+      grayscale,
+      sepia,
+      resolved,
+    });
+    return resolved;
   }
 
   /**
@@ -380,6 +472,14 @@ export class Compositor {
     }
 
     this.activeVideoKeys.clear();
+
+    // F9: the cache of colour filters is pruned when it grows far beyond the
+    // number of clips (the clips that were deleted would live in it forever).
+    // The check is O(1) in the common case and only allocates when the cache
+    // is really bloated.
+    if (this.filterCache.size > clips.length * 2 + 32) {
+      this.pruneFilterCache(clips);
+    }
 
     // Single-pass visual readiness & active clip pre-check
     let hasActiveVisualClip = false;
@@ -686,7 +786,27 @@ export class Compositor {
     const x = centerX - drawWidth / 2;
     const y = centerY - drawHeight / 2;
 
+    /**
+     * F9 · The colour filters of the clip.
+     *
+     * The filter is resolved from the per-clip cache (no allocation on the
+     * hot path) and applied ONLY around the `drawImage` of this clip: the
+     * filter of a clip never leaks into the next one.
+     *
+     * When the browser does not support `ctx.filter` the filters are NOT
+     * applied at all (neither the CSS filter nor the temperature overlay):
+     * the preview and the export stay identical (both unfiltered) and the
+     * inspector disables the controls with an explanation.
+     */
+    const colorFilter = this.resolveClipFilter(clip);
+    const filtersEnabled = colorFilter !== null && getCanvasFilterSupport();
+    const cssFilter = filtersEnabled && colorFilter ? colorFilter.css : '';
+
     let hasDrawn = false;
+
+    if (cssFilter) {
+      ctx.filter = cssFilter;
+    }
 
     try {
       if (mediaElement instanceof HTMLVideoElement) {
@@ -737,6 +857,39 @@ export class Compositor {
       if (!msg.includes('HTMLVideoElement') && !msg.includes('readyState') && !msg.includes('NS_ERROR_NOT_AVAILABLE')) {
         console.warn(`[Compositor] drawImage error on "${clip.name}" (${clip.id}):`, err);
       }
+    }
+
+    // The filter only applies to the pixels of this clip: it is reset before
+    // any other drawing operation (the overlays below are NOT filtered).
+    if (cssFilter) {
+      ctx.filter = 'none';
+    }
+
+    /**
+     * F9 · The temperature (white balance).
+     *
+     * CSS has no temperature primitive, so it is applied as a semi-transparent
+     * warm/cool overlay blended with the `overlay` composite operation over
+     * the pixels of the clip. See `src/core/utils/colorFilters.ts` for the
+     * reasons why this technique was chosen over a colour matrix.
+     *
+     * It is only painted when the clip actually drew something: otherwise the
+     * overlay would tint the empty background of a clip that is not ready.
+     */
+    if (filtersEnabled && colorFilter && colorFilter.overlayColor && hasDrawn) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'overlay';
+      let alpha = Math.min(1, colorFilter.overlayAlpha * baseAlpha * transition.alphaMultiplier);
+      if (ctx.globalCompositeOperation !== 'overlay') {
+        // The blend mode is not supported: fall back to a plain (weaker) tint
+        // instead of ignoring the temperature altogether.
+        ctx.globalCompositeOperation = 'source-over';
+        alpha *= 0.5;
+      }
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = colorFilter.overlayColor;
+      ctx.fillRect(x, y, drawWidth, drawHeight);
+      ctx.restore();
     }
 
     // Color overlay for fade-black / fade-white
