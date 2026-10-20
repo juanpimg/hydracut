@@ -994,7 +994,7 @@ export async function renderOfflineAudio(
         sourceNode.start(clip.start, offset, playDuration);
         hasValidAudio = true;
       }
-    } catch (err) {
+    } catch {
       if (signal?.aborted) {
         throw new Error('Exportación cancelada por el usuario');
       }

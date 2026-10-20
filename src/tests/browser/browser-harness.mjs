@@ -19,7 +19,6 @@
 
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -30,10 +29,75 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** Absolute path of the hydra-cut package root (src/tests/browser -> ../../..). */
 export const PROJECT_ROOT = path.resolve(HERE, '..', '..', '..');
 
-export const CHROME_PATH = process.env.HYDRA_CHROME_PATH || '/usr/bin/google-chrome-stable';
 export const DEV_HOST = process.env.HYDRA_DEV_HOST || '127.0.0.1';
 export const DEV_PORT = Number(process.env.HYDRA_DEV_PORT || 5199);
 export const BASE_URL = process.env.HYDRA_BASE_URL || `http://${DEV_HOST}:${DEV_PORT}/`;
+
+/**
+ * Resolves the Chrome/Chromium binary used by `launchBrowser()`.
+ *
+ * Fallback chain (first hit wins):
+ *   1. `HYDRA_CHROME_PATH` (documented override, also honoured by CI), then
+ *      the generic `CHROME_PATH` / `CHROME_BIN` variables some CI images set;
+ *   2. the historical hardcoded location `/usr/bin/google-chrome-stable`
+ *      (keeps the local behaviour unchanged);
+ *   3. the other usual Linux locations (`google-chrome`, `chromium`, …);
+ *   4. a `PATH` lookup of the usual binary names (this is what finds the
+ *      Chrome installed by `browser-actions/setup-chrome` on GitHub runners);
+ *   5. the hardcoded default as a last resort, so the error thrown by
+ *      `launchBrowser()` still mentions a concrete path.
+ */
+const DEFAULT_CHROME_PATH = '/usr/bin/google-chrome-stable';
+
+const CHROME_FILE_CANDIDATES = [
+  process.env.HYDRA_CHROME_PATH,
+  process.env.CHROME_PATH,
+  process.env.CHROME_BIN,
+  DEFAULT_CHROME_PATH,
+  '/usr/bin/google-chrome',
+  '/opt/google/chrome/chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/snap/bin/chromium',
+];
+
+const CHROME_PATH_NAMES = [
+  'google-chrome-stable',
+  'google-chrome',
+  'chromium',
+  'chromium-browser',
+  'chrome',
+];
+
+function isExecutableFile(p) {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return fs.statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+
+export function resolveChromePath() {
+  // An explicit override always wins (even if it points nowhere): in that
+  // case `launchBrowser()` throws an error that mentions this exact path, so
+  // a misconfigured CI job fails with a clear message instead of silently
+  // using another binary.
+  if (process.env.HYDRA_CHROME_PATH) return process.env.HYDRA_CHROME_PATH;
+  for (const candidate of CHROME_FILE_CANDIDATES) {
+    if (candidate && isExecutableFile(candidate)) return candidate;
+  }
+  const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const name of CHROME_PATH_NAMES) {
+    for (const dir of pathDirs) {
+      const full = path.join(dir, name);
+      if (isExecutableFile(full)) return full;
+    }
+  }
+  return process.env.HYDRA_CHROME_PATH || DEFAULT_CHROME_PATH;
+}
+
+export const CHROME_PATH = resolveChromePath();
 
 /** Default timeout applied to every wait helper (30 s). */
 export const DEFAULT_TIMEOUT = 30_000;
@@ -185,8 +249,15 @@ export async function startDevServer({
 
 /** Launches the system Chrome via puppeteer-core. */
 export async function launchBrowser({ headless = true } = {}) {
+  const executablePath = resolveChromePath();
+  if (!isExecutableFile(executablePath)) {
+    throw new Error(
+      `No se encontró el binario de Chrome en "${executablePath}". ` +
+        `Instala Chrome/Chromium o define HYDRA_CHROME_PATH con la ruta del binario.`
+    );
+  }
   return puppeteer.launch({
-    executablePath: CHROME_PATH,
+    executablePath,
     headless,
     args: CHROME_ARGS,
     defaultViewport: null,
@@ -505,7 +576,7 @@ export async function openExportModal(page, timeout = 15_000) {
         const btn = document.querySelector(btnSel);
         if (!btn) return 'no-button';
         if (!document.querySelector(dlgSel)) btn.click();
-        return Boolean(document.querySelector(dlgSel)) ? 'open' : 'clicked';
+        return document.querySelector(dlgSel) ? 'open' : 'clicked';
       },
       EXPORT_BUTTON_SELECTOR,
       EXPORT_DIALOG_SELECTOR

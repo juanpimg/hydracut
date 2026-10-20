@@ -459,7 +459,7 @@ describe('Snapping Guide & Speed Controls', () => {
 
     // Move to track_video_2 at start = 5.0
     store.moveClip('clip_move_track', 5.0, 'track_video_2');
-    let updated = useProjectStore.getState().project.clips.find((c) => c.id === 'clip_move_track')!;
+    const updated = useProjectStore.getState().project.clips.find((c) => c.id === 'clip_move_track')!;
     expect(updated.start).toBe(5.0);
     expect(updated.trackId).toBe('track_video_2');
 

@@ -24,8 +24,11 @@ No hay un tercer nivel: no existe `src/tests/e2e/` ni `TEST_READY.md`.
 
 ```bash
 $ npm test
- Test Files  35 passed (35)
-      Tests  795 passed (795)
+ Test Files  37 passed (37)
+      Tests  818 passed (818)
+
+$ npm run test:browser
+  TOTAL          140 checks  0 FAIL
 ```
 
 > El número exacto cambia cada vez que el equipo añade una suite. **Ejecuta
@@ -48,7 +51,7 @@ test: {
   exclude: ['src/tests/browser/**', 'node_modules/**', 'dist/**', '**/*.d.ts'],
   testTimeout: 15_000,        // la simulación de 10 minutos de reproducción necesita ~1,6 s
   hookTimeout: 15_000,
-  coverage: { provider: 'v8', include: ['src/**/*.{ts,tsx}'], exclude: ['src/tests/**', 'dist/**', '**/*.d.ts', ...] },
+  coverage: { provider: 'v8', include: ['src/**/*.{ts,tsx}'], exclude: ['src/tests/**', 'dist/**', '**/*.d.ts', ...], thresholds: { lines: 40, branches: 60, functions: 60, statements: 40 } },
 }
 ```
 
@@ -112,6 +115,71 @@ npx vitest run --reporter=verbose src/tests/quality-guard.test.ts
 npm run typecheck          # == tsc --noEmit
 ```
 
+### 2.4 Lint (ESLint)
+
+ESLint 9 con flat config (`eslint.config.js`, en la raíz del paquete):
+
+```bash
+npm run lint               # == eslint .  → 0 errores, 2 avisos (2026-10-20)
+npx eslint src/core/engine/Compositor.ts   # un fichero
+```
+
+Capas activas: `recommended` de `@eslint/js`, `recommended` de
+`typescript-eslint` (sin reglas con tipos: rápido a propósito) y
+`eslint-plugin-react-hooks` (`rules-of-hooks` como error,
+`exhaustive-deps` como aviso).
+
+Dos reglas llevan opciones no estándar, ambas documentadas en
+`eslint.config.js`:
+
+- `@typescript-eslint/no-explicit-any` sigue en error para el código de
+  producción, pero está en `off` bajo `src/tests/**`: los dobles de test con
+  `any` (contextos de canvas falsos, stores falsos, …) son el patrón
+  establecido y prohibirlos añadiría docenas de comentarios sin beneficio.
+- `no-unused-vars` (base y TS) usa `argsIgnorePattern: '^_'`,
+  `varsIgnorePattern: '^_'` e `ignoreRestSiblings: true`: el prefijo `_`
+  marca lo intencionadamente no usado y el idioma `const { x, ...rest }`
+  queda permitido.
+
+**Ninguna regla está en `off` a nivel global.** Los únicos comentarios
+`eslint-disable` que quedan (2, ambos `react-hooks/exhaustive-deps` en
+`ClipItem.tsx` y `ClipInspector.tsx`) suprimen avisos reales de efectos
+intencionadamente de un solo montaje. Los 39 `eslint-disable` de
+`@typescript-eslint/no-explicit-any` que había en `src/tests/` se eliminaron
+al quedar cubiertos por la excepción de tests.
+
+Estado: `npm run lint` sale con código 0; quedan 2 avisos
+(`react-hooks/exhaustive-deps` en `src/hooks/useIsMobile.ts:67,106`,
+dependencias omitidas a propósito en los listeners de resize — no se tocan
+para no arriesgar el comportamiento).
+
+El lint ya encontró un bug real: `src/tests/browser/suite-known-issues.mjs`
+usaba `waitForAppReady` y `dismissWelcome` sin importarlos (ReferenceError
+latente en la ruta de recarga HMR). Se añadió el import que faltaba.
+
+### 2.5 Cobertura
+
+Proveedor `@vitest/coverage-v8` (devDependency instalada):
+
+```bash
+npm run test:coverage      # == vitest run --coverage (text + html en ./coverage/)
+```
+
+Umbrales (`test.coverage.thresholds` en `vite.config.ts`), fijados con
+margen bajo lo medido para informar sin tumbar nunca el build:
+
+| Métrica | Umbral | Medido (2026-10-20) |
+|---------|--------|---------------------|
+| Líneas | 40 | 50,48 |
+| Ramas | 60 | 77,58 |
+| Funciones | 60 | 80,31 |
+| Sentencias | 40 | 50,48 |
+
+> Las UI sin test de componentes (`src/components/`, `src/hooks`) y el
+> fichero solo-de-tipos `src/types/project.ts` lastran el porcentaje de
+> líneas: es el número real, no un objetivo. Subir los umbrales solo desde un
+> valor medido, nunca desde una conjetura.
+
 ---
 
 ## 3. Capa B — E2E en navegador real
@@ -164,14 +232,18 @@ Variables de entorno:
 
 | Variable | Por defecto | Uso |
 |----------|-------------|-----|
-| `HYDRA_CHROME_PATH` | `/usr/bin/google-chrome-stable` | Ruta del binario de Chrome/Chromium |
+| `HYDRA_CHROME_PATH` | (detección automática) | Ruta del binario de Chrome/Chromium. Si está definida, manda siempre; si no, el harness prueba `CHROME_PATH`/`CHROME_BIN`, `/usr/bin/google-chrome-stable`, las ubicaciones habituales de Linux y una búsqueda en el `PATH` (así encuentra el Chrome de `browser-actions/setup-chrome` en CI). Si no hay ningún binario, `launchBrowser()` falla con un mensaje que indica la ruta probada |
 | `HYDRA_DEV_HOST` | `127.0.0.1` | Host del servidor de desarrollo |
 | `HYDRA_DEV_PORT` | `5199` | Puerto del servidor de desarrollo |
 | `HYDRA_BASE_URL` | `http://<host>:<puerto>/` | URL base si el servidor ya está levantado |
 | `HYDRA_STRICT` | `0` | Equivale a `--strict` |
 
-> **El E2E de navegador NO forma parte de CI** (necesita un binario de Chrome).
-> Se ejecuta a mano antes de cada entrega. Véase `.github/workflows/ci.yml`.
+> El E2E de navegador **sí forma parte de CI** (job `browser-e2e`, véase §6):
+> instala Chrome con `browser-actions/setup-chrome` y ejecuta
+> `npm run test:browser`. El harness levanta su propio dev server en el
+> puerto 5199 y lo apaga al salir; no necesita TTY interactivo. En local se
+> ejecuta igual: `npm run test:browser` reutiliza el dev server si ya está
+> levantado.
 
 ---
 
@@ -211,14 +283,21 @@ cubre así:
 
 ## 6. Integración continua
 
-`.github/workflows/ci.yml` ejecuta, en cada `push` y `pull_request`:
+`.github/workflows/ci.yml` ejecuta, en cada `push` y `pull_request`, dos jobs:
 
 ```bash
-npm ci → npm run typecheck → npm test → npm run build
+verify:      npm ci → npm run typecheck → npm run lint → npm test → npm run build
+browser-e2e: npm ci → setup-chrome → npm run test:browser
 ```
 
 * Node 20 (`actions/setup-node@v4`), `actions/checkout@v4`.
-* El E2E de navegador queda **fuera** del pipeline a propósito (requiere Chrome).
+* El job `browser-e2e` (timeout 20 min) instala Chrome real con
+  `browser-actions/setup-chrome@v1`, exporta `HYDRA_CHROME_PATH` con la ruta
+  detectada (`which google-chrome-stable || which google-chrome || which
+  chromium`), imprime su versión y lanza `npm run test:browser`. No necesita
+  el `build` antes: el harness usa el dev server de Vite, no `dist/`.
+* El lint corre en `verify`: `npm run lint` debe salir con 0 errores
+  (los 2 avisos actuales no fallan el paso).
 
 ---
 
@@ -226,8 +305,8 @@ npm ci → npm run typecheck → npm test → npm run build
 
 | Hueco | Estado | Nota |
 |-------|--------|------|
-| **ESLint / lint** | ❌ No instalado | No hay dependencia de ESLint ni script de lint. El `build` ejecuta `tsc && vite build`: `tsc` sí valida los tipos, pero **no hay analysis estático de estilo**. Cualquier afirmación de "0 lint warnings" es falsa. |
-| **Cobertura** | ⚠️ Configurada, no activada | El bloque `coverage` de `vite.config.ts` está listo, pero el proveedor (`@vitest/coverage-v8`) **no está instalado**. Para usarlo: `npm i -D @vitest/coverage-v8` y luego `npx vitest run --coverage`. |
-| **E2E en CI** | ❌ Fuera del pipeline | Requiere un Chrome real; hoy es un paso manual. |
+| **ESLint / lint** | ✅ Instalado | ESLint 9 + `typescript-eslint` + `eslint-plugin-react-hooks` (flat config en `eslint.config.js`), script `npm run lint`, wired en CI. Véase §2.4. |
+| **Cobertura** | ✅ Proveedor instalado | `@vitest/coverage-v8` 2.1.8, script `npm run test:coverage`, umbrales conservadores en `vite.config.ts`. Véase §2.5. No corre en CI (solo bajo demanda). |
+| **E2E en CI** | ✅ En el pipeline | Job `browser-e2e` con Chrome real (`browser-actions/setup-chrome`). Véase §6. |
 | **Tests de `src/core/utils/thumbnails.ts`** | ⚠️ En lista blanca | Genera DataURLs con Canvas/Image: sin navegador real no hay nada que afirmar. Queda en la lista blanca de `quality-guard.test.ts` con su justificación. |
 | **Previsibilidad temporal** | ⚠️ Parcial | Las pruebas de latencia (`challenger-stress`) dependen de la carga de la máquina. |

@@ -1937,7 +1937,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         isVisible: true,
       };
       // Keep text tracks at the top, video tracks in the middle, and audio tracks at the bottom
-      let newTracks = [...state.project.tracks];
+      const newTracks = [...state.project.tracks];
       if (type === 'text') {
         newTracks.unshift(newTrack);
       } else if (type === 'video') {

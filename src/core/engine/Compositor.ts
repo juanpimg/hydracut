@@ -270,7 +270,7 @@ export interface TransitionParams {
  * Calculates transition parameters (fades, slides, wipes) for a given clip at time `time`.
  */
 export function calculateTransition(clip: Clip, time: number, canvasWidth: number): TransitionParams {
-  let alphaMultiplier = 1;
+  const alphaMultiplier = 1;
   let offsetX = 0;
   let wipeWidth: number | null = null;
   let overlayColor: string | null = null;
@@ -1194,7 +1194,11 @@ export class Compositor {
       ctx.fillStyle = style.backgroundColor;
       ctx.beginPath();
       const r = style.borderRadius ?? 8;
-      ctx.roundRect ? ctx.roundRect(bgX, bgY, bgWidth, bgHeight, r) : ctx.rect(bgX, bgY, bgWidth, bgHeight);
+      if (ctx.roundRect) {
+        ctx.roundRect(bgX, bgY, bgWidth, bgHeight, r);
+      } else {
+        ctx.rect(bgX, bgY, bgWidth, bgHeight);
+      }
       ctx.fill();
     }
 
@@ -1336,7 +1340,11 @@ export class Compositor {
       ctx.fillStyle = transition.overlayColor;
       ctx.beginPath();
       const r = style.borderRadius ?? 8;
-      ctx.roundRect ? ctx.roundRect(overlayX, overlayY, overlayWidth, overlayHeight, r) : ctx.rect(overlayX, overlayY, overlayWidth, overlayHeight);
+      if (ctx.roundRect) {
+        ctx.roundRect(overlayX, overlayY, overlayWidth, overlayHeight, r);
+      } else {
+        ctx.rect(overlayX, overlayY, overlayWidth, overlayHeight);
+      }
       ctx.fill();
       ctx.restore();
     }

@@ -90,7 +90,7 @@ export async function extractWaveformPeaksFromBlob(
     } finally {
       tempCtx.close().catch(() => {});
     }
-  } catch (err) {
+  } catch {
     // If media has no decodable audio (e.g. silent video or unsupported audio container), return empty array
     return [];
   }

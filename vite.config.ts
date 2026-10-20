@@ -43,9 +43,12 @@ export default defineConfig({
     testTimeout: 15_000,
     hookTimeout: 15_000,
     /**
-     * Coverage is configured but NOT enabled by default.
-     * The provider package is not installed yet: run
-     * `npm i -D @vitest/coverage-v8` before using `vitest run --coverage`.
+     * Coverage via `@vitest/coverage-v8` (`npm run test:coverage`).
+     * The thresholds are deliberately conservative: they sit well below the
+     * measured totals (lines ~50 %, branches ~77 %, functions ~80 % on
+     * 2026-10-20) so the script reports the number without ever failing the
+     * build on a target the project has never met. Raise them only from a
+     * measured value, never from a guess.
      */
     coverage: {
       provider: 'v8',
@@ -59,6 +62,12 @@ export default defineConfig({
       ],
       reporter: ['text', 'html'],
       reportsDirectory: './coverage',
+      thresholds: {
+        lines: 40,
+        branches: 60,
+        functions: 60,
+        statements: 40,
+      },
     },
   },
 });

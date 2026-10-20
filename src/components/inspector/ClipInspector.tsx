@@ -16,7 +16,7 @@ import {
   CheckSquare
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Clip, AudioFadeCurve, ClipColorFilters, OverlapPolicy, TransitionType } from '../../types/project';
+import { Clip, AudioFadeCurve, ClipColorFilters, LyricAnimationPreset, OverlapPolicy, TransitionType } from '../../types/project';
 import {
   DEFAULT_OVERLAP_POLICY,
   getBatchOperationAvailability,
@@ -426,7 +426,6 @@ export const ClipInspector: React.FC = () => {
   useEffect(() => {
     setSelectedKeyframeT(null);
     // Solo al cambiar de clip.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clip?.id]);
 
   /**
@@ -779,7 +778,7 @@ export const ClipInspector: React.FC = () => {
                 updateClip(clip.id, {
                   textStyle: {
                     ...(clip.textStyle || { fontSize: 48, color: '#ffffff', backgroundColor: 'transparent', fontFamily: 'Inter, sans-serif', textAlign: 'center', fontWeight: 'bold' }),
-                    animationPreset: e.target.value as any,
+                    animationPreset: e.target.value as LyricAnimationPreset,
                   },
                 })
               }

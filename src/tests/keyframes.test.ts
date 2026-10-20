@@ -675,7 +675,7 @@ describe('F8 · acciones del store', () => {
     const s = useProjectStore.getState();
     s.addKeyframe('clip_kf', 1, { x: 10, opacity: 0.5 });
     expect(s.updateKeyframe('clip_kf', 1, { x: 30, opacity: 9 })).toBe(true);
-    let clip = useProjectStore.getState().project.clips.find((c) => c.id === 'clip_kf');
+    const clip = useProjectStore.getState().project.clips.find((c) => c.id === 'clip_kf');
     expect(clip?.keyframes).toEqual([{ t: 1, x: 30, opacity: 1 }]);
     // Actualizar lo inexistente no crea nada ni empuja historial.
     const pastBefore = useProjectStore.getState().past.length;

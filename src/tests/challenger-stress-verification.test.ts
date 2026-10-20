@@ -424,7 +424,6 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
     let compositor: Compositor;
     let fakeCanvas: HTMLCanvasElement;
     let drawOrderLog: Array<{ type: 'video' | 'text'; id: string; trackId: string; zIndex: number }>;
-    let fillRectCount = 0;
 
     // Generate 20 tracks: 12 video, 4 text, 4 audio
     const tracks: Track[] = [];
@@ -512,16 +511,13 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
     beforeEach(() => {
       compositor = new Compositor();
       drawOrderLog = [];
-      fillRectCount = 0;
 
       fakeCanvas = {
         width: 1920,
         height: 1080,
         getContext: () => ({
           fillStyle: '',
-          fillRect: () => {
-            fillRectCount++;
-          },
+          fillRect: () => {},
           drawImage: () => {},
           save: () => {},
           restore: () => {},
@@ -535,7 +531,6 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
       } as unknown as HTMLCanvasElement;
 
       // Mock drawMediaToCanvas and drawTextToCanvas to log draw order
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (compositor as any).drawMediaToCanvas = vi.fn().mockImplementation((_ctx, _mediaEl, clip) => {
         drawOrderLog.push({
           type: 'video',
@@ -546,7 +541,6 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
         return true;
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (compositor as any).drawTextToCanvas = vi.fn().mockImplementation((_ctx, clip) => {
         drawOrderLog.push({
           type: 'text',

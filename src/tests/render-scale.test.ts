@@ -379,7 +379,6 @@ describe('KI-02 · Compositor renders the project space into a scaled context', 
       getContext: () => ctx,
     } as unknown as HTMLCanvasElement;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const drawSpy = vi.spyOn(compositor as any, 'drawMediaToCanvas').mockReturnValue(true);
 
     compositor.renderFrame({
@@ -440,7 +439,6 @@ describe('KI-02 · Compositor renders the project space into a scaled context', 
       getContext: () => ctx,
     } as unknown as HTMLCanvasElement;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const drawSpy = vi.spyOn(compositor as any, 'drawMediaToCanvas').mockReturnValue(true);
 
     compositor.renderFrame({

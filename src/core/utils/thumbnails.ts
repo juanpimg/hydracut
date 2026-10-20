@@ -25,7 +25,7 @@ export async function generateVideoThumbnail(
       video.src = '';
       if (typeof videoSource !== 'string') {
         setTimeout(() => {
-          try { URL.revokeObjectURL(url); } catch {}
+          try { URL.revokeObjectURL(url); } catch { /* best effort: the URL may already be revoked */ }
         }, 5000);
       }
       video.remove();
@@ -159,7 +159,7 @@ export async function generateFilmstrip(
       video.src = '';
       if (typeof videoSource !== 'string') {
         setTimeout(() => {
-          try { URL.revokeObjectURL(url); } catch {}
+          try { URL.revokeObjectURL(url); } catch { /* best effort: the URL may already be revoked */ }
         }, 5000);
       }
       video.remove();

@@ -357,7 +357,6 @@ describe('F3 · MediaSourcePool re-anchors media on a timeline seek', () => {
       play: vi.fn().mockResolvedValue(undefined),
       pause: vi.fn(),
     } as unknown as HTMLVideoElement;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (pool as any).videoElements.set('media_1_clip_resync', video);
 
     pool.resyncAll([clip], [media], 3);
@@ -379,12 +378,10 @@ describe('F4 · MediaSourcePool does not pin deleted media elements', () => {
     video.currentTime = 15;
 
     pool.syncVideoTime(video as unknown as HTMLVideoElement, 1.0, true, 1);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const hardSeekMap = (pool as any).lastHardSeekTimeMap;
     expect(hardSeekMap.has(video)).toBe(true);
 
     // The element belongs to a clip of the pool.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (pool as any).videoElements.set('media_1_clip_1', video);
     pool.releaseClip('clip_1');
 
@@ -394,7 +391,6 @@ describe('F4 · MediaSourcePool does not pin deleted media elements', () => {
 
   it('uses a WeakMap for the element keyed hard seek bookkeeping', () => {
     const pool = new MediaSourcePool();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((pool as any).lastHardSeekTimeMap instanceof WeakMap).toBe(true);
   });
 
@@ -403,16 +399,13 @@ describe('F4 · MediaSourcePool does not pin deleted media elements', () => {
     const fakeVideo = { readyState: 4, videoWidth: 320, videoHeight: 180 } as unknown as HTMLVideoElement;
 
     pool.storeVideoFrame('clip_a', fakeVideo, 'media_a', true);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((pool as any).lastStoredFrameTimeMap.size).toBeGreaterThan(0);
 
     pool.releaseClip('clip_a');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((pool as any).lastStoredFrameTimeMap.has('clip_a')).toBe(false);
 
     pool.storeVideoFrame('clip_b', fakeVideo, 'media_b', true);
     pool.clear();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((pool as any).lastStoredFrameTimeMap.size).toBe(0);
   });
 });
@@ -528,7 +521,6 @@ describe('F6 · AudioEngine Web Audio graph is live', () => {
     engine.updateAudio(1, true, [audioTrack], [clip], [makeMedia({ type: 'audio', duration: 30 })]);
 
     // The graph is only made of the per element nodes that carry real signal.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const engineInternals = engine as any;
     expect(engineInternals.masterGain).toBeUndefined();
     expect(engineInternals.trackGains).toBeUndefined();
@@ -562,7 +554,6 @@ describe('F7 · MediaSourcePool.clear() releases every resource', () => {
     expect(video.removedAttributes).toContain('src');
     expect(audio.removedAttributes).toContain('src');
     expect(pool.getLastFrame('clip_1')).toBeNull();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const internals = pool as any;
     expect(internals.videoElements.size).toBe(0);
     expect(internals.audioElements.size).toBe(0);
@@ -573,10 +564,8 @@ describe('F7 · MediaSourcePool.clear() releases every resource', () => {
 
   it('the compositor can drop its cached frame on a project switch', () => {
     const compositor = new Compositor();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).lastCompositedCanvas = { width: 640, height: 360 };
     compositor.clear();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((compositor as any).lastCompositedCanvas).toBeNull();
   });
 });
@@ -606,7 +595,6 @@ describe('F8 · Compositor ignores clips whose type does not match the track', (
     } as unknown as HTMLCanvasElement;
 
     const staleFrame = { width: 640, height: 360 } as unknown as HTMLCanvasElement;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).lastCompositedCanvas = staleFrame;
 
     vi.spyOn(mediaSourcePool, 'getVideoElement').mockReturnValue({
@@ -657,7 +645,6 @@ describe('F8 · Compositor ignores clips whose type does not match the track', (
     } as unknown as HTMLCanvasElement;
 
     const drawn: string[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).drawMediaToCanvas = vi.fn((_ctx: unknown, _el: unknown, clip: Clip) => {
       drawn.push(clip.id);
       return true;
@@ -1012,7 +999,6 @@ describe('F15 · Smaller engine corrections', () => {
 
     const notLoadedImage = { complete: false, naturalWidth: 0 } as unknown as HTMLImageElement;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const drawn = (compositor as any).drawMediaToCanvas(
       ctx,
       notLoadedImage,

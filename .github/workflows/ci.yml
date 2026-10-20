@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Typecheck, unit tests and build
+    name: Typecheck, lint, unit tests and build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -31,13 +31,42 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Lint
+        run: npm run lint
+
       - name: Unit tests (vitest)
         run: npm test
 
       - name: Build
         run: npm run build
 
-      # The real browser E2E suite (`npm run test:browser`) is intentionally NOT
-      # executed here: it drives a real Chrome through puppeteer-core and needs
-      # a browser binary plus a running dev server. Run it locally (or wire a
-      # dedicated job with a Chrome setup action) before releasing.
+  browser-e2e:
+    name: Browser E2E (real Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Browser E2E (puppeteer + dev server)
+        # The harness resolves the binary via HYDRA_CHROME_PATH, then the
+        # usual locations, then a PATH lookup (see `resolveChromePath()` in
+        # src/tests/browser/browser-harness.mjs). The explicit export below
+        # makes the log show exactly which Chrome ran the suite.
+        run: |
+          export HYDRA_CHROME_PATH="$(which google-chrome-stable || which google-chrome || which chromium)"
+          echo "Using Chrome at $HYDRA_CHROME_PATH"
+          "$HYDRA_CHROME_PATH" --version
+          npm run test:browser

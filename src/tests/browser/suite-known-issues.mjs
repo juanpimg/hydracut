@@ -32,6 +32,8 @@ import {
   readExportSummary,
   readMediaPoolCount,
   readClipCount,
+  waitForAppReady,
+  dismissWelcome,
   safeEvaluate,
   evaluateWithRetry,
   navCount,

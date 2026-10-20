@@ -18,6 +18,7 @@ dist-ssr
 
 # Test artifacts
 test-artifacts
+coverage
 
 .code-review-graph/
 

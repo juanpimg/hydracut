@@ -455,9 +455,7 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
       vi.spyOn(mediaSourcePool, 'pauseInactiveVideos').mockImplementation(() => {});
 
       // Mock drawMediaToCanvas and drawTextToCanvas
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (compositor as any).drawMediaToCanvas = vi.fn().mockReturnValue(true);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (compositor as any).drawTextToCanvas = vi.fn().mockReturnValue(true);
     });
 
@@ -527,7 +525,6 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
         }),
       };
       // Inject snapshot canvas
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (compositor as any).lastCompositedCanvas = mockSnapshotCanvas;
 
       let currentTime = 1000;
@@ -595,11 +592,9 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
       });
 
       expect(fakeCtx.fillRect).toHaveBeenCalledTimes(1);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((compositor as any).drawMediaToCanvas).toHaveBeenCalledTimes(1);
 
       fakeCtx.fillRect.mockClear();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ((compositor as any).drawMediaToCanvas as ReturnType<typeof vi.fn>).mockClear();
 
       // Repeated frame with identical parameters while paused
@@ -614,7 +609,6 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
 
       // Must early-return with 0 drawing operations!
       expect(fakeCtx.fillRect).not.toHaveBeenCalled();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expect((compositor as any).drawMediaToCanvas).not.toHaveBeenCalled();
     });
 
@@ -1167,9 +1161,7 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
         { id: 'm_a1', name: 'Audio 1', type: 'audio', url: 'blob:a1', duration: 15, width: 0, height: 0, fps: 0, thumbnailUrl: '', size: 200, createdAt: 0 },
       ];
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (comp as any).drawMediaToCanvas = vi.fn().mockReturnValue(true);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (comp as any).drawTextToCanvas = vi.fn().mockReturnValue(true);
 
       vi.spyOn(mediaSourcePool, 'getVideoElement').mockReturnValue({

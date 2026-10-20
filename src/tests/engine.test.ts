@@ -72,11 +72,9 @@ describe('Compositor Layer Ordering (Painters Algorithm)', () => {
     const renderedOrder: string[] = [];
 
     // Mock drawMediaToCanvas and drawTextToCanvas by spying or checking private calls
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).drawMediaToCanvas = vi.fn((_ctx, _el, clip) => {
       renderedOrder.push(clip.id);
     });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).drawTextToCanvas = vi.fn((_ctx, clip) => {
       renderedOrder.push(clip.id);
     });
@@ -562,7 +560,6 @@ describe('Compositor Visibility & Opacity Edge Cases', () => {
     ];
 
     const renderedClips: string[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).drawMediaToCanvas = vi.fn((_ctx, _el, clip) => {
       renderedClips.push(clip.id);
     });
@@ -700,7 +697,6 @@ describe('Compositor Synchronized Lyrics & Animation Presets', () => {
     };
 
     // Render at time 5.5s (during 'Hello')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).drawTextToCanvas(fakeCtx, lyricClip, 1920, 1080, 5.5);
 
     expect(fillTextCalls).toContain('Hello');
@@ -765,7 +761,6 @@ describe('Compositor Synchronized Lyrics & Animation Presets', () => {
     };
 
     // At time 0.5s ('Bounce' is active)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).drawTextToCanvas(fakeCtx, lyricClip, 1920, 1080, 0.5);
 
     expect(fakeCtx.scale).toHaveBeenCalledWith(1.15, 1.15);
@@ -793,9 +788,7 @@ describe('Video Frame Caching & Solid Playback (Anti-Flicker)', () => {
     const v1 = { paused: false, pause: vi.fn() } as unknown as HTMLVideoElement;
     const v2 = { paused: false, pause: vi.fn() } as unknown as HTMLVideoElement;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (mediaSourcePool as any).videoElements.set('m1_c1', v1);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (mediaSourcePool as any).videoElements.set('m2_c2', v2);
 
     // Make v2 active, v1 inactive
@@ -822,16 +815,13 @@ describe('Video Frame Caching & Solid Playback (Anti-Flicker)', () => {
   it('cleans up clip resources and frame cache with releaseClip', async () => {
     const { mediaSourcePool } = await import('../core/engine/MediaSourcePool');
     const v = { paused: false, pause: vi.fn(), removeAttribute: vi.fn(), load: vi.fn() } as unknown as HTMLVideoElement;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (mediaSourcePool as any).videoElements.set('m1_c_target', v);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (mediaSourcePool as any).lastFrameMap.set('c_target', {} as any);
 
     mediaSourcePool.releaseClip('c_target');
 
     expect(v.pause).toHaveBeenCalled();
     expect(v.removeAttribute).toHaveBeenCalledWith('src');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((mediaSourcePool as any).videoElements.has('m1_c_target')).toBe(false);
     expect(mediaSourcePool.getLastFrame('c_target')).toBeNull();
   });
@@ -924,7 +914,6 @@ describe('Video Frame Caching & Solid Playback (Anti-Flicker)', () => {
       height: 1080,
       getContext: () => ({ drawImage: vi.fn() }),
     } as unknown as HTMLCanvasElement;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (compositor as any).lastCompositedCanvas = fakeOffscreen;
 
     const tracks: Track[] = [
@@ -998,7 +987,6 @@ describe('WebCodecs Exporter & MP4-Muxer WebKit iOS Robustness', () => {
     expect(partial.fullRange).toBe(false);
 
     // Unsupported primaries (e.g., bt2020) are normalized so mp4-muxer COLOR_PRIMARIES_MAP never reads undefined
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const custom = sanitizeColorSpace({
       primaries: 'bt2020' as any,
       transfer: 'iec61966-2-1',
@@ -1302,7 +1290,6 @@ describe('WebCodecs Exporter & MP4-Muxer WebKit iOS Robustness', () => {
 
     // Native mp4-muxer addVideoChunk throws TypeError because chunk.duration is null
     expect(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       muxer.addVideoChunk(chunkWithNullDuration as any, sanitizedMeta);
     }).toThrow(/addVideoChunkRaw's fourth argument \(duration\) must be a non-negative real number/);
   });

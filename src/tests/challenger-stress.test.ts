@@ -160,8 +160,7 @@ describe('Challenger 1: MasterClock & AudioEngine Adversarial Stress Test Harnes
     it('supports self-unsubscribing listeners without modifying Set iteration state', () => {
       const clock = new MasterClock();
       let callCount = 0;
-      let unsub: () => void;
-      unsub = clock.subscribeTime(() => {
+      const unsub: () => void = clock.subscribeTime(() => {
         callCount++;
         unsub(); // Unsubscribe inside callback
       });
