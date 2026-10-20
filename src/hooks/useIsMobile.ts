@@ -26,24 +26,24 @@ export function isMobileViewport(
  * Uses window.matchMedia and resize listener for performant event-driven updates.
  */
 export function useIsMobile(breakpoint: number = 768): boolean {
-  const checkIsMobile = () => {
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return isMobileViewport(window.innerWidth, window.innerHeight, breakpoint);
-  };
-
-  const [isMobile, setIsMobile] = useState<boolean>(checkIsMobile);
+  });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const mediaQuery = window.matchMedia(`(max-width: ${breakpoint - 1}px), (max-height: ${COMPACT_HEIGHT}px)`);
     
+    // Reads the live viewport on every call: the effect never closes over a
+    // stale checker, it only depends on `breakpoint` (a stable number).
     const updateMatch = () => {
-      setIsMobile(checkIsMobile());
+      setIsMobile(isMobileViewport(window.innerWidth, window.innerHeight, breakpoint));
     };
 
     // Set initial
-    setIsMobile(checkIsMobile());
+    updateMatch();
 
     // Listen to media query changes
     if (mediaQuery.addEventListener) {
@@ -73,20 +73,20 @@ export function useIsMobile(breakpoint: number = 768): boolean {
  * Hook to detect reduced window height / landscape mode (height <= maxHeight).
  */
 export function useIsCompactHeight(maxHeight: number = COMPACT_HEIGHT): boolean {
-  const check = () => {
+  const [isCompact, setIsCompact] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     return window.innerHeight <= maxHeight;
-  };
-
-  const [isCompact, setIsCompact] = useState<boolean>(check);
+  });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const query = window.matchMedia(`(max-height: ${maxHeight}px)`);
-    const update = () => setIsCompact(check());
+    // Reads the live viewport on every call: the effect never closes over a
+    // stale checker, it only depends on `maxHeight` (a stable number).
+    const update = () => setIsCompact(window.innerHeight <= maxHeight);
 
-    setIsCompact(check());
+    update();
 
     if (query.addEventListener) {
       query.addEventListener('change', update);

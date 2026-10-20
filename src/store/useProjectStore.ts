@@ -3,6 +3,7 @@ import {
   AspectRatio,
   AudioFade,
   Clip,
+  ClipAudioEffects,
   ClipKeyframe,
   MediaItem,
   MediaStatus,
@@ -10,6 +11,7 @@ import {
   OverlapPolicy,
   Project,
   Track,
+  TrackRole,
   TrackType,
   TrashEntry,
 } from '../types/project';
@@ -29,6 +31,7 @@ import {
   planCrossfade,
 } from '../core/utils/crossfade';
 import { clampClipAudioFades } from '../core/utils/audioFades';
+import { normalizeAudioEffects, normalizeTrackRole } from '../core/utils/audioEffects';
 import {
   clampKeyframeProps,
   clampKeyframeTime,
@@ -996,6 +999,32 @@ export interface ProjectState {
    * Returns `false` when the clip does not exist.
    */
   clearAudioFades: (clipId: string) => boolean;
+
+  /**
+   * Sets the audio effects (pan / 3-band EQ / ducking) of a clip.
+   *
+   * The effects go through the production normaliser (`normalizeAudioEffects`):
+   * out-of-range values are clamped and a fully neutral combination removes
+   * the field instead of storing dead weight. Undoable, and consecutive calls
+   * on the same clip inside the coalescing window share a single undo entry
+   * (it delegates to `updateClip`, so a slider drag is one undo step).
+   *
+   * Refuses with a reason when the clip does not exist or has no audio.
+   */
+  setClipAudioEffects: (
+    clipId: string,
+    effects: ClipAudioEffects | undefined
+  ) => { ok: true; clipId: string } | { ok: false; reason: string };
+
+  /**
+   * Sets the role of a track (`dialogue` | `music` | `sfx` | sin rol).
+   *
+   * The role drives the automatic ducking: a track flagged as `dialogue`
+   * attenuates the clips with `audioEffects.duck` of the OTHER tracks (see
+   * `src/core/utils/audioEffects.ts`). Undoable (tracks are part of the
+   * history snapshot). Pass `undefined` to clear the role.
+   */
+  setTrackRole: (trackId: string, role: TrackRole | undefined) => boolean;
 
   /* ---------------------------------------------------------------- */
   /* F8 — keyframes de transform                                       */
@@ -2558,6 +2587,58 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return true;
   },
 
+  setClipAudioEffects: (clipId, effects) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para ajustar los efectos de audio.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    if (clip.type !== 'audio' && clip.type !== 'video') {
+      const reason =
+        `«${clip.name}» no tiene audio: los efectos de audio solo se aplican a clips con audio. ` +
+        'Selecciona un clip de audio o de vídeo.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    // `updateClip` normaliza con `normalizeAudioEffects` (recorte + limpieza
+    // de lo neutral) y comparte UNA entrada de historial al arrastrar.
+    get().updateClip(clipId, { audioEffects: effects });
+    return { ok: true, clipId };
+  },
+
+  setTrackRole: (trackId, role) => {
+    const normalized = normalizeTrackRole(role);
+    // Un rol desconocido limpia el rol en vez de romper el proyecto.
+    if (role !== undefined && normalized === undefined) {
+      const message = 'El rol de pista no es válido: se ha quitado el rol en su lugar.';
+      console.warn(message);
+    }
+    if (!get().project.tracks.some((t) => t.id === trackId)) return false;
+    // S-18: como mute/lock/visibility, el rol es una edición deshacible.
+    get().pushHistory();
+    set((state) => {
+      const updatedTracks = state.project.tracks.map((t) =>
+        t.id === trackId
+          ? normalized === undefined
+            ? (() => {
+                const copy: Track = { ...t };
+                delete copy.role;
+                return copy;
+              })()
+            : { ...t, role: normalized }
+          : t
+      );
+      const updated: Project = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    return true;
+  },
+
   /* ------------------------------------------------------------------ */
   /* F8 — keyframes de transform                                         */
   /* ------------------------------------------------------------------ */
@@ -3006,6 +3087,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         fps,
         effectiveDuration
       );
+    }
+
+    // Efectos de audio: toda escritura pasa por `normalizeAudioEffects`
+    // (recorte a los rangos + limpieza de lo neutral). `'audioEffects' in
+    // nextUpdates` (y no `!== undefined`) porque limpiar es asignar
+    // `undefined` explícito.
+    if ('audioEffects' in nextUpdates) {
+      nextUpdates.audioEffects = normalizeAudioEffects(nextUpdates.audioEffects);
     }
 
     set((s) => {

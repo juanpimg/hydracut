@@ -153,6 +153,27 @@ export interface ClipKeyframe {
   opacity?: number;
 }
 
+export interface ClipEqSettings {
+  low?: number;   // dB, p.ej. -12..+12 (lowshelf a 320 Hz)
+  mid?: number;   // dB, p.ej. -12..+12 (peaking a 1000 Hz)
+  high?: number;  // dB, p.ej. -12..+12 (highshelf a 3200 Hz)
+}
+
+/**
+ * Efectos de audio por clip (pan / EQ / ducking).
+ *
+ * Todo opcional por compatibilidad: un clip sin `audioEffects` suena
+ * exactamente como hoy (centro, sin EQ, sin ducking).
+ */
+export interface ClipAudioEffects {
+  /** Paneo estéreo: -1 (izquierda) .. 1 (derecha), 0 = centro. */
+  pan?: number;
+  /** EQ de 3 bandas en dB (grave / medio / agudo). */
+  eq?: ClipEqSettings;
+  /** Este clip se atenúa mientras hay voz en otra pista. */
+  duck?: boolean;
+}
+
 export interface Clip {
   id: string;
   trackId: string;
@@ -224,6 +245,17 @@ export interface Clip {
   audioFadeIn?: AudioFade;
   audioFadeOut?: AudioFade;
 
+  /**
+   * Efectos de audio por clip (paneo / EQ de 3 bandas / ducking).
+   *
+   * Opcional por compatibilidad: un clip sin efectos suena a volumen
+   * constante en el centro, como hoy. El motor (`AudioEngine`) y el export
+   * (`renderOfflineAudio`) aplican los MISMOS parámetros a través de
+   * `resolveClipAudioChain` (`src/core/utils/audioEffects.ts`), así que el
+   * preview y el export acuerdan por construcción.
+   */
+  audioEffects?: ClipAudioEffects;
+
   // Propiedades de Texto y Letras Sincronizadas
   text?: string;
   textStyle?: TextStyle;
@@ -256,6 +288,16 @@ export interface ClipColorFilters {
   sepia?: number;       // 0 = none;   range 0..1
 }
 
+/**
+ * Rol de una pista para el ducking automático.
+ *
+ * - `dialogue`: la pista lleva voz; su presencia atenúa los clips con
+ *   `audioEffects.duck` de OTRAS pistas (ver `src/core/utils/audioEffects.ts`).
+ * - `music` / `sfx`: roles informativos (la música suele llevar `duck: true`).
+ * - `undefined`: sin rol (compatibilidad con los proyectos ya guardados).
+ */
+export type TrackRole = 'dialogue' | 'music' | 'sfx';
+
 export interface Track {
   id: string;
   name: string;
@@ -263,6 +305,8 @@ export interface Track {
   isMuted: boolean;
   isLocked: boolean;
   isVisible: boolean;
+  /** Rol de la pista para el ducking (`undefined` = sin rol). */
+  role?: TrackRole;
 }
 
 export interface Project {

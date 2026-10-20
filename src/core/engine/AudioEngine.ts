@@ -4,6 +4,19 @@ import { mediaSourcePool } from './MediaSourcePool';
 import { resolvePlayback } from '../utils/playbackRate';
 import { previewClipFadeGain } from '../utils/audioFades';
 import {
+  duckEnvelopeGain,
+  getBiquadFilterSupport,
+  getStereoPannerSupport,
+  resolveClipAudioChain,
+  resolveEqInto,
+  resolvePan,
+  createDuckIndexCache,
+  refreshDuckIndex,
+  type DuckIndexCache,
+  type ResolvedClipAudioChain,
+  type ResolvedEq,
+} from '../utils/audioEffects';
+import {
   createCrossfadeIndexCache,
   crossfadeInGain,
   crossfadeOutGain,
@@ -37,11 +50,42 @@ const PREWARM_WINDOW = 2.5;
  */
 const FADE_ACTIVE_VOLUME_EPSILON = 0.0001;
 
+/** Epsilon del parámetro `pan` (el deslizador va en pasos de 0.01). */
+const PAN_PARAM_EPSILON = 0.001;
+
+/** Epsilon de las ganancias de EQ en dB (por debajo es inaudible). */
+const EQ_DB_PARAM_EPSILON = 0.05;
+
 /** A media element routed through the Web Audio graph. */
 interface RoutedElement {
   source: MediaElementAudioSourceNode;
   gain: GainNode;
+  /** EQ de 3 bandas en serie (`null` = el contexto no soporta biquads). */
+  eqLow: BiquadFilterNode | null;
+  eqMid: BiquadFilterNode | null;
+  eqHigh: BiquadFilterNode | null;
+  /** Paneo (`null` = el contexto no soporta `StereoPannerNode`). */
+  panner: StereoPannerNode | null;
+  /** Últimos parámetros aplicados (cero thrash: solo se escriben al cambiar). */
+  lastPan: number;
+  lastLow: number;
+  lastMid: number;
+  lastHigh: number;
   ctx: AudioContext;
+}
+
+/**
+ * La cadena de audio que el PREVIEW deriva de un clip (paneo / EQ / duck).
+ *
+ * Llama a `resolveClipAudioChain` — LA MISMA función que usa el export —, así
+ * que ambos caminos reciben los mismos números por construcción (el test de
+ * paridad lo comprueba literalmente). Camino frío / tests: puede asignar.
+ */
+export function resolvePreviewAudioChain(clip: Clip): ResolvedClipAudioChain {
+  return resolveClipAudioChain(clip, {
+    panner: getStereoPannerSupport(),
+    biquad: getBiquadFilterSupport(),
+  });
 }
 
 /**
@@ -71,6 +115,20 @@ export class AudioEngine {
    */
   private crossfadeCache: CrossfadeIndexCache = createCrossfadeIndexCache();
 
+  /**
+   * Intervalos de diálogo audible, reconstruidos UNA VEZ por cambio (misma
+   * disciplina que el crossfade: `refreshDuckIndex` no asigna cuando nada
+   * relevante cambió). El `duckEnvelopeGain` por frame es aritmética escalar
+   * sobre este índice.
+   */
+  private duckCache: DuckIndexCache = createDuckIndexCache();
+
+  /**
+   * Scratch reutilizable para la EQ del clip activo (ver `resolveEqInto`): el
+   * camino caliente no asigna el objeto de la EQ en cada frame.
+   */
+  private eqScratch: ResolvedEq = { low: 0, mid: 0, high: 0 };
+
   /** Media elements routed through the Web Audio graph (one source node per element). */
   private routedElements: WeakMap<HTMLMediaElement, RoutedElement> = new WeakMap();
   /** The AudioContext the current routing belongs to. */
@@ -89,11 +147,28 @@ export class AudioEngine {
 
   /**
    * Routes a media element through the Web Audio graph so that volumes above
-   * 100% can be honoured (`HTMLMediaElement.volume` is hard capped at 1).
+   * 100% can be honoured (`HTMLMediaElement.volume` is hard capped at 1) and
+   * so that the per-clip pan / 3-band EQ can be applied.
+   *
+   * The chain is `source → eqLow → eqMid → eqHigh → panner → gain →
+   * destination` (a missing node type is skipped when the context does not
+   * support it: no panning/EQ there, exactly like the export degrades).
+   * Every parameter after the first build is only rewritten when it really
+   * changed (same zero-thrash discipline as the element volume).
+   *
    * Returns false when no graph is available: the caller then falls back to the
    * element level gain, which is capped at 100%.
+   *
+   * Hot path: only scalar parameters, no allocations.
    */
-  private routeElement(el: HTMLMediaElement, gainValue: number): boolean {
+  private routeElement(
+    el: HTMLMediaElement,
+    gainValue: number,
+    pan: number,
+    eqLow: number,
+    eqMid: number,
+    eqHigh: number
+  ): boolean {
     const ctx = masterClock.getAudioContext();
     if (!ctx || ctx.state === 'closed') return false;
 
@@ -118,9 +193,61 @@ export class AudioEngine {
         const source = ctx.createMediaElementSource(el);
         const gain = ctx.createGain();
         gain.gain.value = 1;
-        source.connect(gain);
+        const canBiquad = typeof ctx.createBiquadFilter === 'function';
+        const canPan = typeof ctx.createStereoPanner === 'function';
+        let eqLowNode: BiquadFilterNode | null = null;
+        let eqMidNode: BiquadFilterNode | null = null;
+        let eqHighNode: BiquadFilterNode | null = null;
+        if (canBiquad) {
+          eqLowNode = ctx.createBiquadFilter();
+          eqLowNode.type = 'lowshelf';
+          eqLowNode.frequency.value = 320;
+          eqMidNode = ctx.createBiquadFilter();
+          eqMidNode.type = 'peaking';
+          eqMidNode.frequency.value = 1000;
+          eqMidNode.Q.value = 1;
+          eqHighNode = ctx.createBiquadFilter();
+          eqHighNode.type = 'highshelf';
+          eqHighNode.frequency.value = 3200;
+        }
+        let pannerNode: StereoPannerNode | null = null;
+        if (canPan) {
+          pannerNode = ctx.createStereoPanner();
+          pannerNode.pan.value = 0;
+        }
+        // source → eqLow → eqMid → eqHigh → panner → gain → destination.
+        let head: AudioNode = source;
+        if (eqLowNode) {
+          head.connect(eqLowNode);
+          head = eqLowNode;
+        }
+        if (eqMidNode) {
+          head.connect(eqMidNode);
+          head = eqMidNode;
+        }
+        if (eqHighNode) {
+          head.connect(eqHighNode);
+          head = eqHighNode;
+        }
+        if (pannerNode) {
+          head.connect(pannerNode);
+          head = pannerNode;
+        }
+        head.connect(gain);
         gain.connect(ctx.destination);
-        routed = { source, gain, ctx };
+        routed = {
+          source,
+          gain,
+          eqLow: eqLowNode,
+          eqMid: eqMidNode,
+          eqHigh: eqHighNode,
+          panner: pannerNode,
+          lastPan: 0,
+          lastLow: 0,
+          lastMid: 0,
+          lastHigh: 0,
+          ctx,
+        };
         this.routedElements.set(el, routed);
       } catch {
         // The element cannot be routed (already connected elsewhere, or the
@@ -132,6 +259,22 @@ export class AudioEngine {
     const target = Math.max(0, gainValue);
     if (Math.abs(routed.gain.gain.value - target) > 0.001) {
       routed.gain.gain.value = target;
+    }
+    if (routed.panner && Math.abs(routed.lastPan - pan) > PAN_PARAM_EPSILON) {
+      routed.panner.pan.value = pan;
+      routed.lastPan = pan;
+    }
+    if (routed.eqLow && Math.abs(routed.lastLow - eqLow) > EQ_DB_PARAM_EPSILON) {
+      routed.eqLow.gain.value = eqLow;
+      routed.lastLow = eqLow;
+    }
+    if (routed.eqMid && Math.abs(routed.lastMid - eqMid) > EQ_DB_PARAM_EPSILON) {
+      routed.eqMid.gain.value = eqMid;
+      routed.lastMid = eqMid;
+    }
+    if (routed.eqHigh && Math.abs(routed.lastHigh - eqHigh) > EQ_DB_PARAM_EPSILON) {
+      routed.eqHigh.gain.value = eqHigh;
+      routed.lastHigh = eqHigh;
     }
     return true;
   }
@@ -222,6 +365,15 @@ export class AudioEngine {
       // F5: the crossfade index is refreshed once per clip change, never
       // per frame (zero allocations when nothing relevant changed).
       refreshCrossfadeIndex(this.crossfadeCache, clips);
+
+      // Ducking: the dialogue intervals are rebuilt ONCE per clip/track
+      // change, never per frame (same discipline as the crossfade index).
+      refreshDuckIndex(this.duckCache, clips, tracks);
+
+      // The support is read once per frame (cached probes, no allocation):
+      // every active clip of this frame degrades identically.
+      const pannerSupported = getStereoPannerSupport();
+      const biquadSupported = getBiquadFilterSupport();
 
       // Process clips with audio
       for (const clip of clips) {
@@ -342,15 +494,47 @@ export class AudioEngine {
             (clip.audioFadeIn?.duration ?? 0) > 0 || (clip.audioFadeOut?.duration ?? 0) > 0;
           const fadeMultiplier = hasAudioFade ? previewClipFadeGain(clip, time) : 1;
 
+          // Efectos de audio por clip (camino caliente: escalares, sin
+          // asignaciones). El paneo degrada al centro sin soporte; la EQ se
+          // resuelve en el scratch reutilizable; el ducking es una ganancia
+          // evaluada sobre el índice en caché (la MISMA función que el export
+          // muestrea para su `GainNode` dedicado).
+          const effects = clip.audioEffects;
+          const pan = resolvePan(effects, pannerSupported);
+          resolveEqInto(biquadSupported ? effects : undefined, this.eqScratch);
+          const isDucked = effects?.duck === true;
+          const duckGain = isDucked
+            ? duckEnvelopeGain(time, true, clip.trackId, this.duckCache.intervals)
+            : 1;
+
           const effectiveVolume =
-            (clip.volume ?? 1) * this.masterVolume * transitionMultiplier * fadeMultiplier;
+            (clip.volume ?? 1) *
+            this.masterVolume *
+            transitionMultiplier *
+            fadeMultiplier *
+            duckGain;
 
           // Gain up to 100% is applied on the element; anything above is applied
           // through the Web Audio graph so that 200% is really 200% (E-04).
+          // A clip with an active pan or EQ is routed too (otherwise the
+          // effect would never sound); ducking needs no graph (it only
+          // attenuates, like a fade).
           const elementTarget = Math.min(Math.max(effectiveVolume, 0), 1);
           const graphTarget = effectiveVolume > 1 ? effectiveVolume : 1;
-          if (graphTarget > 1) {
-            this.routeElement(mediaEl, graphTarget);
+          const needsGraph =
+            pan !== 0 ||
+            this.eqScratch.low !== 0 ||
+            this.eqScratch.mid !== 0 ||
+            this.eqScratch.high !== 0;
+          if (graphTarget > 1 || needsGraph) {
+            this.routeElement(
+              mediaEl,
+              graphTarget,
+              pan,
+              this.eqScratch.low,
+              this.eqScratch.mid,
+              this.eqScratch.high
+            );
           }
           const cachedVolume = this.elementVolumeCache.get(mediaEl);
 
@@ -358,9 +542,11 @@ export class AudioEngine {
           // A clip INSIDE its fade uses FADE_ACTIVE_VOLUME_EPSILON instead: the
           // gain genuinely moves every frame and the 0.01 step would stair-step
           // the ramp. The write stays guarded (identical values are never
-          // rewritten), so this is not 60 Hz DOM thrash.
+          // rewritten), so this is not 60 Hz DOM thrash. A ducking ramp moves
+          // the same way, so it shares the tight epsilon.
           const fadeActive = fadeMultiplier > 0 && fadeMultiplier < 1;
-          const volumeEpsilon = fadeActive ? FADE_ACTIVE_VOLUME_EPSILON : 0.01;
+          const duckActive = duckGain > 0 && duckGain < 1;
+          const volumeEpsilon = fadeActive || duckActive ? FADE_ACTIVE_VOLUME_EPSILON : 0.01;
           if (
             cachedVolume === undefined ||
             Math.abs(cachedVolume - elementTarget) >= volumeEpsilon ||
@@ -415,6 +601,7 @@ export class AudioEngine {
     this.mediaMapCache.clear();
     this.trackMapCache.clear();
     this.crossfadeCache = createCrossfadeIndexCache();
+    this.duckCache = createDuckIndexCache();
     this.failedElements = new WeakSet();
     this.playFailureCountMap = new WeakMap();
     this.nextPlayAttemptMap = new WeakMap();

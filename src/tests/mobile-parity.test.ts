@@ -32,6 +32,7 @@ import {
 import { masterClock } from '../core/engine/MasterClock';
 import { audioEngine } from '../core/engine/AudioEngine';
 import { MAX_PLAYBACK_RATE } from '../core/utils/playbackRate';
+import { FADE_IN_OPTIONS, FADE_OUT_OPTIONS } from '../core/utils/transitionOptions';
 import type { TransitionType } from '../types/project';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -185,7 +186,11 @@ describe('parity · mobile source wiring (regression guard)', () => {
   });
 
   it('mobile preview carries the desktop canvas label, badge and empty-state guide', () => {
-    expect(desktopInspectorSource).toContain('Fundido a Blanco');
+    // The desktop transition labels now come from the shared
+    // TRANSITION_OPTIONS (no hardcoded duplicate): the wiring is asserted
+    // here, the offered labels in the transition-sheet test below.
+    expect(desktopInspectorSource).toContain('transitionOptions');
+    expect(desktopInspectorSource).toContain('FADE_IN_OPTIONS');
     expect(mobilePlayerSource).toContain('buildPreviewAriaLabel');
     expect(mobilePlayerSource).toContain('role="img"');
     expect(mobilePlayerSource).toContain('formatResolutionBadge');
@@ -194,10 +199,21 @@ describe('parity · mobile source wiring (regression guard)', () => {
   });
 
   it('mobile transition sheet offers fade-white plus duration sliders like the desktop', () => {
-    expect(desktopInspectorSource).toContain('fade-white');
+    // Wiring: both shells render from shared option lists (no hardcoded
+    // duplicates that can drift again).
+    expect(desktopInspectorSource).toContain('FADE_IN_OPTIONS');
+    expect(desktopInspectorSource).toContain('FADE_OUT_OPTIONS');
     expect(mobileLayoutSource).toContain('MOBILE_FADE_IN_OPTIONS');
     expect(mobileLayoutSource).toContain('MOBILE_FADE_OUT_OPTIONS');
-    expect(mobileLayoutSource).toContain("id: 'fade-white'");
+    // Behaviour, not source text: the pickers the user taps must offer
+    // fade-white with its Spanish label. Fails if the option disappears
+    // from either shell or from the canonical list.
+    expect(MOBILE_FADE_IN_OPTIONS.map((o) => o.id)).toContain('fade-white');
+    expect(MOBILE_FADE_OUT_OPTIONS.map((o) => o.id)).toContain('fade-white');
+    expect(FADE_IN_OPTIONS.map((o) => o.id)).toContain('fade-white');
+    expect(FADE_OUT_OPTIONS.map((o) => o.id)).toContain('fade-white');
+    expect(FADE_IN_OPTIONS.find((o) => o.id === 'fade-white')?.label).toBe('Fundido a Blanco');
+    expect(FADE_OUT_OPTIONS.find((o) => o.id === 'fade-white')?.label).toBe('Fundido a Blanco');
     expect(mobileLayoutSource).toContain('Duración del fundido de entrada');
     expect(mobileLayoutSource).toContain('Duración del fundido de salida');
     expect(mobileLayoutSource).toContain('transitionDurationMax');

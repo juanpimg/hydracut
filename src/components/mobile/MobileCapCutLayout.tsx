@@ -10,6 +10,9 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
 import { useIsCompactHeight } from '../../hooks/useIsMobile';
 import { TransitionType } from '../../types/project';
+import {
+  assertTransitionOptionsParity,
+} from '../../core/utils/transitionOptions';
 import { useLiveAnnouncement } from '../layout/liveRegion';
 import { Sparkles, Gauge, Volume2, Eye, Music, FolderPlus } from 'lucide-react';
 
@@ -64,21 +67,31 @@ export interface MobileTransitionOption {
   label: string;
 }
 
-/** Fade-in options (parity with the desktop inspector select, mobile labels). */
+/** Fade-in options: the full canonical set (parity with the desktop inspector). */
 export const MOBILE_FADE_IN_OPTIONS: readonly MobileTransitionOption[] = [
   { id: 'none', label: 'Ninguno' },
-  { id: 'fade-black', label: 'Fundido Negro' },
-  { id: 'fade-white', label: 'Fundido Blanco' },
-  { id: 'slide-left', label: 'Deslizar' },
+  { id: 'fade-black', label: 'Fundido a Negro' },
+  { id: 'fade-white', label: 'Fundido a Blanco' },
+  { id: 'slide-left', label: 'Deslizar (Slide)' },
+  { id: 'wipe-right', label: 'Cortina (Wipe)' },
 ];
 
-/** Fade-out options (parity with the desktop inspector select, mobile labels). */
+/** Fade-out options: the full canonical set (parity with the desktop inspector). */
 export const MOBILE_FADE_OUT_OPTIONS: readonly MobileTransitionOption[] = [
   { id: 'none', label: 'Ninguno' },
-  { id: 'fade-black', label: 'Fundido Negro' },
-  { id: 'fade-white', label: 'Fundido Blanco' },
-  { id: 'wipe-right', label: 'Cortinilla' },
+  { id: 'fade-black', label: 'Fundido a Negro' },
+  { id: 'fade-white', label: 'Fundido a Blanco' },
+  { id: 'slide-left', label: 'Deslizar (Slide)' },
+  { id: 'wipe-right', label: 'Cortina (Wipe)' },
 ];
+
+/**
+ * The canonical list in `src/core/utils/transitionOptions.ts` is the single
+ * source of truth (the desktop inspector migrates to it next): fail fast at
+ * startup if these copies drift instead of shipping a silent capability gap.
+ */
+assertTransitionOptionsParity('MOBILE_FADE_IN_OPTIONS', MOBILE_FADE_IN_OPTIONS);
+assertTransitionOptionsParity('MOBILE_FADE_OUT_OPTIONS', MOBILE_FADE_OUT_OPTIONS);
 
 /**
  * Maximum of the transition-duration sliders.

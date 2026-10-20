@@ -4,6 +4,15 @@ import { Compositor } from '../engine/Compositor';
 import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
 import { applyDetuneToParam, resolvePlayback } from '../utils/playbackRate';
 import { buildAudioFadeAutomation } from '../utils/audioFades';
+import {
+  buildDuckAutomation,
+  computeDialogueIntervals,
+  isNeutralAudioEffects,
+  resolveClipAudioChain,
+  resolveEqFilterConfig,
+  type DialogueInterval,
+  type ResolvedClipAudioChain,
+} from '../utils/audioEffects';
 import { buildCssFilterString, getCanvasFilterSupport } from '../utils/colorFilters';
 import {
   buildCrossfadeAudioSchedule,
@@ -40,6 +49,22 @@ export interface ExportParams {
 export function resolveClipColorFilter(clip: Clip): string {
   if (!getCanvasFilterSupport()) return '';
   return buildCssFilterString(clip.filters);
+}
+
+/**
+ * La cadena de audio que el EXPORT deriva de un clip (paneo / EQ / duck).
+ *
+ * Llama a `resolveClipAudioChain` — LA MISMA función que usa el preview
+ * (`resolvePreviewAudioChain` en `AudioEngine`) —, así que ambos caminos
+ * reciben los mismos números por construcción (el test de paridad lo
+ * comprueba literalmente). El `support` se resuelve contra el contexto
+ * offline real cuando se conoce; por defecto usa las sondas en caché.
+ */
+export function resolveExportAudioChain(
+  clip: Clip,
+  support?: { panner?: boolean; biquad?: boolean }
+): ResolvedClipAudioChain {
+  return resolveClipAudioChain(clip, support);
 }
 
 /**
@@ -878,6 +903,16 @@ export async function renderOfflineAudio(
   const crossfadeSpans = new Map<string, CrossfadeSpan>();
   buildCrossfadeIndex(clips, crossfadeSpans);
 
+  // Efectos de audio: los intervalos de diálogo audible se calculan UNA VEZ
+  // para todo el render (no por clip). Cada clip con `duck: true` muestrea la
+  // MISMA envolvente que el preview (`duckEnvelopeGain`) en su `GainNode`
+  // dedicado (ver `buildDuckAutomation`).
+  const dialogueIntervals: DialogueInterval[] = computeDialogueIntervals(clips, tracks);
+  const offlinePannerSupported =
+    typeof offlineCtx.createStereoPanner === 'function';
+  const offlineBiquadSupported =
+    typeof offlineCtx.createBiquadFilter === 'function';
+
   for (const clip of audioClips) {
     // EX-14: honour cancellation while decoding (the decode of a large file
     // can take seconds and used to be completely uninterruptible).
@@ -964,11 +999,21 @@ export async function renderOfflineAudio(
       // frame, así que ambas envolventes acuerdan en todo instante. Sin
       // fundidos no hay segundo nodo ni eventos nuevos: el camino histórico
       // queda intacto (un export sin fundidos se comporta igual que hoy).
+      //
+      // Efectos de audio (pan / EQ / ducking): más nodos en serie DESPUÉS del
+      // fundido (`… → fade → duck → eq → pan → destino`). Sin efectos el
+      // cableado es EXACTAMENTE el histórico de arriba (un export sin efectos
+      // se comporta igual que hoy); con efectos, los parámetros vienen de
+      // `resolveClipAudioChain`, LA MISMA función que usa el preview.
       const fadeEvents = buildAudioFadeAutomation(clip);
+      const duckEvents = isNeutralAudioEffects(clip.audioEffects)
+        ? []
+        : buildDuckAutomation(clip, dialogueIntervals);
+      let tail: AudioNode = gainNode;
       if (fadeEvents.length > 0) {
         const fadeNode = offlineCtx.createGain();
-        gainNode.connect(fadeNode);
-        fadeNode.connect(offlineCtx.destination);
+        tail.connect(fadeNode);
+        tail = fadeNode;
         for (const fadeEvent of fadeEvents) {
           if (fadeEvent.type === 'set') {
             fadeNode.gain.setValueAtTime(fadeEvent.value, fadeEvent.time);
@@ -976,9 +1021,44 @@ export async function renderOfflineAudio(
             fadeNode.gain.linearRampToValueAtTime(fadeEvent.value, fadeEvent.time);
           }
         }
-      } else {
-        gainNode.connect(offlineCtx.destination);
       }
+      if (duckEvents.length > 0) {
+        const duckNode = offlineCtx.createGain();
+        tail.connect(duckNode);
+        tail = duckNode;
+        for (const duckEvent of duckEvents) {
+          if (duckEvent.type === 'set') {
+            duckNode.gain.setValueAtTime(duckEvent.value, duckEvent.time);
+          } else {
+            duckNode.gain.linearRampToValueAtTime(duckEvent.value, duckEvent.time);
+          }
+        }
+      }
+      if (offlineBiquadSupported) {
+        const eqConfig = resolveEqFilterConfig(clip.audioEffects);
+        if (eqConfig.some((band) => band.gain !== 0)) {
+          for (const band of eqConfig) {
+            const filter = offlineCtx.createBiquadFilter();
+            filter.type = band.type;
+            filter.frequency.value = band.frequency;
+            if (band.Q !== undefined) filter.Q.value = band.Q;
+            filter.gain.value = band.gain;
+            tail.connect(filter);
+            tail = filter;
+          }
+        }
+      }
+      const exportPan = resolveExportAudioChain(clip, {
+        panner: offlinePannerSupported,
+        biquad: offlineBiquadSupported,
+      }).pan;
+      if (exportPan !== 0 && offlinePannerSupported) {
+        const panner = offlineCtx.createStereoPanner();
+        panner.pan.value = exportPan;
+        tail.connect(panner);
+        tail = panner;
+      }
+      tail.connect(offlineCtx.destination);
 
       const offset = Math.min(clip.sourceStart, Math.max(0, decodedBuffer.duration - 0.01));
       const bufferDurationAvailable = Math.max(0, decodedBuffer.duration - offset);

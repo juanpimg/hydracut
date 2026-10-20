@@ -15,6 +15,12 @@ import {
 import * as opfsStorage from './opfsStorage';
 import { normalizeKeyframesForWrite } from '../utils/keyframes';
 import { clampClipAudioFades } from '../utils/audioFades';
+import { normalizeAudioEffects, normalizeTrackRole } from '../utils/audioEffects';
+import {
+  sanitizeClipTextStyle,
+  sanitizeClipTransition,
+  sanitizeClipWords,
+} from '../utils/clipSanitize';
 
 export const AUTOSAVE_KEY = 'web_video_editor_autosave_project';
 export const PROJECTS_INDEX_KEY = 'hydra_projects_index';
@@ -1887,6 +1893,10 @@ export function sanitizeImportedProject(
       warnings.push(`Pista "${t.id}": tipo "${String(t.type)}" no válido, se usó "${type}".`);
     }
     seenTrackIds.add(t.id);
+    // The ducking role travels with the track, normalised: an unknown role
+    // from a hand-edited file means "no role", never a crash — and a track
+    // without a role gains no key (optional carry, byte-identical shape).
+    const role = normalizeTrackRole(t.role);
     tracks.push({
       id: t.id,
       name: typeof t.name === 'string' && t.name.length > 0 ? t.name : `Pista ${tracks.length + 1}`,
@@ -1894,6 +1904,7 @@ export function sanitizeImportedProject(
       isMuted: !!t.isMuted,
       isLocked: !!t.isLocked,
       isVisible: t.isVisible === undefined ? true : !!t.isVisible,
+      ...(role ? { role } : {}),
     });
   }
 
@@ -1961,6 +1972,20 @@ export function sanitizeImportedProject(
       duration,
       fps
     );
+    // The transition, the text style and the word timings travel with the
+    // clip too, but NEVER raw: a hand-edited file could inject an invalid
+    // transition type, a negative/NaN duration, a negative font size or
+    // timings outside the clip, and those values flow straight into the
+    // compositor and the audio engine. They go through the pure import
+    // sanitisers (optional carry: no key when the field is absent).
+    const transition = sanitizeClipTransition(c.transition, duration);
+    const textStyle = sanitizeClipTextStyle(c.textStyle);
+    const words = sanitizeClipWords(c.words, duration);
+    // The per-clip audio effects (pan / 3-band EQ / ducking) travel with the
+    // clip too, through the production normaliser: out-of-range values are
+    // clamped, neutral garbage is dropped (no key when the field is absent,
+    // so the common shape does not change).
+    const audioEffects = normalizeAudioEffects(c.audioEffects);
     clips.push({
       id: c.id,
       trackId: c.trackId,
@@ -1989,10 +2014,11 @@ export function sanitizeImportedProject(
       ...(keyframes ? { keyframes } : {}),
       ...(audioFades.fadeIn ? { audioFadeIn: audioFades.fadeIn } : {}),
       ...(audioFades.fadeOut ? { audioFadeOut: audioFades.fadeOut } : {}),
+      ...(audioEffects ? { audioEffects } : {}),
       text: typeof c.text === 'string' ? c.text : undefined,
-      textStyle: c.textStyle,
-      words: Array.isArray(c.words) ? c.words : undefined,
-      transition: c.transition,
+      ...(textStyle ? { textStyle } : {}),
+      ...(words ? { words } : {}),
+      ...(transition ? { transition } : {}),
     });
   }
 
@@ -2068,18 +2094,24 @@ export function sanitizeImportedProject(
       const start = Number(c.start);
       const duration = Number(c.duration);
       if (!Number.isFinite(start) || !Number.isFinite(duration) || duration < MIN_CLIP_DURATION) continue;
-      // The trash is restored verbatim into the live project, so its fades
-      // are normalised with the same production normaliser as the main path:
-      // the `...c` spread below would otherwise carry them through raw and
-      // unnormalised (corrupt values included).
+      // The trash is restored verbatim into the live project, so its clips
+      // are normalised with the SAME production normalisers as the main
+      // path: the `...c` spread below would otherwise carry keyframes,
+      // filters, fades, transition, text style and word timings through raw
+      // and unnormalised (corrupt values included).
       const trashFades = clampClipAudioFades(
         fadeOrUndefined(c.audioFadeIn),
         fadeOrUndefined(c.audioFadeOut),
         duration,
         fps
       );
+      const trashKeyframes = normalizeKeyframesForWrite(c.keyframes, fps, duration);
+      const trashFilters = sanitizeClipFilters(c.filters);
+      const trashTransition = sanitizeClipTransition(c.transition, duration);
+      const trashTextStyle = sanitizeClipTextStyle(c.textStyle);
+      const trashWords = sanitizeClipWords(c.words, duration);
+      const trashAudioEffects = normalizeAudioEffects(c.audioEffects);
       const rebuiltTrashClip = {
-        ...c,
         id: c.id,
         trackId: c.trackId,
         mediaId: media.id,
@@ -2099,6 +2131,14 @@ export function sanitizeImportedProject(
         positionY: Number.isFinite(Number(c.positionY)) ? Number(c.positionY) : 0,
         muted: !!c.muted,
         speed: clampNumber(c.speed, 0.1, 10, 1),
+        preservePitch: typeof c.preservePitch === 'boolean' ? c.preservePitch : undefined,
+        ...(trashFilters ? { filters: trashFilters } : {}),
+        ...(trashKeyframes ? { keyframes: trashKeyframes } : {}),
+        ...(trashTransition ? { transition: trashTransition } : {}),
+        ...(trashAudioEffects ? { audioEffects: trashAudioEffects } : {}),
+        text: typeof c.text === 'string' ? c.text : undefined,
+        ...(trashTextStyle ? { textStyle: trashTextStyle } : {}),
+        ...(trashWords ? { words: trashWords } : {}),
       } as Clip;
       if (trashFades.fadeIn !== undefined) rebuiltTrashClip.audioFadeIn = trashFades.fadeIn;
       else delete rebuiltTrashClip.audioFadeIn;

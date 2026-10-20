@@ -16,7 +16,7 @@ import {
   CheckSquare
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Clip, AudioFadeCurve, ClipColorFilters, LyricAnimationPreset, OverlapPolicy, TransitionType } from '../../types/project';
+import { Clip, AudioFadeCurve, ClipColorFilters, LyricAnimationPreset, OverlapPolicy, TrackRole, TransitionType } from '../../types/project';
 import {
   DEFAULT_OVERLAP_POLICY,
   getBatchOperationAvailability,
@@ -44,6 +44,16 @@ import {
   audioFadeFrameDuration,
 } from '../../core/utils/audioFades';
 import { evaluateKeyframes } from '../../core/utils/keyframes';
+import { FADE_IN_OPTIONS, FADE_OUT_OPTIONS } from '../../core/utils/transitionOptions';
+import {
+  BIQUAD_FILTER_UNSUPPORTED_MESSAGE,
+  EQ_DB_MAX,
+  EQ_DB_MIN,
+  STEREO_PANNER_UNSUPPORTED_MESSAGE,
+  TRACK_ROLE_LABELS,
+  getBiquadFilterSupport,
+  getStereoPannerSupport,
+} from '../../core/utils/audioEffects';
 
 /**
  * The six sliders of the "Color" section (F9).
@@ -124,6 +134,38 @@ const COLOR_SLIDERS: ReadonlyArray<{
   },
 ];
 
+/**
+ * Las tres bandas de la sección "Efectos de audio".
+ *
+ * A nivel de módulo (no dentro del componente) para no reasignarlas en cada
+ * render, igual que `COLOR_SLIDERS`.
+ */
+const EQ_SLIDERS: ReadonlyArray<{
+  key: 'low' | 'mid' | 'high';
+  label: string;
+  ariaLabel: string;
+  hint: string;
+}> = [
+  {
+    key: 'low',
+    label: 'Graves',
+    ariaLabel: 'Ecualizador de graves del clip',
+    hint: 'Realza o atenúa los graves (lowshelf a 320 Hz).',
+  },
+  {
+    key: 'mid',
+    label: 'Medios',
+    ariaLabel: 'Ecualizador de medios del clip',
+    hint: 'Realza o atenúa los medios (peaking a 1000 Hz).',
+  },
+  {
+    key: 'high',
+    label: 'Agudos',
+    ariaLabel: 'Ecualizador de agudos del clip',
+    hint: 'Realza o atenúa los agudos (highshelf a 3200 Hz).',
+  },
+];
+
 /** Human readable description of every overlap policy (F1). */
 export const OVERLAP_POLICY_LABELS: Record<OverlapPolicy, { label: string; hint: string }> = {
   block: {
@@ -153,14 +195,25 @@ function commonValue<T>(clips: Clip[], read: (clip: Clip) => T): T | null {
 }
 
 /**
+ * Etiqueta en español del paneo (-1 = izquierda, 0 = centro, 1 = derecha).
+ */
+function formatPanValue(pan: number): string {
+  if (!Number.isFinite(pan)) return 'Centro';
+  if (pan <= -0.995) return 'Izquierda';
+  if (pan >= 0.995) return 'Derecha';
+  if (Math.abs(pan) < 0.005) return 'Centro';
+  const pct = Math.round(Math.abs(pan) * 100);
+  return pan < 0 ? `Izquierda ${pct}%` : `Derecha ${pct}%`;
+}
+
+/**
  * F6 · Panel shown when MORE THAN ONE clip is selected.
  *
  * Every edit is applied to the WHOLE selection (one undoable step). The
  * operations that do not make sense for a mixed selection (the speed of a
  * text clip, the opacity of an audio clip…) are DISABLED with a reason: they
  * are never applied "to some of the clips".
- */
-const MultiSelectionPanel: React.FC<{ clips: Clip[] }> = ({ clips }) => {
+ */const MultiSelectionPanel: React.FC<{ clips: Clip[] }> = ({ clips }) => {
   const setSelectedClipsVolume = useProjectStore((s) => s.setSelectedClipsVolume);
   const setSelectedClipsOpacity = useProjectStore((s) => s.setSelectedClipsOpacity);
   const setSelectedClipsSpeed = useProjectStore((s) => s.setSelectedClipsSpeed);
@@ -401,6 +454,7 @@ export const ClipInspector: React.FC = () => {
   const createCrossfade = useProjectStore((s) => s.createCrossfade);
   const removeCrossfade = useProjectStore((s) => s.removeCrossfade);
   const setCrossfadeDuration = useProjectStore((s) => s.setCrossfadeDuration);
+  const setTrackRole = useProjectStore((s) => s.setTrackRole);
 
   /**
    * F9 · Does the browser support `ctx.filter`?
@@ -414,6 +468,22 @@ export const ClipInspector: React.FC = () => {
     setFilterSupport(getCanvasFilterSupport());
   }, []);
   const colorFiltersEnabled = filterSupport === true;
+
+  /**
+   * Efectos de audio: ¿soporta el navegador el paneo estéreo y la EQ?
+   *
+   * `null` = aún sin saber (la sonda corre al montar). Los controles quedan
+   * desactivados hasta saber la respuesta, igual que los filtros de color:
+   * un control que no hace nada en silencio no es aceptable.
+   */
+  const [pannerSupport, setPannerSupport] = useState<boolean | null>(null);
+  const [biquadSupport, setBiquadSupport] = useState<boolean | null>(null);
+  useEffect(() => {
+    setPannerSupport(getStereoPannerSupport());
+    setBiquadSupport(getBiquadFilterSupport());
+  }, []);
+  const panEnabled = pannerSupport === true;
+  const eqEnabled = biquadSupport === true;
 
   /**
    * F8 · Keyframe seleccionado para editar (tiempo relativo al clip).
@@ -1366,6 +1436,176 @@ export const ClipInspector: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* EFECTOS DE AUDIO: paneo / EQ de 3 bandas / ducking */}
+          <div className="space-y-2 pt-1" data-testid="audio-effects-section">
+            <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Sliders size={13} className="text-emerald-400" />
+              <span>Efectos de audio</span>
+            </div>
+            <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-3">
+              <p className="text-[10px] leading-snug text-slate-500">
+                El paneo coloca el clip en el campo estéreo y la EQ ajusta graves, medios y
+                agudos. El ducking baja este clip automáticamente mientras hay voz en otra
+                pista (la música baja cuando entra la voz).
+              </p>
+
+              {/* Paneo */}
+              <div>
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <label htmlFor={`audio-pan-${clip.id}`}>Paneo:</label>
+                  <span className="font-mono text-slate-200">
+                    {formatPanValue(clip.audioEffects?.pan ?? 0)}
+                  </span>
+                </div>
+                <input
+                  id={`audio-pan-${clip.id}`}
+                  type="range"
+                  min="-1"
+                  max="1"
+                  step="0.01"
+                  value={clip.audioEffects?.pan ?? 0}
+                  disabled={!panEnabled}
+                  data-testid="clip-audio-pan"
+                  aria-label="Paneo estéreo del clip"
+                  onChange={(e) =>
+                    updateClip(clip.id, {
+                      audioEffects: { ...(clip.audioEffects ?? {}), pan: parseFloat(e.target.value) },
+                    })
+                  }
+                  className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+                <p className="text-[10px] leading-snug text-slate-500 mt-1">
+                  −1 = izquierda, 0 = centro, +1 = derecha.
+                </p>
+              </div>
+              {pannerSupport === false && (
+                <p
+                  role="status"
+                  data-testid="clip-audio-pan-unsupported"
+                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                >
+                  {STEREO_PANNER_UNSUPPORTED_MESSAGE}
+                </p>
+              )}
+
+              {/* EQ de 3 bandas */}
+              {EQ_SLIDERS.map((slider) => {
+                const value = clip.audioEffects?.eq?.[slider.key] ?? 0;
+                return (
+                  <div key={slider.key}>
+                    <div className="flex justify-between text-xs text-slate-400 mb-1">
+                      <label htmlFor={`audio-eq-${slider.key}-${clip.id}`}>{slider.label}:</label>
+                      <span className="font-mono text-slate-200">
+                        {value > 0 ? `+${value.toFixed(1)} dB` : `${value.toFixed(1)} dB`}
+                      </span>
+                    </div>
+                    <input
+                      id={`audio-eq-${slider.key}-${clip.id}`}
+                      type="range"
+                      min={EQ_DB_MIN}
+                      max={EQ_DB_MAX}
+                      step="0.5"
+                      value={value}
+                      disabled={!eqEnabled}
+                      data-testid={`clip-audio-eq-${slider.key}`}
+                      aria-label={slider.ariaLabel}
+                      title={slider.hint}
+                      onChange={(e) =>
+                        updateClip(clip.id, {
+                          audioEffects: {
+                            ...(clip.audioEffects ?? {}),
+                            eq: {
+                              ...(clip.audioEffects?.eq ?? {}),
+                              [slider.key]: parseFloat(e.target.value),
+                            },
+                          },
+                        })
+                      }
+                      className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                    />
+                  </div>
+                );
+              })}
+              {biquadSupport === false && (
+                <p
+                  role="status"
+                  data-testid="clip-audio-eq-unsupported"
+                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                >
+                  {BIQUAD_FILTER_UNSUPPORTED_MESSAGE}
+                </p>
+              )}
+
+              {/* Ducking */}
+              <label
+                htmlFor={`audio-duck-${clip.id}`}
+                className="flex items-center gap-2 cursor-pointer select-none"
+              >
+                <input
+                  id={`audio-duck-${clip.id}`}
+                  type="checkbox"
+                  data-testid="clip-audio-duck"
+                  checked={clip.audioEffects?.duck === true}
+                  onChange={(e) =>
+                    updateClip(clip.id, {
+                      audioEffects: { ...(clip.audioEffects ?? {}), duck: e.target.checked },
+                    })
+                  }
+                  aria-label="Atenuar este clip cuando haya diálogo en otra pista"
+                  className="w-3.5 h-3.5 accent-emerald-500 rounded focus-visible:ring-2 focus-visible:ring-emerald-500"
+                />
+                <span className="text-[11px] text-slate-300 font-medium">
+                  Ducking: bajar cuando entra la voz
+                </span>
+              </label>
+              <p className="text-[10px] leading-snug text-slate-500" data-testid="clip-audio-duck-hint">
+                {clip.audioEffects?.duck === true
+                  ? 'Este clip se atenúa 8 dB mientras se escucha una pista marcada como «Diálogo».'
+                  : 'Actívalo para que este clip (normalmente música) se atenúe mientras se escucha una pista marcada como «Diálogo».'}
+              </p>
+
+              {/* Rol de la pista (gobierna el ducking) */}
+              <div>
+                <label htmlFor={`track-role-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+                  Rol de la pista «{track?.name ?? 'Desconocida'}»:
+                </label>
+                <select
+                  id={`track-role-${clip.id}`}
+                  data-testid="track-role-select"
+                  aria-label="Rol de la pista para el ducking"
+                  value={track?.role ?? ''}
+                  onChange={(e) => {
+                    if (!track) return;
+                    const value = e.target.value;
+                    setTrackRole(track.id, value === '' ? undefined : (value as TrackRole));
+                  }}
+                  className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                >
+                  <option value="">Sin rol</option>
+                  <option value="dialogue">{TRACK_ROLE_LABELS.dialogue}</option>
+                  <option value="music">{TRACK_ROLE_LABELS.music}</option>
+                  <option value="sfx">{TRACK_ROLE_LABELS.sfx}</option>
+                </select>
+                <p className="text-[10px] leading-snug text-slate-500 mt-1">
+                  Una pista «Diálogo» atenúa los clips con ducking de las demás pistas.
+                </p>
+              </div>
+
+              {(clip.audioEffects?.pan !== undefined ||
+                clip.audioEffects?.eq !== undefined ||
+                clip.audioEffects?.duck !== undefined) && (
+                <button
+                  onClick={() => updateClip(clip.id, { audioEffects: undefined })}
+                  data-testid="clip-audio-effects-reset"
+                  aria-label="Restablecer los efectos de audio del clip"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                >
+                  Restablecer efectos de audio
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -1481,11 +1721,11 @@ export const ClipInspector: React.FC = () => {
                 }}
                 className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none"
               >
-                <option value="none">Ninguno</option>
-                <option value="fade-black">Fundido a Negro</option>
-                <option value="fade-white">Fundido a Blanco</option>
-                <option value="slide-left">Deslizar (Slide)</option>
-                <option value="wipe-right">Cortina (Wipe)</option>
+                {FADE_IN_OPTIONS.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -1543,11 +1783,11 @@ export const ClipInspector: React.FC = () => {
                 }}
                 className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
               >
-                <option value="none">Ninguno</option>
-                <option value="fade-black">Fundido a Negro</option>
-                <option value="fade-white">Fundido a Blanco</option>
-                <option value="slide-left">Deslizar (Slide)</option>
-                <option value="wipe-right">Cortina (Wipe)</option>
+                {FADE_OUT_OPTIONS.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
 
