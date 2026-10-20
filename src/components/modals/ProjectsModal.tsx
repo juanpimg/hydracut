@@ -588,6 +588,7 @@ export const ProjectsModal: React.FC = () => {
                         <button
                           onClick={() => handleDuplicate(p.id)}
                           disabled={loading}
+                          data-testid={`project-duplicate-button-${p.id}`}
                           className="min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded-md transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
                           title="Duplicar proyecto"
                           aria-label={`Duplicar proyecto ${p.name}`}

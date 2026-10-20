@@ -1995,6 +1995,30 @@ export const ClipInspector: React.FC = () => {
                 </p>
               )}
             </>
+          ) : crossfadeInfo.trackLocked ? (
+            <>
+              {/* La pista está bloqueada: como el resto de secciones del
+                  Inspector, el control QUEDA VISIBLE pero deshabilitado y el
+                  motivo se muestra al lado (un control que desaparece no
+                  explica nada). */}
+              <button
+                disabled
+                data-testid="crossfade-create"
+                aria-label="Crear fundido de cruce"
+                title={crossfadeInfo.createReason ?? 'La pista está bloqueada'}
+                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-violet-700 hover:bg-violet-600 rounded border border-violet-600 transition focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Crear fundido
+              </button>
+              <p
+                role="status"
+                data-testid="crossfade-disabled-reason"
+                className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+              >
+                {crossfadeInfo.createReason ??
+                  'La pista está bloqueada: desbloquéala para poder crear el fundido de cruce.'}
+              </p>
+            </>
           ) : (
             <p
               role="status"

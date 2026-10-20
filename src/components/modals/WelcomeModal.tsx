@@ -10,6 +10,7 @@ import {
 } from '../../core/storage/projectStorage';
 import { ProjectMetadata } from '../../types/project';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { markWelcomeSeen } from '../../core/utils/appFlags';
 
 function formatDate(timestamp: number): string {
   if (!timestamp) return 'Fecha desconocida';
@@ -40,6 +41,16 @@ export const WelcomeModal: React.FC = () => {
     listProjects()
       .then((list) => setRecent(list.slice(0, 3)))
       .catch(() => setRecent([]));
+  }, [isWelcomeOpen]);
+
+  /**
+   * La bienvenida es de primer arranque: al cerrarse (por cualquier vía:
+   * botón, Escape, continuar) queda registrada como vista para que la
+   * próxima carga entre directa al editor. Reabrirla desde la "Guía de
+   * inicio" del header sigue funcionando.
+   */
+  useEffect(() => {
+    if (!isWelcomeOpen) markWelcomeSeen();
   }, [isWelcomeOpen]);
 
   /**

@@ -3,6 +3,7 @@ import {
   RotateCcw, 
   RotateCw, 
   HelpCircle, 
+  BookOpen,
   Smartphone, 
   Tv, 
   Square,
@@ -29,6 +30,7 @@ export const Header: React.FC = () => {
   const setExportModalOpen = useUIStore((s) => s.setExportModalOpen);
   const setShortcutsModalOpen = useUIStore((s) => s.setShortcutsModalOpen);
   const setProjectsModalOpen = useUIStore((s) => s.setProjectsModalOpen);
+  const setWelcomeOpen = useUIStore((s) => s.setWelcomeOpen);
 
   const aspectRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -175,6 +177,18 @@ export const Header: React.FC = () => {
           <HelpCircle size={16} />
         </button>
 
+        {/* Guía de inicio: reabre la bienvenida a propósito (es de primer
+            arranque y ya no se muestra sola al recargar). */}
+        <button
+          onClick={() => setWelcomeOpen(true)}
+          className="p-2 text-slate-400 hover:text-white hover:bg-dark-800 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          title="Guía de inicio"
+          aria-label="Abrir guía de inicio"
+          data-testid="header-guide-button"
+        >
+          <BookOpen size={16} />
+        </button>
+
         {/* GitHub link */}
         <a
           href="https://github.com/juanpimg/hydracut"
@@ -187,15 +201,14 @@ export const Header: React.FC = () => {
           <Github size={16} />
         </a>
 
-        {/* Primary Export Button */}
+        {/* Primary Export Button (MP4 y WebM: la etiqueta no promete un formato) */}
         <button
           onClick={() => setExportModalOpen(true)}
           className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-bold text-xs rounded-lg active:scale-95 transition shadow-sm focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:outline-none shrink-0"
           aria-label="Abrir modal de exportación de video MP4"
         >
           <Download size={14} className="stroke-[2.5]" />
-          <span>Exportar</span>
-          <span className="hidden md:inline">MP4</span>
+          <span>Exportar vídeo</span>
         </button>
       </div>
     </header>

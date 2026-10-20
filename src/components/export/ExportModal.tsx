@@ -324,6 +324,43 @@ export function formatExportRange(range: ExportRange, fps: number = 30): string 
   );
 }
 
+/**
+ * Tamaño en bytes en formato legible (español, coma decimal).
+ *
+ * Puro y compartido: el mismo formato lo puede reutilizar el panel de
+ * almacenamiento. `0 B` para valores no finitos o no positivos.
+ */
+export function formatBytes(bytes: number): string {
+  const value = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let scaled = value / 1024;
+  let unit = 0;
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
+    unit++;
+  }
+  const rounded =
+    scaled >= 100 ? String(Math.round(scaled)) : scaled.toFixed(1).replace('.', ',');
+  return `${rounded} ${units[unit]}`;
+}
+
+/**
+ * Bitrate EFECTIVO de un archivo ya producido: bytes reales × 8 / duración.
+ *
+ * No es una estimación del ajuste de calidad del modal: se calcula con el
+ * tamaño real del blob exportado, así que es lo que el vídeo ocupa de
+ * verdad (decide si se puede subir a una plataforma).
+ */
+export function formatBitrate(bytes: number, durationSeconds: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return 'no disponible';
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 'no disponible';
+  const bps = (bytes * 8) / durationSeconds;
+  if (bps < 1000) return `${Math.round(bps)} bps`;
+  if (bps < 1_000_000) return `${(bps / 1000).toFixed(1).replace('.', ',')} kbps`;
+  return `${(bps / 1_000_000).toFixed(2).replace('.', ',')} Mbps`;
+}
+
 export const ExportModal: React.FC = () => {
   const project = useProjectStore((s) => s.project);
   const currentTime = useProjectStore((s) => s.currentTime);
@@ -366,6 +403,14 @@ export const ExportModal: React.FC = () => {
     totalFrames: 0,
     etaSeconds: 0,
   });
+  /**
+   * Tamaño REAL del último archivo producido (bytes del blob + duración
+   * exportada). Se fija al completar: el "100 %" solo dice que terminó, el
+   * tamaño dice si el vídeo se puede subir.
+   */
+  const [exportResult, setExportResult] = useState<{ bytes: number; durationSeconds: number } | null>(
+    null
+  );
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const downloadUrlRef = useRef<string | null>(null);
@@ -483,6 +528,16 @@ export const ExportModal: React.FC = () => {
     : project.clips;
 
   /**
+   * Bytes y duración REALES del último archivo completado: del blob
+   * producido (no estimados del ajuste de calidad).
+   */
+  const resultBytes = exportResult?.bytes ?? progressState.outputBlob?.size ?? 0;
+  const resultDurationSeconds =
+    exportResult && exportResult.durationSeconds > 0
+      ? exportResult.durationSeconds
+      : exportDuration;
+
+  /**
    * F10: applies a preset (one click sets resolution, fps, bitrate and the
    * aspect ratio of the exported file).
    *
@@ -524,6 +579,7 @@ export const ExportModal: React.FC = () => {
     // EX-08: a new export releases the object URL of the previous one, so the
     // previous video does not stay in RAM.
     revokeDownloadUrl();
+    setExportResult(null);
 
     // The duration shown in the summary and the duration that is exported come
     // from the SAME source (the range when there is one, `project.duration`
@@ -573,6 +629,9 @@ export const ExportModal: React.FC = () => {
         outputBlob: blob,
         downloadUrl: url,
       }));
+      // Tamaño REAL del archivo producido (no estimado): bytes del blob y
+      // duración exportada para el bitrate efectivo.
+      setExportResult({ bytes: blob.size, durationSeconds: exportDuration });
     } catch (err) {
       // EX-23: the error may not be an `Error` (a string, a DOMException or
       // even `undefined`); reading `.message` off it used to throw *inside*
@@ -1016,6 +1075,28 @@ export const ExportModal: React.FC = () => {
                 </div>
               )}
 
+              {/* Tamaño REAL del archivo producido + bitrate efectivo
+                  (bytes × 8 / duración): es lo que decide si el vídeo se
+                  puede subir a una plataforma. */}
+              {progressState.state === 'completed' && (
+                <div
+                  data-testid="export-result-size"
+                  role="status"
+                  className="p-3 bg-dark-950 border border-dark-800 rounded-lg text-xs text-slate-300 space-y-1"
+                >
+                  <div className="flex justify-between">
+                    <span>Tamaño del archivo:</span>
+                    <span className="font-mono text-white">{formatBytes(resultBytes)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Bitrate efectivo:</span>
+                    <span className="font-mono text-white" data-testid="export-result-bitrate">
+                      {formatBitrate(resultBytes, resultDurationSeconds)}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {progressState.state === 'error' && (
                 <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-lg text-red-300 text-xs flex items-center gap-2">
                   <AlertCircle size={16} />
@@ -1064,6 +1145,7 @@ export const ExportModal: React.FC = () => {
             <button
               onClick={() => {
                 revokeDownloadUrl();
+                setExportResult(null);
                 setProgressState({ state: 'idle', progress: 0, currentFrame: 0, totalFrames: 0, etaSeconds: 0 });
                 setExportModalOpen(false);
               }}

@@ -8,6 +8,7 @@ import {
   Tv, 
   Square,
   HelpCircle,
+  BookOpen,
   FolderKanban
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
@@ -32,7 +33,7 @@ export const MobileHeader: React.FC = () => {
   const canUndo = useProjectStore((s) => s.past.length > 0);
   const canRedo = useProjectStore((s) => s.future.length > 0);
 
-  const { setExportModalOpen, setShortcutsModalOpen, setProjectsModalOpen } = useUIStore();
+  const { setExportModalOpen, setShortcutsModalOpen, setProjectsModalOpen, setWelcomeOpen } = useUIStore();
   const [showAspectMenu, setShowAspectMenu] = useState(false);
 
   const aspectBtnRef = useRef<HTMLButtonElement>(null);
@@ -198,9 +199,20 @@ export const MobileHeader: React.FC = () => {
           <HelpCircle size={15} />
         </button>
 
+        {/* Guía de inicio: reabre la bienvenida a propósito. */}
+        <button
+          onClick={() => setWelcomeOpen(true)}
+          aria-label="Abrir guía de inicio"
+          className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-slate-200 active:scale-90 transition hidden min-[400px]:flex focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          title="Guía de inicio"
+          data-testid="mobile-guide-button"
+        >
+          <BookOpen size={15} />
+        </button>
+
         <button
           onClick={() => setExportModalOpen(true)}
-          aria-label="Exportar vídeo MP4"
+          aria-label="Exportar vídeo"
           className="flex items-center gap-1 px-2 min-[400px]:px-3 min-h-[44px] bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs rounded-lg shadow-md shadow-cyan-500/20 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:outline-none shrink-0"
         >
           <Sparkles size={12} className="animate-pulse" />
