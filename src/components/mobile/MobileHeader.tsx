@@ -212,7 +212,8 @@ export const MobileHeader: React.FC = () => {
 
         <button
           onClick={() => setExportModalOpen(true)}
-          aria-label="Exportar vídeo"
+          aria-label="Abrir modal de exportación de vídeo"
+          data-testid="export-open-button"
           className="flex items-center gap-1 px-2 min-[400px]:px-3 min-h-[44px] bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-xs rounded-lg shadow-md shadow-cyan-500/20 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:outline-none shrink-0"
         >
           <Sparkles size={12} className="animate-pulse" />

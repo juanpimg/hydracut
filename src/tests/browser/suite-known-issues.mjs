@@ -92,7 +92,7 @@ async function ki01DurationFloor({ browser, report, baseUrl }) {
 async function ki02BackingStore({ browser, report, baseUrl }) {
   const samples = [
     { width: 1440, height: 900, label: '1440x900', expected: '850x478' },
-    { width: 320, height: 568, label: '320x568', expected: '296x166' },
+    { width: 320, height: 568, label: '320x568', expected: '206x116' },
   ];
   const rows = [];
   for (const vp of samples) {
@@ -151,19 +151,24 @@ async function ki02BackingStore({ browser, report, baseUrl }) {
     { details: rows }
   );
 
+  // Documented values, ±2 px: the backing store derives from the measured
+  // CSS box snapped UP to even H.264-friendly numbers that cover the painted
+  // box (raw 204.8x115.2 -> 206x116 on 320x568), so a 1 px layout wobble must
+  // not fail strict mode. A real regression (296x166, let alone 1920x1080)
+  // is far outside this band — same tolerance pattern as KI-03.
   const baselineOk =
-    rows[0].backingWidth === 850 &&
-    rows[0].backingHeight === 478 &&
-    rows[1].backingWidth === 296 &&
-    rows[1].backingHeight === 166;
+    Math.abs(rows[0].backingWidth - 850) <= 2 &&
+    Math.abs(rows[0].backingHeight - 478) <= 2 &&
+    Math.abs(rows[1].backingWidth - 206) <= 2 &&
+    Math.abs(rows[1].backingHeight - 116) <= 2;
 
   report.known(
     'KI-02-BASELINE',
-    'KI-02 Línea base: 1440x900 -> 850x478 y 320x568 -> 296x166',
+    'KI-02 Línea base: 1440x900 -> 850x478 y 320x568 -> 206x116',
     baselineOk,
     baselineOk
-      ? `LÍNEA BASE OK: ${ratioText}.`
-      : `LA LÍNEA BASE DERIVÓ: ${ratioText} (la línea base documentada es 850x478 en 1440x900 y 296x166 en 320x568). Actualiza la documentación.`,
+      ? `LÍNEA BASE OK: ${ratioText} (el backing cubre la caja pintada con números pares, ya no rasteriza el proyecto).`
+      : `LA LÍNEA BASE DERIVÓ: ${ratioText} (la línea base documentada es 850x478 en 1440x900 y 206x116 en 320x568: el backing cubre la caja pintada con números pares). Actualiza la documentación.`,
     { details: rows }
   );
 }

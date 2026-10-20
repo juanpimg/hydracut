@@ -1199,13 +1199,16 @@ async function caseExport({ browser, report, baseUrl }) {
           details: { movie, projectDuration },
         });
 
-        /* --- KNOWN DEFECT: the range timecodes are truncated -------- */
+        /* --- EXPORT-RANGE-TIMECODE: frame-accurate range timecodes ---- */
         /*
-         * `formatExportTimecode()` floors the seconds, so a marker placed at
-         * 0,9 s is shown as "00:00:00" and one at 1,1 s as "00:00:01": the
-         * summary then contradicts the duration it displays ("00:00:00 →
-         * 00:00:01 (0.2 s)"). It is reported as an INFORMATIONAL check (it
-         * does not break the build) until the defect is fixed.
+         * `formatExportTimecode()` used to floor the seconds, so a marker
+         * placed at 0,9 s was shown as "00:00:00" and one at 1,1 s as
+         * "00:00:01": the summary then contradicted the duration it
+         * displayed. FIXED: the modal now shows frame-accurate HH:MM:SS:FF
+         * timecodes ("Exportando 00:00:00:27 → 00:00:01:03 (0.2 s)" at
+         * 30 fps). Normal regression check: if the truncation ever comes
+         * back, the 4-component pattern no longer matches and the suite
+         * fails.
          */
         try {
           await closeExportModal(page);
@@ -1219,13 +1222,13 @@ async function caseExport({ browser, report, baseUrl }) {
           if (btn) btn.click();
         });
         await delay(200);
-        await seekTo(page, 0.9);
+        const fracIn = await seekTo(page, 0.9);
         await safeEvaluate(page, () => {
           const btn = document.querySelector('[data-testid="export-range-mark-in"]');
           if (btn) btn.click();
         });
         await delay(200);
-        await seekTo(page, 1.1);
+        const fracOut = await seekTo(page, 1.1);
         await safeEvaluate(page, () => {
           const btn = document.querySelector('[data-testid="export-range-mark-out"]');
           if (btn) btn.click();
@@ -1252,29 +1255,50 @@ async function caseExport({ browser, report, baseUrl }) {
           };
         });
 
-        // The defect reproduces when the displayed timecodes hide the
-        // fractional part of the marked range.
-        const truncated = Boolean(
-          fractional.summary &&
-            /00:00:0\d → 00:00:0\d/.test(fractional.summary) &&
-            !fractional.summary.includes('0,9') &&
-            !fractional.summary.includes('1,1')
+        // The fix holds when both ends render as HH:MM:SS:FF and match the
+        // marked times within ±2 frames (the seek lands within 0,05 s of the
+        // target and the mark click can race the playhead by one frame; the
+        // old truncation rendered only HH:MM:SS, so it can never match).
+        const FPS = 30;
+        const tcMatch = fractional.summary
+          ? fractional.summary.match(
+              /(\d{2}):(\d{2}):(\d{2}):(\d{2}) → (\d{2}):(\d{2}):(\d{2}):(\d{2})/
+            )
+          : null;
+        const toFrames = (h, m, s, f) =>
+          (Number(h) * 3600 + Number(m) * 60 + Number(s)) * FPS + Number(f);
+        const startFrames = tcMatch
+          ? toFrames(tcMatch[1], tcMatch[2], tcMatch[3], tcMatch[4])
+          : null;
+        const endFrames = tcMatch
+          ? toFrames(tcMatch[5], tcMatch[6], tcMatch[7], tcMatch[8])
+          : null;
+        const timecodeOk = Boolean(
+          tcMatch &&
+            startFrames !== null &&
+            endFrames !== null &&
+            typeof fracIn === 'number' &&
+            typeof fracOut === 'number' &&
+            Math.abs(startFrames - Math.round(fracIn * FPS)) <= 2 &&
+            Math.abs(endFrames - Math.round(fracOut * FPS)) <= 2 &&
+            endFrames - startFrames >= 3 &&
+            endFrames - startFrames <= 9
         );
 
-        const knownResult = {
+        checks.push({
           id: 'EXPORT-RANGE-TIMECODE',
           title:
-            'Los marcadores con decimales del rango se muestran truncados (00:00:00 → 00:00:01 (0,2 s))',
-          ok: truncated,
-          message: truncated
-            ? `DEFECTO CONFIRMADO: los marcadores 0,9 s → 1,1 s se muestran como "${fractional.summary}" ` +
-              `(duración=${fractional.durationText}, fila de rango=${fractional.rangeText}). ` +
-              `El tiempo real del rango no aparece en la interfaz.`
-            : `El defecto NO se reproduce: "${fractional.summary}" (duración=${fractional.durationText}).`,
-          details: fractional,
-        };
+            'El rango con decimales se muestra frame-accurate (HH:MM:SS:FF, ya no truncado a segundos)',
+          ok: timecodeOk,
+          message: timecodeOk
+            ? `RANGO FRAME-ACCURATE: los marcadores ${fracIn} s → ${fracOut} s se muestran como "${fractional.summary}" ` +
+              `(duración=${fractional.durationText}, fila de rango=${fractional.rangeText}).`
+            : `REGRESIÓN: "${fractional.summary}" (duración=${fractional.durationText}) no son timecodes HH:MM:SS:FF a ±2 fotogramas ` +
+              `de ${fracIn} s → ${fracOut} s (p. ej. "Exportando 00:00:00:27 → 00:00:01:03 (0.2 s)").`,
+          details: { ...fractional, fracIn, fracOut, startFrames, endFrames },
+        });
 
-        return { reloaded: navCount(page) !== navBefore, checks, known: knownResult };
+        return { reloaded: navCount(page) !== navBefore, checks };
       } finally {
         await context.close();
       }
@@ -1289,20 +1313,15 @@ async function caseExport({ browser, report, baseUrl }) {
           id: 'EXPORT-RANGE-MP4-DURATION',
           title: 'El MP4 descargado dura exactamente el rango de exportación (no el proyecto)',
         },
+        {
+          id: 'EXPORT-RANGE-TIMECODE',
+          title: 'El rango con decimales se muestra frame-accurate (HH:MM:SS:FF)',
+        },
       ],
     });
 
     for (const check of outcome.checks) {
       report.check(check.id, check.title, check.ok, check.message, check.details);
-    }
-    if (outcome.known) {
-      report.known(
-        outcome.known.id,
-        outcome.known.title,
-        outcome.known.ok,
-        outcome.known.message,
-        outcome.known.details
-      );
     }
   } finally {
     fs.rmSync(downloadDir, { recursive: true, force: true });

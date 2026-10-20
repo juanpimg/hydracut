@@ -120,7 +120,12 @@ export const CHROME_ARGS = [
 
 export const WELCOME_SELECTOR = '[data-testid="welcome-modal"]';
 export const EXPORT_DIALOG_SELECTOR = 'div[role="dialog"][aria-label="Exportar video"]';
-export const EXPORT_BUTTON_SELECTOR = 'button[aria-label="Abrir modal de exportación de video MP4"]';
+export const EXPORT_BUTTON_TESTID_SELECTOR = '[data-testid="export-open-button"]';
+export const EXPORT_BUTTON_LABEL_SELECTOR = 'button[aria-label="Abrir modal de exportación de vídeo"]';
+/** Selector histórico (sin acento y con MP4): se mantiene como último recurso. */
+export const EXPORT_BUTTON_LEGACY_SELECTOR = 'button[aria-label="Abrir modal de exportación de video MP4"]';
+/** El harness prefiere el testid: no depende de ninguna cadena legible. */
+export const EXPORT_BUTTON_SELECTOR = EXPORT_BUTTON_TESTID_SELECTOR;
 export const EXPORT_CLOSE_SELECTOR = 'button[aria-label="Cerrar modal de exportación"]';
 export const MEDIA_POOL_LABEL = 'Panel de Medios';
 
@@ -572,13 +577,15 @@ export async function openExportModal(page, timeout = 15_000) {
   while (Date.now() < deadline) {
     const opened = await safeEvaluate(
       page,
-      (btnSel, dlgSel) => {
-        const btn = document.querySelector(btnSel);
+      (btnSels, dlgSel) => {
+        // El testid manda; las etiquetas (nueva y antigua) son el recurso para
+        // páginas con el bundle anterior al cambio.
+        const btn = btnSels.map((sel) => document.querySelector(sel)).find(Boolean) || null;
         if (!btn) return 'no-button';
         if (!document.querySelector(dlgSel)) btn.click();
         return document.querySelector(dlgSel) ? 'open' : 'clicked';
       },
-      EXPORT_BUTTON_SELECTOR,
+      [EXPORT_BUTTON_SELECTOR, EXPORT_BUTTON_LABEL_SELECTOR, EXPORT_BUTTON_LEGACY_SELECTOR],
       EXPORT_DIALOG_SELECTOR
     );
     if (opened === 'open') return true;

@@ -503,7 +503,7 @@ const PREVIEW_EXPECTED = [
   { id: 'AUDIO-EFFECTS-INSPECTOR', title: 'La sección de efectos de audio está en español' },
   { id: 'AUDIO-FADE-PREVIEW', title: 'El fundido de audio gobierna el volumen del preview' },
 ];
-const LOCKED_KNOWN = {
+const LOCKED_CHECK = {
   id: 'CROSSFADE-LOCKED',
   title: 'Con la pista bloqueada «Crear fundido» está deshabilitado y el motivo es visible',
 };
@@ -595,21 +595,21 @@ async function casePreview({ browser, report, baseUrl, assets }) {
           reasonVisible: visible,
         };
       });
-      // Spec: disabled control + visible reason. The app hides the button and
-      // shows the reason in `crossfade-no-neighbour` instead: a real UX defect
-      // (every other section renders disabled control + reason), reported as a
-      // known-issue check so the build stays green.
+      // Spec: con la pista bloqueada el botón «Crear fundido» QUEDA VISIBLE
+      // pero deshabilitado y el motivo se muestra (como el resto de secciones
+      // del Inspector). Check normal de regresión: si el control desaparece o
+      // queda habilitado con la pista bloqueada, la suite falla.
       const reasonOk = Boolean(
         lockState.reasonVisible && lockState.reason && /bloqueada/.test(lockState.reason)
       );
-      const lockedKnown = {
-        id: LOCKED_KNOWN.id,
-        title: LOCKED_KNOWN.title,
-        ok: Boolean(locked && !lockState.createPresent && reasonOk),
+      const lockedCheck = {
+        id: LOCKED_CHECK.id,
+        title: LOCKED_CHECK.title,
+        ok: Boolean(locked && lockState.createPresent && lockState.createDisabled === true && reasonOk),
         message:
-          `DEFECTO: con la pista bloqueada el botón «Crear fundido» DESAPARECE ` +
-          `(presente=${lockState.createPresent}) en vez de quedar deshabilitado | ` +
-          `el motivo SÍ es visible (${lockState.reasonKind}): "${lockState.reason ?? 'n/d'}"`,
+          `con la pista bloqueada el botón «Crear fundido» queda visible y deshabilitado ` +
+          `(presente=${lockState.createPresent}, deshabilitado=${lockState.createDisabled}) | ` +
+          `motivo visible (${lockState.reasonKind}): "${lockState.reason ?? 'n/d'}"`,
         details: { locked, lockState },
       };
       // Unlock for the pixel scenario.
@@ -942,7 +942,7 @@ async function casePreview({ browser, report, baseUrl, assets }) {
         fadeDetail
       );
 
-      return { reloaded: navCount(page) !== navBefore, checks, lockedKnown, context, page };
+      return { reloaded: navCount(page) !== navBefore, checks, lockedCheck, context, page };
     } catch (err) {
       try {
         await context.close();
@@ -967,13 +967,13 @@ async function casePreview({ browser, report, baseUrl, assets }) {
   for (const check of checks) {
     report.check(check.id, check.title, check.ok, check.message, check.details);
   }
-  if (outcome && outcome.lockedKnown) {
-    const k = outcome.lockedKnown;
-    report.known(k.id, k.title, k.ok, k.message, k.details);
+  if (outcome && outcome.lockedCheck) {
+    const k = outcome.lockedCheck;
+    report.check(k.id, k.title, k.ok, k.message, k.details);
   } else {
     report.check(
-      LOCKED_KNOWN.id,
-      LOCKED_KNOWN.title,
+      LOCKED_CHECK.id,
+      LOCKED_CHECK.title,
       false,
       'El escenario no pudo completarse (recarga del dev server): el estado con la pista bloqueada no se evaluó.'
     );

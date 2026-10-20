@@ -205,7 +205,8 @@ export const Header: React.FC = () => {
         <button
           onClick={() => setExportModalOpen(true)}
           className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-bold text-xs rounded-lg active:scale-95 transition shadow-sm focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:outline-none shrink-0"
-          aria-label="Abrir modal de exportación de video MP4"
+          aria-label="Abrir modal de exportación de vídeo"
+          data-testid="export-open-button"
         >
           <Download size={14} className="stroke-[2.5]" />
           <span>Exportar vídeo</span>
