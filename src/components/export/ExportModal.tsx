@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
-import { ExportConfig, ExportProgress } from '../../types/project';
+import { AspectRatio, Clip, ExportConfig, ExportProgress } from '../../types/project';
 import { announce } from '../layout/liveRegion';
 
 /**
@@ -66,14 +66,270 @@ export function describeExportProgress(progress: ExportProgress): string | null 
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* F10 — Export presets and export range                               */
+/* ------------------------------------------------------------------ */
+
+/** Resolutions offered by the export modal. */
+export type ExportResolution = '720p' | '1080p' | '4k';
+
+/**
+ * A ready-made export configuration (F10).
+ *
+ * A preset is just a shortcut for the three controls of the modal
+ * (resolution, fps and bitrate) plus the aspect ratio of the file.
+ */
+export interface ExportPreset {
+  id: string;
+  /** Spanish label of the button. */
+  label: string;
+  /** Spanish hint shown under the label. */
+  hint: string;
+  /** Resolution of the exported file. */
+  resolution: ExportResolution;
+  /** Frames per second. */
+  fps: number;
+  /** Bitrate in Mbps. */
+  bitrateMbps: number;
+  /** Aspect ratio of the exported file. */
+  aspectRatio: AspectRatio;
+}
+
+/**
+ * The export presets (F10).
+ *
+ * They replace the "raw sliders" experience: one click sets the resolution,
+ * the frame rate, the bitrate AND the aspect ratio of the exported file.
+ */
+export const EXPORT_PRESETS: ExportPreset[] = [
+  {
+    id: 'web-720p',
+    label: 'Web',
+    hint: '720p · 30 fps · 6 Mbps',
+    resolution: '720p',
+    fps: 30,
+    bitrateMbps: 6,
+    aspectRatio: '16:9',
+  },
+  {
+    id: 'social-1080p',
+    label: 'Social 1080p',
+    hint: '1920×1080 · 30 fps · 8 Mbps',
+    resolution: '1080p',
+    fps: 30,
+    bitrateMbps: 8,
+    aspectRatio: '16:9',
+  },
+  {
+    id: 'vertical-9x16',
+    label: 'Vertical 1080×1920',
+    hint: '9:16 · 30 fps · 8 Mbps',
+    resolution: '1080p',
+    fps: 30,
+    bitrateMbps: 8,
+    aspectRatio: '9:16',
+  },
+  {
+    id: 'high-quality-1080p60',
+    label: 'Alta calidad',
+    hint: '1080p · 60 fps · 12 Mbps',
+    resolution: '1080p',
+    fps: 60,
+    bitrateMbps: 12,
+    aspectRatio: '16:9',
+  },
+];
+
+/** Height (pixels) of the exported frame for each resolution. */
+const RESOLUTION_BASE_HEIGHT: Record<ExportResolution, number> = {
+  '720p': 720,
+  '1080p': 1080,
+  '4k': 2160,
+};
+
+/**
+ * Dimensions of the exported file for a resolution + aspect ratio.
+ *
+ * The dimensions are always EVEN: the hardware H.264 encoders reject odd
+ * sizes.
+ */
+export function computeExportDimensions(
+  resolution: ExportResolution,
+  aspectRatio: AspectRatio
+): { width: number; height: number } {
+  const base = RESOLUTION_BASE_HEIGHT[resolution] ?? 1080;
+  let width = base;
+  let height = base;
+  if (aspectRatio === '16:9') {
+    width = Math.round((base * 16) / 9);
+    height = base;
+  } else if (aspectRatio === '9:16') {
+    width = base;
+    height = Math.round((base * 16) / 9);
+  }
+  width = width - (width % 2);
+  height = height - (height % 2);
+  return { width, height };
+}
+
+/**
+ * The preset that matches the current settings of the modal (or `null`).
+ *
+ * The active preset is DERIVED from the settings: moving a slider makes the
+ * preset stop matching, and it is deselected automatically.
+ */
+export function findActivePreset(settings: {
+  resolution: ExportResolution;
+  fps: number;
+  bitrateMbps: number;
+  aspectRatio: AspectRatio;
+}): ExportPreset | null {
+  return (
+    EXPORT_PRESETS.find(
+      (preset) =>
+        preset.resolution === settings.resolution &&
+        preset.fps === settings.fps &&
+        preset.bitrateMbps === settings.bitrateMbps &&
+        preset.aspectRatio === settings.aspectRatio
+    ) ?? null
+  );
+}
+
+/** How the range of the export is chosen. */
+export type ExportRangeMode = 'full' | 'custom';
+
+/** State of the export range owned by the modal (F10). */
+export interface ExportRangeState {
+  mode: ExportRangeMode;
+  /** In point (timeline seconds). `null` = not marked yet. */
+  start: number | null;
+  /** Out point (timeline seconds). `null` = not marked yet. */
+  end: number | null;
+}
+
+/** A resolved export range. */
+export interface ExportRange {
+  /** First exported second (timeline time). */
+  start: number;
+  /** Last exported second (timeline time, exclusive). */
+  end: number;
+  /** Duration of the range (seconds). */
+  duration: number;
+}
+
+/**
+ * True when the custom range can be exported (both markers are set and the
+ * out point is AFTER the in point).
+ */
+export function isExportRangeValid(state: ExportRangeState): boolean {
+  if (state.mode === 'full') return true;
+  if (state.start === null || state.end === null) return false;
+  if (!Number.isFinite(state.start) || !Number.isFinite(state.end)) return false;
+  return state.end > state.start;
+}
+
+/**
+ * Resolves the range that will be exported.
+ *
+ * Returns `null` when the WHOLE project is exported (the default: the
+ * behaviour is unchanged when the user does not choose a range).
+ */
+export function resolveExportRange(
+  state: ExportRangeState,
+  projectDuration: number
+): ExportRange | null {
+  if (state.mode === 'full') return null;
+  if (!isExportRangeValid(state)) return null;
+  const limit = Number.isFinite(projectDuration) && projectDuration > 0 ? projectDuration : 0;
+  const start = Math.max(0, Math.min(state.start as number, limit));
+  const end = Math.max(0, Math.min(state.end as number, limit));
+  if (end <= start) return null;
+  return { start, end, duration: end - start };
+}
+
+/**
+ * Re-bases the clips into the exported range.
+ *
+ * The exporter renders the timeline from 0 to `duration`, so a range export
+ * is expressed by moving every clip `rangeStart` seconds to the left and
+ * advancing its source window accordingly. The clips that do not intersect
+ * the range are dropped and the ones that cross a border are trimmed.
+ */
+export function buildRangeExportClips(
+  clips: Clip[],
+  rangeStart: number,
+  rangeEnd: number
+): Clip[] {
+  const out: Clip[] = [];
+  for (const clip of clips) {
+    const clipStart = clip.start;
+    const clipStop = clip.start + clip.duration;
+    const start = Math.max(clipStart, rangeStart);
+    const stop = Math.min(clipStop, rangeEnd);
+    if (stop - start <= 0) continue;
+    const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+    out.push({
+      ...clip,
+      start: start - rangeStart,
+      duration: stop - start,
+      sourceStart: clip.sourceStart + (start - clipStart) * speed,
+    });
+  }
+  return out;
+}
+
+/**
+ * Formats a time as `HH:MM:SS` (the timecode shown next to the range).
+ */
+export function formatExportTimecode(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const total = Math.floor(safe);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(h)}:${pad(m)}:${pad(s)}`;
+}
+
+/**
+ * Formats a number of seconds without the noise of the floating point
+ * (`7` instead of `7.000000000000001`).
+ */
+export function formatSeconds(value: number): string {
+  if (!Number.isFinite(value)) return '0';
+  const rounded = Math.round(value * 1000) / 1000;
+  return String(rounded);
+}
+
+/**
+ * Label of the exported range: "Exportando 00:00:05 → 00:00:12 (7 s)".
+ */
+export function formatExportRange(range: ExportRange): string {
+  return (
+    `Exportando ${formatExportTimecode(range.start)} → ${formatExportTimecode(range.end)} ` +
+    `(${formatSeconds(range.duration)} s)`
+  );
+}
+
 export const ExportModal: React.FC = () => {
   const project = useProjectStore((s) => s.project);
+  const setAspectRatio = useProjectStore((s) => s.setAspectRatio);
+  const currentTime = useProjectStore((s) => s.currentTime);
   const { isExportModalOpen, setExportModalOpen } = useUIStore();
 
   const [hasWebCodecs, setHasWebCodecs] = useState<boolean>(true);
-  const [resolutionPreset, setResolutionPreset] = useState<'1080p' | '720p' | '4k'>('1080p');
+  const [resolutionPreset, setResolutionPreset] = useState<ExportResolution>('1080p');
   const [fps, setFps] = useState<number>(30);
   const [bitrateMbps, setBitrateMbps] = useState<number>(8);
+  /**
+   * F10: the export range owned by the modal. The default (`full`) keeps the
+   * previous behaviour: the WHOLE project is exported.
+   */
+  const [rangeState, setRangeState] = useState<ExportRangeState>({
+    mode: 'full',
+    start: null,
+    end: null,
+  });
   const [progressState, setProgressState] = useState<ExportProgress>({
     state: 'idle',
     progress: 0,
@@ -161,30 +417,61 @@ export const ExportModal: React.FC = () => {
 
   if (!isExportModalOpen) return null;
 
-  const getDimensions = () => {
-    const ratio = project.aspectRatio;
-    let base = 1080;
-    if (resolutionPreset === '720p') base = 720;
-    if (resolutionPreset === '4k') base = 2160;
+  /**
+   * F10: the dimensions of the exported file. They follow the resolution AND
+   * the aspect ratio of the project (the vertical preset sets the project to
+   * 9:16, so the exported MP4 is really 1080×1920).
+   */
+  const dims = computeExportDimensions(resolutionPreset, project.aspectRatio);
 
-    let width = base;
-    let height = base;
-    if (ratio === '16:9') {
-      width = Math.round((base * 16) / 9);
-      height = base;
-    } else if (ratio === '9:16') {
-      width = base;
-      height = Math.round((base * 16) / 9);
+  /**
+   * F10: the preset that matches the current settings. It is derived, so
+   * moving a slider deselects the preset automatically.
+   */
+  const activePreset = findActivePreset({
+    resolution: resolutionPreset,
+    fps,
+    bitrateMbps,
+    aspectRatio: project.aspectRatio,
+  });
+
+  /** F10: the range that will be exported (`null` = the whole project). */
+  const range = resolveExportRange(rangeState, project.duration);
+  /** The custom range is incomplete: the export must be blocked. */
+  const rangeIncomplete = rangeState.mode === 'custom' && !isExportRangeValid(rangeState);
+  /** Duration (seconds) that is really rendered. */
+  const exportDuration = range ? range.duration : project.duration;
+  /** Clips handed to the exporter (re-based when a range is used). */
+  const exportClips = range
+    ? buildRangeExportClips(project.clips, range.start, range.end)
+    : project.clips;
+
+  /**
+   * F10: applies a preset (one click sets resolution, fps, bitrate and the
+   * aspect ratio of the exported file).
+   */
+  const applyPreset = (preset: ExportPreset) => {
+    setResolutionPreset(preset.resolution);
+    setFps(preset.fps);
+    setBitrateMbps(preset.bitrateMbps);
+    if (project.aspectRatio !== preset.aspectRatio) {
+      setAspectRatio(preset.aspectRatio);
     }
+  };
 
-    // Guarantee even numbers for hardware encoders
-    width = width - (width % 2);
-    height = height - (height % 2);
-    return { width, height };
+  /** F10: marks the in point of the export at the current playhead. */
+  const markRangeStart = () => {
+    const time = Math.max(0, Math.min(currentTime, project.duration));
+    setRangeState((prev) => ({ ...prev, mode: 'custom', start: time }));
+  };
+
+  /** F10: marks the out point of the export at the current playhead. */
+  const markRangeEnd = () => {
+    const time = Math.max(0, Math.min(currentTime, project.duration));
+    setRangeState((prev) => ({ ...prev, mode: 'custom', end: time }));
   };
 
   const handleStartExport = async () => {
-    const dims = getDimensions();
     const config: ExportConfig = {
       aspectRatio: project.aspectRatio,
       width: dims.width,
@@ -201,9 +488,8 @@ export const ExportModal: React.FC = () => {
     revokeDownloadUrl();
 
     // The duration shown in the summary and the duration that is exported come
-    // from the SAME source (`project.duration`).
-    const exportDuration = project.duration;
-
+    // from the SAME source (the range when there is one, `project.duration`
+    // otherwise).
     setProgressState({
       state: 'rendering',
       progress: 0,
@@ -221,7 +507,7 @@ export const ExportModal: React.FC = () => {
         config,
         duration: exportDuration,
         tracks: project.tracks,
-        clips: project.clips,
+        clips: exportClips,
         mediaPool: project.mediaPool,
         onProgress: (p) => setProgressState(p),
         signal: abortControllerRef.current.signal,
@@ -233,7 +519,8 @@ export const ExportModal: React.FC = () => {
       downloadUrlRef.current = url;
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${project.name.toLowerCase().replace(/\s+/g, '_')}_${resolutionPreset}.${extension}`;
+      const rangeSuffix = range ? `_${formatSeconds(range.start)}-${formatSeconds(range.end)}` : '';
+      a.download = `${project.name.toLowerCase().replace(/\s+/g, '_')}_${resolutionPreset}${rangeSuffix}.${extension}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -294,8 +581,6 @@ export const ExportModal: React.FC = () => {
     });
   };
 
-  const dims = getDimensions();
-
   return (
     <div
       role="dialog"
@@ -333,7 +618,7 @@ export const ExportModal: React.FC = () => {
         </div>
 
         {/* Modal Content */}
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
           {/* Hardware acceleration badge */}
           <div className={`p-2.5 rounded-lg border flex items-center gap-2.5 text-xs ${
             hasWebCodecs 
@@ -355,6 +640,39 @@ export const ExportModal: React.FC = () => {
 
           {progressState.state === 'idle' ? (
             <>
+              {/* F10: one-click export presets */}
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1.5 flex items-center gap-1.5">
+                  <Settings2 size={13} />
+                  <span>Preajustes de exportación:</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2" data-testid="export-presets">
+                  {EXPORT_PRESETS.map((preset) => {
+                    const isActive = activePreset?.id === preset.id;
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        data-testid={`export-preset-${preset.id}`}
+                        aria-pressed={isActive}
+                        title={`${preset.label} — ${preset.hint}`}
+                        onClick={() => applyPreset(preset)}
+                        className={`py-2 px-2 rounded-lg text-[11px] font-medium border transition text-left ${
+                          isActive
+                            ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                            : 'bg-dark-950 text-slate-300 border-dark-800 hover:text-white hover:bg-dark-850'
+                        }`}
+                      >
+                        <span className="block truncate">{preset.label}</span>
+                        <span className={`block text-[9px] font-mono ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
+                          {preset.hint}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Resolution Presets */}
               <div>
                 <label className="text-xs font-semibold text-slate-300 block mb-1.5 flex items-center gap-1.5">
@@ -369,7 +687,7 @@ export const ExportModal: React.FC = () => {
                   ].map((preset) => (
                     <button
                       key={preset.id}
-                      onClick={() => setResolutionPreset(preset.id as '1080p' | '720p' | '4k')}
+                      onClick={() => setResolutionPreset(preset.id as ExportResolution)}
                       className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
                         resolutionPreset === preset.id
                           ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
@@ -425,20 +743,101 @@ export const ExportModal: React.FC = () => {
                 />
               </div>
 
+              {/* F10: export range (in / out markers) */}
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                  Rango de exportación:
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    data-testid="export-range-full"
+                    aria-pressed={rangeState.mode === 'full'}
+                    onClick={() => setRangeState((prev) => ({ ...prev, mode: 'full' }))}
+                    className={`py-2 rounded-lg text-xs font-medium border transition ${
+                      rangeState.mode === 'full'
+                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
+                    }`}
+                  >
+                    Todo el proyecto
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="export-range-custom"
+                    aria-pressed={rangeState.mode === 'custom'}
+                    onClick={() => setRangeState((prev) => ({ ...prev, mode: 'custom' }))}
+                    className={`py-2 rounded-lg text-xs font-medium border transition ${
+                      rangeState.mode === 'custom'
+                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
+                    }`}
+                  >
+                    Rango personalizado
+                  </button>
+                </div>
+
+                {rangeState.mode === 'custom' && (
+                  <div className="mt-2 space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        data-testid="export-range-mark-in"
+                        onClick={markRangeStart}
+                        className="py-1.5 px-2 rounded-lg text-[11px] font-medium border border-dark-800 bg-dark-950 text-slate-300 hover:text-white hover:bg-dark-850 transition"
+                      >
+                        Marcar entrada
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="export-range-mark-out"
+                        onClick={markRangeEnd}
+                        className="py-1.5 px-2 rounded-lg text-[11px] font-medium border border-dark-800 bg-dark-950 text-slate-300 hover:text-white hover:bg-dark-850 transition"
+                      >
+                        Marcar salida
+                      </button>
+                    </div>
+                    <div className="text-[11px] text-slate-500 font-mono">
+                      Cabezal de reproducción: {formatExportTimecode(currentTime)}
+                    </div>
+                    {rangeIncomplete && (
+                      <div role="alert" className="p-2 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-[11px]">
+                        Marca la entrada y la salida del rango (la salida debe ser posterior a la entrada).
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div
+                  data-testid="export-range-summary"
+                  className="mt-2 text-[11px] font-mono text-cyan-300"
+                >
+                  {range ? formatExportRange(range) : 'Exportando el proyecto completo'}
+                </div>
+              </div>
+
               {/* Project summary */}
               <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 text-[11px] text-slate-400 space-y-1">
                 <div className="flex justify-between">
                   <span>Duración de exportación:</span>
-                  <span className="font-mono text-slate-200">{project.duration} segundos</span>
+                  <span className="font-mono text-slate-200">{formatSeconds(exportDuration)} segundos</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Total de fotogramas:</span>
-                  <span className="font-mono text-slate-200">{Math.round(project.duration * fps)}</span>
+                  <span className="font-mono text-slate-200">{Math.round(exportDuration * fps)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Clips en el timeline:</span>
                   <span className="font-mono text-slate-200">{project.clips.length}</span>
                 </div>
+                {range && (
+                  <div className="flex justify-between">
+                    <span>Rango de exportación:</span>
+                    <span className="font-mono text-slate-200">
+                      {formatExportTimecode(range.start)} → {formatExportTimecode(range.end)}
+                    </span>
+                  </div>
+                )}
               </div>
               {isEmptyProject && (
                 <div role="alert" className="p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-xs">
@@ -531,8 +930,14 @@ export const ExportModal: React.FC = () => {
               </button>
               <button
                 onClick={handleStartExport}
-                disabled={isEmptyProject}
-                title={isEmptyProject ? 'Añade clips al timeline primero' : 'Comenzar exportación'}
+                disabled={isEmptyProject || rangeIncomplete}
+                title={
+                  isEmptyProject
+                    ? 'Añade clips al timeline primero'
+                    : rangeIncomplete
+                      ? 'Marca la entrada y la salida del rango antes de exportar'
+                      : 'Comenzar exportación'
+                }
                 className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs rounded-lg shadow-lg shadow-blue-500/20 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
               >
                 <Download size={14} />
