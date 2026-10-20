@@ -17,11 +17,23 @@ export const ShortcutsModal: React.FC = () => {
 
   if (!isShortcutsModalOpen) return null;
 
+  /**
+   * The bindings below mirror the REAL handlers, in the same order the app
+   * resolves them: clipboard copy/paste/duplicate (`resolveClipboardShortcut`
+   * in `layout/MainLayout.tsx` → `copyClips` / `pasteClips` /
+   * `duplicateClips` of the store) and select-all (`Ctrl+A` in
+   * `timeline/Timeline.tsx` → `selectAllClips` of the store, same shortcut as
+   * the "Seleccionar todo" button). Keep this list in sync with those files.
+   */
   const shortcuts = [
     { key: 'Espacio', desc: 'Reproducir / Pausar reproducción' },
     { key: 'S', desc: 'Cortar / Dividir clip en la posición del cabezal' },
     { key: 'Supr / Backspace', desc: 'Eliminar el clip seleccionado' },
     { key: '← / →', desc: 'Retroceder o avanzar 1 fotograma' },
+    { key: 'Ctrl + C', desc: 'Copiar los clips seleccionados' },
+    { key: 'Ctrl + V', desc: 'Pegar los clips copiados' },
+    { key: 'Ctrl + D', desc: 'Duplicar los clips seleccionados' },
+    { key: 'Ctrl + A', desc: 'Seleccionar todos los clips' },
     { key: 'Ctrl + Z', desc: 'Deshacer última acción' },
     { key: 'Ctrl + Shift + Z', desc: 'Rehacer acción' },
     { key: 'Ctrl + Y', desc: 'Rehacer acción' },

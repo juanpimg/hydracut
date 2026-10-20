@@ -10,9 +10,11 @@ import {
   TrackType,
   OverlapPolicy,
   TrashEntry,
+  AudioFade,
 } from '../../types/project';
 import * as opfsStorage from './opfsStorage';
 import { normalizeKeyframesForWrite } from '../utils/keyframes';
+import { clampClipAudioFades } from '../utils/audioFades';
 
 export const AUTOSAVE_KEY = 'web_video_editor_autosave_project';
 export const PROJECTS_INDEX_KEY = 'hydra_projects_index';
@@ -1829,6 +1831,16 @@ function sanitizeClipFilters(raw: unknown): SanitizedClipFilters | undefined {
   return found ? (out as SanitizedClipFilters) : undefined;
 }
 
+/**
+ * Coerces an untrusted imported value to `AudioFade | undefined` for the
+ * production normaliser (`clampClipAudioFades` expects an object or
+ * `undefined`: non-object garbage from a hand-edited file means "no fade",
+ * never a crash — the normaliser itself then drops invalid durations).
+ */
+function fadeOrUndefined(value: unknown): AudioFade | undefined {
+  return value !== null && typeof value === 'object' ? (value as AudioFade) : undefined;
+}
+
 export interface ProjectSanitizeResult {
   project: Project;
   warnings: string[];
@@ -1940,6 +1952,15 @@ export function sanitizeImportedProject(
     // the production normaliser: sorted, de-duplicated, clamped and
     // quantised to the project fps.
     const keyframes = normalizeKeyframesForWrite(c.keyframes, fps, duration);
+    // The audio fades of the clip travel with it too (they shape the clip
+    // gain in the preview AND in the export). They go through the production
+    // normaliser: quantised to the project fps and clamped to the clip.
+    const audioFades = clampClipAudioFades(
+      fadeOrUndefined(c.audioFadeIn),
+      fadeOrUndefined(c.audioFadeOut),
+      duration,
+      fps
+    );
     clips.push({
       id: c.id,
       trackId: c.trackId,
@@ -1966,6 +1987,8 @@ export function sanitizeImportedProject(
       preservePitch: typeof c.preservePitch === 'boolean' ? c.preservePitch : undefined,
       ...(filters ? { filters } : {}),
       ...(keyframes ? { keyframes } : {}),
+      ...(audioFades.fadeIn ? { audioFadeIn: audioFades.fadeIn } : {}),
+      ...(audioFades.fadeOut ? { audioFadeOut: audioFades.fadeOut } : {}),
       text: typeof c.text === 'string' ? c.text : undefined,
       textStyle: c.textStyle,
       words: Array.isArray(c.words) ? c.words : undefined,
@@ -2045,7 +2068,17 @@ export function sanitizeImportedProject(
       const start = Number(c.start);
       const duration = Number(c.duration);
       if (!Number.isFinite(start) || !Number.isFinite(duration) || duration < MIN_CLIP_DURATION) continue;
-      entryClips.push({
+      // The trash is restored verbatim into the live project, so its fades
+      // are normalised with the same production normaliser as the main path:
+      // the `...c` spread below would otherwise carry them through raw and
+      // unnormalised (corrupt values included).
+      const trashFades = clampClipAudioFades(
+        fadeOrUndefined(c.audioFadeIn),
+        fadeOrUndefined(c.audioFadeOut),
+        duration,
+        fps
+      );
+      const rebuiltTrashClip = {
         ...c,
         id: c.id,
         trackId: c.trackId,
@@ -2066,7 +2099,12 @@ export function sanitizeImportedProject(
         positionY: Number.isFinite(Number(c.positionY)) ? Number(c.positionY) : 0,
         muted: !!c.muted,
         speed: clampNumber(c.speed, 0.1, 10, 1),
-      } as Clip);
+      } as Clip;
+      if (trashFades.fadeIn !== undefined) rebuiltTrashClip.audioFadeIn = trashFades.fadeIn;
+      else delete rebuiltTrashClip.audioFadeIn;
+      if (trashFades.fadeOut !== undefined) rebuiltTrashClip.audioFadeOut = trashFades.fadeOut;
+      else delete rebuiltTrashClip.audioFadeOut;
+      entryClips.push(rebuiltTrashClip);
     }
     trash.push({
       media,

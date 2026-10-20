@@ -20,12 +20,12 @@ HydraCut Studio verifica su comportamiento con **dos capas complementarias**:
 
 No hay un tercer nivel: no existe `src/tests/e2e/` ni `TEST_READY.md`.
 
-### 1.1 Estado actual (medido el 2026-10-19)
+### 1.1 Estado actual (medido el 2026-10-20)
 
 ```bash
 $ npm test
- Test Files  21 passed (21)
-      Tests  399 passed (399)
+ Test Files  35 passed (35)
+      Tests  795 passed (795)
 ```
 
 > El número exacto cambia cada vez que el equipo añade una suite. **Ejecuta
@@ -60,22 +60,36 @@ para el harness de navegador, **no** suites de Vitest.
 | Fichero | Tests | Qué verifica |
 |---------|-------|--------------|
 | `src/tests/audioEngine-hardening.test.ts` | 11 | Tolerancia a fallos de la Web Audio API, fallback de reloj dual |
+| `src/tests/audio-fades.test.ts` | 34 | Fundidos de audio por clip: curvas `linear`/`equalPower`, envolvente, cuantización |
+| `src/tests/audio-fades-persistence.test.ts` | 8 | Persistencia de los fundidos (proyecto guardado/recuperado) |
 | `src/tests/challenger-stress.test.ts` | 13 | Estrés adversarial de `MasterClock`/`AudioEngine`, latencia de `togglePlay()` |
 | `src/tests/challenger-stress-verification.test.ts` | 14 | `MediaSourcePool.syncVideoTime` (histeresis, cooldown, seeks), compositor sin asignaciones, aislamiento de render de `MobileBottomBar` |
+| `src/tests/clipboard-export-range.test.ts` | 43 | Portapapeles (copiar/pegar/duplicar), preajustes y rango de exportación |
 | `src/tests/clipGestures.test.ts` | 8 | Historial por gesto (drag/trim con un único undo) |
+| `src/tests/color-filters.test.ts` | 31 | Filtros de color: normalización, preajustes, paridad preview/export |
+| `src/tests/crossfade.test.ts` | 52 | Fundido de cruce: mezcla lineal, marcadores, solape deliberado vs ilegal |
 | `src/tests/data-integrity.test.ts` | 22 | Integridad del estado: mediaPool en el historial, clips, pistas bloqueadas |
 | `src/tests/engine-correctness.test.ts` | 35 | Corrección del motor: failover de reloj, resync en seek, liberación de recursos |
 | `src/tests/engine.test.ts` | 30 | Orden de capas del compositor, jerarquía de pistas, **contrato real del exportador** (dimensiones pares y audio planar `f32-planar`) |
 | `src/tests/exporterConfig.test.ts` | 14 | Sonda de encoder, selección de config AVC, traducción de errores |
 | `src/tests/export-pipeline.test.ts` | 32 | Pipeline de export: fallback a MediaRecorder, nivel AVC, duración de audio, muxing |
 | `src/tests/features.test.ts` | 17 | Waveforms, transiciones, snapping, controles de velocidad |
+| `src/tests/keyframes.test.ts` | 48 | Keyframes de transform: orden, interpolación lineal, evaluación |
+| `src/tests/keyframes-persistence.test.ts` | 4 | Persistencia de los keyframes (proyecto guardado/recuperado) |
 | `src/tests/lifecycle-integration.test.ts` | 22 | Ciclo de vida: liberación de recursos, errores de persistencia, autosave al cerrar |
+| `src/tests/master-volume.test.ts` | 13 | Volumen maestro: clamp, persistencia, ruta de `AudioEngine` |
+| `src/tests/mobile-parity.test.ts` | 19 | Paridad móvil: ±1 fotograma, volumen maestro, 4×, `fade-white` (guardas de regresión) |
+| `src/tests/multi-select.test.ts` | 38 | Multi-selección y acciones en lote (aditiva, rango, goma, un solo undo) |
 | `src/tests/perf-storage.test.ts` | 34 | Object URLs, miniaturas, autosave con debounce, escritura atómica del índice |
 | `src/tests/playback-acceptance.test.ts` | 24 | Aceptación de reproducción 60 FPS (R1–R5), incl. simulación de 10 minutos y aislamiento de render |
+| `src/tests/playback-speed.test.ts` | 25 | Velocidad y pitch: `resolvePlayback`, compensación en cents, preview/export |
+| `src/tests/product-features-r1.test.ts` | 29 | Funciones de producto R1 (portapapeles, solapamiento, papelera, ausentes) |
+| `src/tests/project-portability.test.ts` | 43 | Portabilidad: backup con medios embebidos (límite 64 MB), importación con reporte |
 | `src/tests/projectStorage-hardening.test.ts` | 4 | Endurecimiento de `projectStorage` |
 | `src/tests/projectStorage.test.ts` | 18 | Persistencia multi-proyecto (IndexedDB + OPFS) |
 | `src/tests/quality-guard.test.ts` | 5 | **Guarda de calidad del propio suite** (ver §5) |
-| `src/tests/render-scale.test.ts` | 16 | `computeRenderScale`: el preview se rasteriza a la resolución de pantalla |
+| `src/tests/render-scale.test.ts` | 18 | `computeRenderScale`: el preview se rasteriza a la resolución de pantalla |
+| `src/tests/timecode.test.ts` | 7 | Timecode `HH:MM:SS:FF` y etiqueta del rango de exportación |
 | `src/tests/timeline-duration.test.ts` | 27 | Duración real del proyecto, duplicación de pistas, estados deshacibles, `NaN` |
 | `src/tests/timeline.test.ts` | 27 | Utilidades de tiempo, snapping magnético, operaciones del store, jerarquía de pistas |
 | `src/tests/ui-a11y.test.ts` | 24 | Accesibilidad: menús anclados, focus trap, live region, disponibilidad del botón Dividir |
@@ -112,7 +126,19 @@ npm run typecheck          # == tsc --noEmit
 | `src/tests/browser/suite-layout.mjs` | Layout responsive (6 viewports × 2 `devicePixelRatio`) |
 | `src/tests/browser/suite-playback.mjs` | Reproducción, deshacer/rehacer y persistencia |
 | `src/tests/browser/suite-export.mjs` | Pipeline de exportación MP4 |
+| `src/tests/browser/suite-features.mjs` | Funciones de producto: portapapeles, color, velocidad, presets/rango, almacenamiento, multi-selección |
 | `src/tests/browser/suite-known-issues.mjs` | Defectos conocidos (informativo; con `--strict` fallan) |
+
+### 3.2 Checks por suite (medidos el 2026-10-20)
+
+| Suite | Checks |
+|-------|--------|
+| `layout` | 92 |
+| `playback` | 4 |
+| `export` | 8 |
+| `known-issues` | 14 |
+| `features` | 22 |
+| **Total** | **140** |
 
 ### 3.2 Ejecutar
 
@@ -124,6 +150,7 @@ npm run test:browser
 npm run test:browser layout
 npm run test:browser playback
 npm run test:browser export
+npm run test:browser features
 npm run test:browser known-issues
 
 # Con el navegador visible
@@ -155,10 +182,10 @@ cubre así:
 
 | Nivel conceptual | Dónde vive hoy |
 |------------------|----------------|
-| **Nivel 1 — Cobertura de funcionalidad** (R1–R6) | Suites de Vitest de la capa A: `features`, `audioEngine-hardening`, `engine-correctness`, `ui-a11y`, `timeline`, `exporterConfig` |
-| **Nivel 2 — Casos límite y de esquina** | `challenger-stress`, `challenger-stress-verification`, `data-integrity`, `timeline-duration`, `perf-storage`, `projectStorage-hardening`, `engine.test.ts` (contrato del exportador) |
+| **Nivel 1 — Cobertura de funcionalidad** (R1–R6) | Suites de Vitest de la capa A: `features`, `audioEngine-hardening`, `engine-correctness`, `ui-a11y`, `timeline`, `exporterConfig`, más la ola de producto (`product-features-r1`, `clipboard-export-range`, `crossfade`, `audio-fades`, `color-filters`, `keyframes`, `playback-speed`, `master-volume`, `multi-select`, `timecode`, `mobile-parity`) |
+| **Nivel 2 — Casos límite y de esquina** | `challenger-stress`, `challenger-stress-verification`, `data-integrity`, `timeline-duration`, `perf-storage`, `projectStorage-hardening`, `engine.test.ts` (contrato del exportador), `project-portability` (límite de 64 MB), `keyframes-persistence`, `audio-fades-persistence` |
 | **Nivel 3 — Interacciones entre subsistemas** | `lifecycle-integration`, `playback-acceptance`, `export-pipeline`, `engine-correctness` |
-| **Nivel 4 — Escenarios reales multi-dispositivo** | Harness de navegador (`src/tests/browser/`): 6 viewports × 2 `devicePixelRatio` (layout), reproducción, persistencia y exportación real en MP4 |
+| **Nivel 4 — Escenarios reales multi-dispositivo** | Harness de navegador (`src/tests/browser/`): 6 viewports × 2 `devicePixelRatio` (layout: 92 checks), reproducción/persistencia (playback), exportación real en MP4 (export) y funciones de producto en Chrome real (features: 22 checks) |
 
 ---
 

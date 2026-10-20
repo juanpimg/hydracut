@@ -215,6 +215,18 @@ const AudioWaveform: React.FC<{
   );
 };
 
+/**
+ * Resolves which clip ids a per-clip action (copy / duplicate) applies to.
+ * Contract: when the clicked clip is part of the current multi-selection,
+ * the action covers the WHOLE selection (same as the Ctrl+C / Ctrl+D
+ * keyboard shortcuts); otherwise it covers only the clicked clip. Always
+ * returns a fresh array so callers cannot mutate the store state.
+ */
+export function resolveActionScopeIds(clipId: string, selectedClipIds: string[]): string[] {
+  if (selectedClipIds.includes(clipId)) return [...selectedClipIds];
+  return [clipId];
+}
+
 export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const zoom = useProjectStore((s) => s.zoom);
   const fps = useProjectStore((s) => s.project.fps);
@@ -896,7 +908,17 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
           their Spanish label. The row is NOT clipped by the clip box
           (`overflow-visible` while the clip is selected) so it stays
           reachable even in a very short clip. */}
-      {isSelected && (
+      {isSelected && (() => {
+        // The action row covers the WHOLE selection when the clip is part
+        // of it (identical to the Ctrl+C / Ctrl+D shortcuts), else only
+        // the clicked clip.
+        const scopeIds = resolveActionScopeIds(clip.id, selectedClipIds);
+        const scopeCount = scopeIds.length;
+        const copyScopeLabel =
+          scopeCount > 1 ? `Copiar ${scopeCount} clips` : `Copiar ${clip.name}`;
+        const duplicateScopeLabel =
+          scopeCount > 1 ? `Duplicar ${scopeCount} clips` : `Duplicar ${clip.name}`;
+        return (
         <div
           data-testid="clip-clipboard-actions"
           role="group"
@@ -907,14 +929,14 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         >
           <button
             type="button"
-            title="Copiar"
-            aria-label={`Copiar ${clip.name}`}
+            title={copyScopeLabel}
+            aria-label={copyScopeLabel}
             data-testid="clip-copy-button"
-            onClick={() => copyClips([clip.id])}
+            onClick={() => copyClips(resolveActionScopeIds(clip.id, selectedClipIds))}
             className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             <Copy size={12} className="shrink-0" />
-            {showClipboardLabels && <span className="text-[9px] font-semibold">Copiar</span>}
+            {showClipboardLabels && <span className="text-[9px] font-semibold">{scopeCount > 1 ? copyScopeLabel : 'Copiar'}</span>}
           </button>
           <button
             type="button"
@@ -930,17 +952,18 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
           </button>
           <button
             type="button"
-            title="Duplicar"
-            aria-label={`Duplicar ${clip.name}`}
+            title={duplicateScopeLabel}
+            aria-label={duplicateScopeLabel}
             data-testid="clip-duplicate-button"
-            onClick={() => duplicateClips([clip.id])}
+            onClick={() => duplicateClips(resolveActionScopeIds(clip.id, selectedClipIds))}
             className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
             <CopyPlus size={12} className="shrink-0" />
-            {showClipboardLabels && <span className="text-[9px] font-semibold">Duplicar</span>}
+            {showClipboardLabels && <span className="text-[9px] font-semibold">{scopeCount > 1 ? duplicateScopeLabel : 'Duplicar'}</span>}
           </button>
         </div>
-      )}
+        );
+      })()}
 
       {/* Right Trim Handle (CapCut Style Pill with Expanded Touch Hitbox) */}
       <div

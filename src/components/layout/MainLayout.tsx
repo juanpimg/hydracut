@@ -85,6 +85,22 @@ export function resolveClipboardShortcut(event: {
 }
 
 /**
+ * Resolves the clip ids a clipboard shortcut (F7) must operate on.
+ *
+ * The keyboard shortcuts operate on the WHOLE multi-selection
+ * (`selectedClipIds`), falling back to the primary clip (`selectedClipId`)
+ * when the selection is empty. A defensive copy is returned so callers can
+ * never mutate the store array.
+ */
+export function resolveClipboardIds(
+  selectedClipIds: string[],
+  selectedClipId: string | null
+): string[] {
+  if (selectedClipIds.length > 0) return [...selectedClipIds];
+  return selectedClipId ? [selectedClipId] : [];
+}
+
+/**
  * F7: the refusals of the store must be VISIBLE.
  *
  * The store publishes two failure signals:
@@ -287,11 +303,12 @@ export const MainLayout: React.FC = () => {
         return;
       }
 
-      // F7: Ctrl/Cmd + C / V / D → copy / paste / duplicate the selected clip.
+      // F7: Ctrl/Cmd + C / V / D → copy / paste / duplicate the whole
+      // multi-selection (falling back to the primary clip when it is empty).
       const clipboardShortcut = resolveClipboardShortcut(e);
       if (clipboardShortcut) {
         const state = useProjectStore.getState();
-        const selectedIds = state.selectedClipId ? [state.selectedClipId] : [];
+        const selectedIds = resolveClipboardIds(state.selectedClipIds, state.selectedClipId);
         let acted = false;
 
         if (clipboardShortcut === 'copy') {
