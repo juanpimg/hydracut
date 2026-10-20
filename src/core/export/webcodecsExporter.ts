@@ -3,6 +3,7 @@ import { Clip, ExportConfig, ExportProgress, MediaItem, Track } from '../../type
 import { Compositor } from '../engine/Compositor';
 import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
 import { applyDetuneToParam, resolvePlayback } from '../utils/playbackRate';
+import { buildAudioFadeAutomation } from '../utils/audioFades';
 import { buildCssFilterString, getCanvasFilterSupport } from '../utils/colorFilters';
 import {
   buildCrossfadeAudioSchedule,
@@ -956,7 +957,28 @@ export async function renderOfflineAudio(
       }
 
       sourceNode.connect(gainNode);
-      gainNode.connect(offlineCtx.destination);
+
+      // Fundidos de audio por clip: la envolvente vive en un `GainNode`
+      // DEDICADO en serie (`source → gain → fade → destino`) muestreada de
+      // `audioFadeEnvelopeGain`, LA MISMA función que evalúa el preview por
+      // frame, así que ambas envolventes acuerdan en todo instante. Sin
+      // fundidos no hay segundo nodo ni eventos nuevos: el camino histórico
+      // queda intacto (un export sin fundidos se comporta igual que hoy).
+      const fadeEvents = buildAudioFadeAutomation(clip);
+      if (fadeEvents.length > 0) {
+        const fadeNode = offlineCtx.createGain();
+        gainNode.connect(fadeNode);
+        fadeNode.connect(offlineCtx.destination);
+        for (const fadeEvent of fadeEvents) {
+          if (fadeEvent.type === 'set') {
+            fadeNode.gain.setValueAtTime(fadeEvent.value, fadeEvent.time);
+          } else {
+            fadeNode.gain.linearRampToValueAtTime(fadeEvent.value, fadeEvent.time);
+          }
+        }
+      } else {
+        gainNode.connect(offlineCtx.destination);
+      }
 
       const offset = Math.min(clip.sourceStart, Math.max(0, decodedBuffer.duration - 0.01));
       const bufferDurationAvailable = Math.max(0, decodedBuffer.duration - offset);

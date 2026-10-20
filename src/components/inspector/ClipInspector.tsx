@@ -16,7 +16,7 @@ import {
   CheckSquare
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Clip, ClipColorFilters, OverlapPolicy, TransitionType } from '../../types/project';
+import { Clip, AudioFadeCurve, ClipColorFilters, OverlapPolicy, TransitionType } from '../../types/project';
 import {
   DEFAULT_OVERLAP_POLICY,
   getBatchOperationAvailability,
@@ -38,6 +38,11 @@ import {
   crossfadeFrameDuration,
   describeCrossfadeForClip,
 } from '../../core/utils/crossfade';
+import {
+  AUDIO_FADE_DEFAULT_DURATION,
+  DEFAULT_AUDIO_FADE_CURVE,
+  audioFadeFrameDuration,
+} from '../../core/utils/audioFades';
 
 /**
  * The six sliders of the "Color" section (F9).
@@ -1005,6 +1010,141 @@ export const ClipInspector: React.FC = () => {
               >
                 {clip.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
               </button>
+            </div>
+          </div>
+
+          {/* FUNDIDOS DE AUDIO */}
+          <div className="space-y-2 pt-1" data-testid="audio-fade-section">
+            <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+              <Volume2 size={13} className="text-emerald-400" />
+              <span>Fundidos de audio</span>
+            </div>
+            <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-3">
+              <p className="text-[10px] leading-snug text-slate-500">
+                El volumen sube al inicio y baja al final del clip. La curva de potencia igual
+                mantiene la sonoridad constante durante la rampa.
+              </p>
+
+              {/* Entrada */}
+              <div>
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <label htmlFor={`audio-fade-in-${clip.id}`}>Fundido de entrada:</label>
+                  <span className="font-mono text-slate-200">
+                    {(clip.audioFadeIn?.duration ?? 0).toFixed(2)} s
+                  </span>
+                </div>
+                <input
+                  id={`audio-fade-in-${clip.id}`}
+                  type="range"
+                  min="0"
+                  max={Math.max(clip.duration, audioFadeFrameDuration(projectFps ?? 30))}
+                  step={audioFadeFrameDuration(projectFps ?? 30)}
+                  value={clip.audioFadeIn?.duration ?? 0}
+                  data-testid="audio-fade-in-duration"
+                  aria-label="Duración del fundido de entrada de audio"
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    updateClip(clip.id, {
+                      audioFadeIn:
+                        v <= 0
+                          ? undefined
+                          : { duration: v, curve: clip.audioFadeIn?.curve ?? DEFAULT_AUDIO_FADE_CURVE },
+                    });
+                  }}
+                  className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                />
+                <label htmlFor={`audio-fade-in-curve-${clip.id}`} className="text-[10px] text-slate-500 block mt-1 mb-1">
+                  Curva de entrada:
+                </label>
+                <select
+                  id={`audio-fade-in-curve-${clip.id}`}
+                  data-testid="audio-fade-in-curve"
+                  aria-label="Curva del fundido de entrada de audio"
+                  value={clip.audioFadeIn?.curve ?? DEFAULT_AUDIO_FADE_CURVE}
+                  onChange={(e) => {
+                    const curve = e.target.value as AudioFadeCurve;
+                    updateClip(clip.id, {
+                      audioFadeIn: {
+                        duration:
+                          (clip.audioFadeIn?.duration ?? 0) > 0
+                            ? clip.audioFadeIn!.duration
+                            : AUDIO_FADE_DEFAULT_DURATION,
+                        curve,
+                      },
+                    });
+                  }}
+                  className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                >
+                  <option value="equalPower">Potencia igual (recomendada)</option>
+                  <option value="linear">Lineal</option>
+                </select>
+              </div>
+
+              {/* Salida */}
+              <div>
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <label htmlFor={`audio-fade-out-${clip.id}`}>Fundido de salida:</label>
+                  <span className="font-mono text-slate-200">
+                    {(clip.audioFadeOut?.duration ?? 0).toFixed(2)} s
+                  </span>
+                </div>
+                <input
+                  id={`audio-fade-out-${clip.id}`}
+                  type="range"
+                  min="0"
+                  max={Math.max(clip.duration, audioFadeFrameDuration(projectFps ?? 30))}
+                  step={audioFadeFrameDuration(projectFps ?? 30)}
+                  value={clip.audioFadeOut?.duration ?? 0}
+                  data-testid="audio-fade-out-duration"
+                  aria-label="Duración del fundido de salida de audio"
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    updateClip(clip.id, {
+                      audioFadeOut:
+                        v <= 0
+                          ? undefined
+                          : { duration: v, curve: clip.audioFadeOut?.curve ?? DEFAULT_AUDIO_FADE_CURVE },
+                    });
+                  }}
+                  className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                />
+                <label htmlFor={`audio-fade-out-curve-${clip.id}`} className="text-[10px] text-slate-500 block mt-1 mb-1">
+                  Curva de salida:
+                </label>
+                <select
+                  id={`audio-fade-out-curve-${clip.id}`}
+                  data-testid="audio-fade-out-curve"
+                  aria-label="Curva del fundido de salida de audio"
+                  value={clip.audioFadeOut?.curve ?? DEFAULT_AUDIO_FADE_CURVE}
+                  onChange={(e) => {
+                    const curve = e.target.value as AudioFadeCurve;
+                    updateClip(clip.id, {
+                      audioFadeOut: {
+                        duration:
+                          (clip.audioFadeOut?.duration ?? 0) > 0
+                            ? clip.audioFadeOut!.duration
+                            : AUDIO_FADE_DEFAULT_DURATION,
+                        curve,
+                      },
+                    });
+                  }}
+                  className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                >
+                  <option value="equalPower">Potencia igual (recomendada)</option>
+                  <option value="linear">Lineal</option>
+                </select>
+              </div>
+
+              {(clip.audioFadeIn || clip.audioFadeOut) && (
+                <button
+                  onClick={() => updateClip(clip.id, { audioFadeIn: undefined, audioFadeOut: undefined })}
+                  data-testid="audio-fade-clear"
+                  aria-label="Quitar fundidos de audio"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                >
+                  Quitar fundidos
+                </button>
+              )}
             </div>
           </div>
         </div>

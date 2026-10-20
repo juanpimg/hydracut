@@ -27,6 +27,29 @@ export interface TextStyle {
 
 export type TransitionType = 'none' | 'fade-black' | 'fade-white' | 'slide-left' | 'wipe-right';
 
+/**
+ * Curva de un fundido de audio por clip.
+ *
+ * - `linear`:     rampa simple (`g(p) = p`).
+ * - `equalPower`: `g(p) = sin(p · π/2)` — la potencia se mantiene constante a
+ *   lo largo de la rampa, sin el bache de sonoridad del fundido lineal.
+ *   Es el valor por defecto (ver `DEFAULT_AUDIO_FADE_CURVE`).
+ */
+export type AudioFadeCurve = 'linear' | 'equalPower';
+
+/**
+ * Fundido de audio de un borde del clip (entrada o salida).
+ */
+export interface AudioFade {
+  /** Duración del fundido en segundos (cuantizada a frames en el store). */
+  duration: number;
+  /**
+   * Curva del fundido. `undefined` significa `equalPower` (el defecto):
+   * compatibilidad con los fundidos guardados sin curva.
+   */
+  curve?: AudioFadeCurve;
+}
+
 export interface ClipTransition {
   fadeInType: TransitionType;
   fadeInDuration: number;  // segundos
@@ -145,6 +168,24 @@ export interface Clip {
    * (`src/core/utils/playbackRate.ts`), la única fuente de verdad.
    */
   preservePitch?: boolean;
+
+  /**
+   * Fundidos de audio por clip (fade in / fade out).
+   *
+   * A diferencia del `transition` (efecto de borde de vídeo que solo atenúa
+   * el audio con `fade-black`/`fade-white`), estos fundidos son una
+   * envolvente de ganancia 0..1 con curva propia (`linear` | `equalPower`,
+   * por defecto `equalPower`) evaluada en el tiempo dentro del clip.
+   *
+   * Opcionales por compatibilidad: un clip sin fundidos suena a volumen
+   * constante, como hoy. La duración está cuantizada a frames del proyecto y
+   * recortada a la duración del clip (ver `clampClipAudioFades` en
+   * `src/core/utils/audioFades.ts`); el motor y el export la reescalan si un
+   * trim acorta el clip por debajo del fundido guardado, así que ambas
+   * envolventes siempre acuerdan.
+   */
+  audioFadeIn?: AudioFade;
+  audioFadeOut?: AudioFade;
 
   // Propiedades de Texto y Letras Sincronizadas
   text?: string;

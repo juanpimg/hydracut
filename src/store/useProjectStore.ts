@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import {
   AspectRatio,
+  AudioFade,
   Clip,
   MediaItem,
   MediaStatus,
@@ -26,6 +27,7 @@ import {
   isDeliberateCrossfadeOverlap,
   planCrossfade,
 } from '../core/utils/crossfade';
+import { clampClipAudioFades } from '../core/utils/audioFades';
 import { mediaSourcePool } from '../core/engine/MediaSourcePool';
 import { compositor } from '../core/engine/Compositor';
 import { audioEngine } from '../core/engine/AudioEngine';
@@ -179,6 +181,21 @@ export type CrossfadeResult =
  * dragging the duration slider produces ONE undo step, not one per tick.
  */
 export const CROSSFADE_COALESCE_WINDOW_MS = 400;
+
+/* ------------------------------------------------------------------ */
+/* Fundidos de audio por clip (fade in / fade out)                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Result of `setAudioFade`.
+ *
+ * Like `addClipFromMedia`, the UI needs to know WHY the values did not land
+ * as requested: a fade longer than the clip is CLAMPED (not silently kept)
+ * and the reason is reported (in `reason` and in `lastError`).
+ */
+export type AudioFadeResult =
+  | { ok: true; clipId: string; clamped: boolean; reason: string | null }
+  | { ok: false; reason: string };
 
 /** Tolerance (seconds) used when comparing the edges of two intervals. */
 const OVERLAP_EPSILON = 1e-6;
@@ -938,6 +955,34 @@ export interface ProjectState {
    * single undo entry, so dragging the Inspector slider is one undo step.
    */
   setCrossfadeDuration: (clipId: string, duration: number) => CrossfadeResult;
+
+  /* ---------------------------------------------------------------- */
+  /* Fundidos de audio por clip                                        */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Sets the audio fades (fade in / fade out) of a clip.
+   *
+   * Only the sides present in `fade` change (pass `{ fadeIn }` to leave the
+   * fade out untouched). The durations are quantised to frames of the project
+   * and clamped to the clip duration (`clampClipAudioFades`): when anything
+   * is trimmed the result reports `clamped: true` WITH the reason (also
+   * published as `lastError` so the UI can show it).
+   *
+   * Undoable, and consecutive calls on the same clip inside the coalescing
+   * window share a single undo entry (it delegates to `updateClip`, so a
+   * slider drag is one undo step).
+   *
+   * Refuses with a reason when the clip does not exist, has no audio, or when
+   * neither side is given.
+   */
+  setAudioFade: (clipId: string, fade: { fadeIn?: AudioFade; fadeOut?: AudioFade }) => AudioFadeResult;
+
+  /**
+   * Removes both audio fades of a clip (undoable, via `updateClip`).
+   * Returns `false` when the clip does not exist.
+   */
+  clearAudioFades: (clipId: string) => boolean;
 
   /* ---------------------------------------------------------------- */
   /* F7 — internal clipboard                                            */
@@ -2352,6 +2397,56 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   /* ------------------------------------------------------------------ */
+  /* Fundidos de audio por clip                                          */
+  /* ------------------------------------------------------------------ */
+
+  setAudioFade: (clipId, fade) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para ajustar el fundido de audio.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    if (clip.type !== 'audio' && clip.type !== 'video') {
+      const reason =
+        `«${clip.name}» no tiene audio: los fundidos de audio solo se aplican a clips con audio. ` +
+        'Selecciona un clip de audio o de vídeo.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    // Solo cambian los lados presentes: `{ fadeIn }` deja el `fadeOut`
+    // intacto (limpiar es `clearAudioFades`, no pasar `undefined` aquí).
+    const patch: Partial<Clip> = {};
+    if (fade.fadeIn !== undefined) patch.audioFadeIn = fade.fadeIn;
+    if (fade.fadeOut !== undefined) patch.audioFadeOut = fade.fadeOut;
+    if (!('audioFadeIn' in patch) && !('audioFadeOut' in patch)) {
+      const reason =
+        'Indica la duración del fundido de entrada o de salida (o usa «Quitar fundidos» para eliminarlos).';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+
+    // `updateClip` cuantiza y recorta con los fps del proyecto, comparte UNA
+    // entrada de historial al arrastrar, y publica el motivo del recorte en
+    // `lastError`: ese motivo es el `reason` de este resultado.
+    get().updateClip(clipId, patch);
+    const reason = get().lastError;
+    return { ok: true, clipId, clamped: reason !== null, reason };
+  },
+
+  clearAudioFades: (clipId) => {
+    const clip = get().project.clips.find((c) => c.id === clipId);
+    if (!clip) return false;
+    if (clip.audioFadeIn === undefined && clip.audioFadeOut === undefined) return true;
+    get().updateClip(clipId, { audioFadeIn: undefined, audioFadeOut: undefined });
+    return true;
+  },
+
+  /* ------------------------------------------------------------------ */
   /* F7 — internal clipboard                                             */
   /* ------------------------------------------------------------------ */
 
@@ -2681,6 +2776,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       }
     }
 
+    // Fundidos de audio: toda escritura pasa por `clampClipAudioFades` con los
+    // fps reales del proyecto (cuantización a frame + recorte a la duración
+    // del clip). `'audioFadeIn' in nextUpdates` (y no `!== undefined`) porque
+    // limpiar es asignar `undefined` explícito y también debe revalidar el
+    // lado que queda (un fundido de salida que ya supera el clip no puede
+    // sobrevivir a que se limpie el de entrada).
+    let audioFadeClampReason: string | null = null;
+    if ('audioFadeIn' in nextUpdates || 'audioFadeOut' in nextUpdates) {
+      const fps = state.project.fps;
+      const effectiveDuration =
+        nextUpdates.duration !== undefined ? nextUpdates.duration : clip.duration;
+      const clamped = clampClipAudioFades(
+        'audioFadeIn' in nextUpdates ? nextUpdates.audioFadeIn : clip.audioFadeIn,
+        'audioFadeOut' in nextUpdates ? nextUpdates.audioFadeOut : clip.audioFadeOut,
+        effectiveDuration,
+        fps
+      );
+      nextUpdates.audioFadeIn = clamped.fadeIn;
+      nextUpdates.audioFadeOut = clamped.fadeOut;
+      audioFadeClampReason = clamped.reason;
+    }
+
     set((s) => {
       const updatedClips = s.project.clips.map((c) => (c.id === clipId ? { ...c, ...nextUpdates } : c));
       const updated = { ...s.project, clips: updatedClips, updatedAt: Date.now() };
@@ -2690,7 +2807,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         historyCoalesceKey: inGesture ? null : clipId,
         historyCoalesceAt: inGesture ? 0 : now,
         // F6: a successful edit clears the stale refusal of a previous action.
-        lastError: null,
+        // A clamped audio fade keeps its reason instead (the values did NOT
+        // land as requested and the user must know).
+        lastError: audioFadeClampReason,
       };
     });
     get().recalculateDuration();
@@ -2981,6 +3100,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       ...clip,
       duration: firstDuration,
       transition: clip1Transition,
+      // Fundidos de audio: la primera mitad conserva la entrada y pierde la
+      // salida (igual que los fundidos de borde del `transition` de arriba).
+      audioFadeOut: undefined,
       ...(firstWords ? { words: firstWords } : {}),
     };
 
@@ -2994,6 +3116,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       duration: secondDuration,
       sourceStart: secondSourceStart,
       transition: clip2Transition,
+      // La segunda mitad conserva la salida y pierde la entrada.
+      audioFadeIn: undefined,
       ...(secondWords ? { words: secondWords } : {}),
     };
 

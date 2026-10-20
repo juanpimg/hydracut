@@ -2,6 +2,7 @@ import { Clip, MediaItem, Track } from '../../types/project';
 import { masterClock } from './MasterClock';
 import { mediaSourcePool } from './MediaSourcePool';
 import { resolvePlayback } from '../utils/playbackRate';
+import { previewClipFadeGain } from '../utils/audioFades';
 import {
   createCrossfadeIndexCache,
   crossfadeInGain,
@@ -22,6 +23,19 @@ const MAX_PLAY_FAILURES = 3;
  * a pre-roll so there is no gap at every cut (E-20).
  */
 const PREWARM_WINDOW = 2.5;
+
+/**
+ * Epsilon of the element-volume cache while a clip is INSIDE an audio fade.
+ *
+ * The idle path only rewrites `HTMLMediaElement.volume` when the delta is
+ * >= 0.01 (see `07-perf-resources.md`: no 60 Hz DOM thrash of inaudible
+ * deltas). A fade genuinely moves every frame, so that step would stair-step
+ * the ramp; the fading path therefore uses a tight epsilon instead. The
+ * write is still guarded (an identical value is never rewritten), so the
+ * no-thrash contract holds: one DOM write per frame at most, only while the
+ * gain really changes.
+ */
+const FADE_ACTIVE_VOLUME_EPSILON = 0.0001;
 
 /** A media element routed through the Web Audio graph. */
 interface RoutedElement {
@@ -319,7 +333,17 @@ export class AudioEngine {
               xfSpan.role === 'out' ? crossfadeOutGain(xfProgress) : crossfadeInGain(xfProgress);
           }
 
-          const effectiveVolume = (clip.volume ?? 1) * this.masterVolume * transitionMultiplier;
+          // Fundidos de audio por clip: la envolvente 0..1 de
+          // `previewClipFadeGain` (la MISMA función que muestrea el export)
+          // multiplica la ganancia. Sin fundidos el coste es dos lecturas de
+          // campo y la llamada ni siquiera ocurre; con fundidos es aritmética
+          // escalar sin asignaciones (contrato de cero asignaciones por frame).
+          const hasAudioFade =
+            (clip.audioFadeIn?.duration ?? 0) > 0 || (clip.audioFadeOut?.duration ?? 0) > 0;
+          const fadeMultiplier = hasAudioFade ? previewClipFadeGain(clip, time) : 1;
+
+          const effectiveVolume =
+            (clip.volume ?? 1) * this.masterVolume * transitionMultiplier * fadeMultiplier;
 
           // Gain up to 100% is applied on the element; anything above is applied
           // through the Web Audio graph so that 200% is really 200% (E-04).
@@ -330,10 +354,16 @@ export class AudioEngine {
           }
           const cachedVolume = this.elementVolumeCache.get(mediaEl);
 
-          // Guard volume mutation: update only when delta >= 0.01 or at boundary values (0 or 1)
+          // Guard volume mutation: update only when delta >= 0.01 or at boundary values (0 or 1).
+          // A clip INSIDE its fade uses FADE_ACTIVE_VOLUME_EPSILON instead: the
+          // gain genuinely moves every frame and the 0.01 step would stair-step
+          // the ramp. The write stays guarded (identical values are never
+          // rewritten), so this is not 60 Hz DOM thrash.
+          const fadeActive = fadeMultiplier > 0 && fadeMultiplier < 1;
+          const volumeEpsilon = fadeActive ? FADE_ACTIVE_VOLUME_EPSILON : 0.01;
           if (
             cachedVolume === undefined ||
-            Math.abs(cachedVolume - elementTarget) >= 0.01 ||
+            Math.abs(cachedVolume - elementTarget) >= volumeEpsilon ||
             (elementTarget === 0 && cachedVolume !== 0) ||
             (elementTarget === 1 && cachedVolume !== 1)
           ) {
