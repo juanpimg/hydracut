@@ -73,6 +73,58 @@ export function describeExportProgress(
   }
 }
 
+/**
+ * Resultado veraz de la exportación (W-40).
+ *
+ * En Firefox, `MediaRecorder` no puede grabar MP4: si el usuario pide MP4, el
+ * respaldo produce un WebM. El modal anunciaba el formato PEDIDO ("Tu video
+ * MP4…") cuando el fichero era un WebM. Esta función deriva el formato REAL
+ * del MIME del blob producido — la misma regla que `exportFileExtensionFor`
+ * del exportador (el MIME manda; el formato pedido solo respalda un MIME
+ * vacío o desconocido) — y construye el texto en español para el modal.
+ */
+export interface BuildExportResultMessageInput {
+  /** Formato que pidió el usuario en el modal. */
+  requestedFormat: 'mp4' | 'webm';
+  /** `Blob.type` del fichero producido (la verdad sobre su contenido). */
+  actualMime: string;
+}
+
+export interface BuildExportResultMessageResult {
+  /** Formato real del fichero producido. */
+  actualFormat: 'mp4' | 'webm';
+  /** `true` cuando lo pedido y lo producido no coinciden. */
+  isFormatMismatch: boolean;
+  /** Texto en español para el modal (nunca afirma un formato falso). */
+  message: string;
+}
+
+export function buildExportResultMessage(
+  input: BuildExportResultMessageInput
+): BuildExportResultMessageResult {
+  const mime = input.actualMime ?? '';
+  const actualFormat: 'mp4' | 'webm' = mime.includes('mp4')
+    ? 'mp4'
+    : mime.includes('webm')
+      ? 'webm'
+      : input.requestedFormat;
+  const isFormatMismatch = actualFormat !== input.requestedFormat;
+  let message: string;
+  if (!isFormatMismatch) {
+    message =
+      actualFormat === 'webm'
+        ? 'Tu video WebM ha sido descargado automáticamente.'
+        : 'Tu video MP4 ha sido descargado automáticamente.';
+  } else if (input.requestedFormat === 'mp4') {
+    message =
+      'Has pedido MP4, pero este navegador no puede grabar MP4: ' +
+      'se ha descargado un archivo WebM.';
+  } else {
+    message = 'Has pedido WebM, pero se ha descargado un archivo MP4.';
+  }
+  return { actualFormat, isFormatMismatch, message };
+}
+
 /* ------------------------------------------------------------------ */
 /* F10 — Export presets and export range                               */
 /* ------------------------------------------------------------------ */
@@ -443,9 +495,18 @@ export const ExportModal: React.FC = () => {
     if (!isExportModalOpen) return;
     let cancelled = false;
     import('../../core/export/webcodecsExporter')
-      .then((mod) => mod.isWebCodecsSupported())
-      .then((supported) => {
-        if (!cancelled) setHasWebCodecs(supported);
+      .then(async (mod) => {
+        // Sonda PROFUNDA (no solo `isConfigSupported`): crea un encoder real
+        // y comprueba que sobrevive. En Firefox `isConfigSupported` dice "sí"
+        // al H.264 pero el encoder de la plataforma muere al configurarse, así
+        // que el badge mentía ("Aceleración WebCodecs Activa") para una
+        // exportación que iba a degradar a MediaRecorder. Con la sonda
+        // profunda el badge y la realidad concuerdan: si ningún encoder
+        // sobrevive, se anuncia el respaldo MediaRecorder.
+        // (1920x1080@30 es la configuración por defecto del modal; el
+        // exportador revalida de todos modos las dimensiones reales.)
+        const working = await mod.findWorkingVideoEncoderConfig(1920, 1080, 8_000_000, 30);
+        if (!cancelled) setHasWebCodecs(working !== null);
       })
       .catch(() => {
         if (!cancelled) setHasWebCodecs(false);
@@ -486,15 +547,17 @@ export const ExportModal: React.FC = () => {
 
   useEffect(() => {
     if (progressState.state === 'completed') {
-      announce(
-        exportFormat === 'webm'
-          ? 'Exportación completada: el vídeo WebM se ha descargado'
-          : 'Exportación completada: el vídeo MP4 se ha descargado'
-      );
+      // W-40: el anuncio usa el formato REAL del blob (no el pedido): en
+      // Firefox con MP4 pedido se produjo un WebM y el anuncio mentía.
+      const { message } = buildExportResultMessage({
+        requestedFormat: exportFormat,
+        actualMime: progressState.outputBlob?.type ?? '',
+      });
+      announce(`Exportación completada: ${message}`);
     } else if (progressState.state === 'error') {
       announce(`Error al exportar: ${progressState.error ?? 'error desconocido'}`);
     }
-  }, [progressState.state, progressState.error, exportFormat]);
+  }, [progressState.state, progressState.error, progressState.outputBlob, exportFormat]);
 
   if (!isExportModalOpen) return null;
 
@@ -536,6 +599,17 @@ export const ExportModal: React.FC = () => {
     exportResult && exportResult.durationSeconds > 0
       ? exportResult.durationSeconds
       : exportDuration;
+
+  /**
+   * W-40: texto veraz del resultado. Se deriva del MIME REAL del blob
+   * producido (`progressState.outputBlob.type`), no del formato pedido: si el
+   * usuario pidió MP4 pero el respaldo grabó un WebM (Firefox), el mensaje lo
+   * dice y avisa del desajuste en vez de anunciar un MP4 inexistente.
+   */
+  const exportResultMessage = buildExportResultMessage({
+    requestedFormat: exportFormat,
+    actualMime: progressState.outputBlob?.type ?? '',
+  });
 
   /**
    * F10: applies a preset (one click sets resolution, fps, bitrate and the
@@ -699,10 +773,14 @@ export const ExportModal: React.FC = () => {
             </div>
             <div>
               <h3 className="text-sm font-bold text-white">
-                {exportFormat === 'webm' ? 'Exportar Video WebM' : 'Exportar Video MP4'}
+                {exportFormat === 'webm'
+                  ? 'Exportar Video WebM'
+                  : hasWebCodecs
+                    ? 'Exportar Video MP4'
+                    : 'Exportar Video MP4 (WebM en este navegador)'}
               </h3>
               <p className="text-xs text-slate-400">
-                {exportFormat === 'webm'
+                {exportFormat === 'webm' || !hasWebCodecs
                   ? 'Grabación en tiempo real (respaldo MediaRecorder)'
                   : '100% acelerado en el cliente (GPU nativa)'}
               </p>
@@ -1067,11 +1145,7 @@ export const ExportModal: React.FC = () => {
               {progressState.state === 'completed' && (
                 <div className="p-3 bg-emerald-950/40 border border-emerald-800/60 rounded-lg text-emerald-300 text-xs flex items-center gap-2">
                   <CheckCircle size={16} />
-                  <span>
-                    {exportFormat === 'webm'
-                      ? 'Tu video WebM ha sido descargado automáticamente.'
-                      : 'Tu video MP4 ha sido descargado automáticamente.'}
-                  </span>
+                  <span data-testid="export-result-message">{exportResultMessage.message}</span>
                 </div>
               )}
 

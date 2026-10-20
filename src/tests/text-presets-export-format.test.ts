@@ -620,22 +620,32 @@ describe('Feature A · el store aplica la plantilla de forma deshacible', () => 
 /* Feature B · formato WebM                                            */
 /* ================================================================== */
 describe('Feature B · selección del MIME del grabador de respaldo', () => {
-  it('webm pide VP9/VP8 primero; mp4 mantiene el orden histórico exacto', async () => {
+  it('webm pide variantes con audio primero; mp4 mantiene el orden histórico exacto al principio', async () => {
     const { resolveRecorderMimeCandidates } = await import(
       '../core/export/webcodecsExporter'
     );
+    // Nuevo contrato: todo candidato debe ser válido para un stream CON audio.
+    // `isTypeSupported('video/webm;codecs=vp8')` dice "sí" en Firefox pero su
+    // `start()` muere con audio, así que las variantes con códec de audio
+    // (opus) y el contenedor bare van delante; las planas quedan al final por
+    // si el stream no lleva audio.
     expect(resolveRecorderMimeCandidates('webm')).toEqual([
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
       'video/webm;codecs=vp9',
       'video/webm;codecs=vp8',
-      'video/webm',
     ]);
-    // El camino MP4 no cambia ni un byte: mismo orden que antes del cambio.
+    // El camino MP4 no cambia ni un byte en Chrome: mp4 primero (arranca con
+    // el primer candidato y nunca llega a los siguientes).
     expect(resolveRecorderMimeCandidates('mp4')).toEqual([
       'video/mp4;codecs=avc1',
       'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
       'video/webm;codecs=vp9',
       'video/webm;codecs=vp8',
-      'video/webm',
     ]);
   });
 

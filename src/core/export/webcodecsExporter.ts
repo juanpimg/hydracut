@@ -1323,21 +1323,39 @@ export type ExportContainerFormat = 'mp4' | 'webm';
 /**
  * Candidatos MIME del grabador de respaldo según el formato pedido.
  *
- * El orden importa: `MediaRecorder` usa el primero soportado. Para WebM los
- * VP9/VP8 van primero (el formato nativo del grabador); para MP4 se mantiene
- * EXACTAMENTE el orden histórico (mp4 primero), así que el camino MP4 no
- * cambia ni un byte.
+ * El orden importa: el grabador prueba cada candidato con construir + start()
+ * reales (`startRecorderWithFallback`) y se queda con el primero que arranca.
+ *
+ * Para MP4 se mantiene EXACTAMENTE el orden histórico al principio (mp4
+ * primero), así que el camino MP4 en Chrome no cambia ni un byte: Chrome
+ * arranca con el primer candidato y nunca llega a los siguientes.
+ *
+ * Tras los mp4 van las variantes webm CON códec de audio (`opus`) y el
+ * contenedor bare: son las únicas que Firefox acepta cuando el stream lleva
+ * pista de audio (`isTypeSupported('video/webm;codecs=vp8')` dice "sí" pero
+ * su `start()` muere con audio). Las variantes planas se conservan al final
+ * por si el stream no lleva audio. Nuevo contrato: todo candidato debe ser
+ * válido para un stream con audio, y por eso las variantes con audio van
+ * delante.
  */
 export function resolveRecorderMimeCandidates(format: ExportContainerFormat): string[] {
   if (format === 'webm') {
-    return ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+    return [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+    ];
   }
   return [
     'video/mp4;codecs=avc1',
     'video/mp4',
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
     'video/webm;codecs=vp9',
     'video/webm;codecs=vp8',
-    'video/webm',
   ];
 }
 
@@ -1367,6 +1385,137 @@ export function pickRecorderMimeType(
       : undefined);
   if (!probe) return '';
   return resolveRecorderMimeCandidates(format).find((mime) => probe(mime)) ?? '';
+}
+
+/**
+ * Opciones mínimas para construir un grabador en `startRecorderWithFallback`.
+ * Es el subconjunto de `MediaRecorderOptions` que usa el respaldo.
+ */
+export interface RecorderStartOptions {
+  mimeType?: string;
+  videoBitsPerSecond?: number;
+}
+
+/** Superficie mínima de un grabador que `startRecorderWithFallback` necesita. */
+export interface StartableRecorder {
+  start(): void;
+  readonly mimeType?: string;
+}
+
+/**
+ * Arranca un grabador probando cada candidato DE VERDAD (construir + start()),
+ * no solo con `MediaRecorder.isTypeSupported()`.
+ *
+ * La sonda `isTypeSupported` solo valida el códec de vídeo: en Firefox dice
+ * "sí" a `video/webm;codecs=vp8` pero su `start()` rechaza el stream cuando
+ * lleva pista de audio. Por eso cada candidato se construye Y se arranca
+ * dentro del `try/catch`: si el constructor o `start()` lanzan, se sigue con
+ * el siguiente (un `start()` fallido deja el grabador inactivo y los tracks
+ * del stream intactos, así que el mismo stream se reutiliza).
+ *
+ * Si se agotan los candidatos se prueba una última vez con los defaults del
+ * navegador (sin `mimeType`); si tampoco arranca se lanza un error accionable
+ * en español (ver `buildRecorderFallbackError`).
+ *
+ * La fábrica es inyectable para poder testearla en node sin DOM. En Chrome,
+ * donde todos los candidatos arrancan, el elegido es el primero de la lista,
+ * así que el fallback de Chrome no cambia de byte.
+ */
+export function startRecorderWithFallback<R extends StartableRecorder>(
+  stream: MediaStream,
+  candidates: string[],
+  createRecorder: (stream: MediaStream, options?: RecorderStartOptions) => R,
+  videoBitsPerSecond?: number,
+  opts?: { hardwareDetail?: string }
+): { recorder: R; mimeType: string } {
+  const tried: string[] = [];
+  let lastError: unknown = null;
+
+  for (const mimeType of candidates) {
+    tried.push(mimeType);
+    let recorder: R;
+    try {
+      recorder = createRecorder(stream, { mimeType, videoBitsPerSecond });
+    } catch (err) {
+      // El constructor rechaza el MIME (p. ej. mp4 en Firefox): siguiente.
+      lastError = err;
+      continue;
+    }
+    try {
+      recorder.start();
+    } catch (err) {
+      // El constructor aceptó pero start() rechaza el stream (p. ej. vp8 con
+      // audio en Firefox): el grabador queda inactivo, el stream intacto.
+      lastError = err;
+      continue;
+    }
+    return { recorder, mimeType };
+  }
+
+  // "Retry with browser defaults": sin mimeType, el navegador elige.
+  try {
+    const recorder = createRecorder(
+      stream,
+      videoBitsPerSecond !== undefined ? { videoBitsPerSecond } : undefined
+    );
+    recorder.start();
+    return { recorder, mimeType: recorder.mimeType || '' };
+  } catch (err) {
+    lastError = err;
+  }
+
+  if (opts?.hardwareDetail) {
+    throw buildRecorderFallbackError(tried, lastError, opts.hardwareDetail);
+  }
+  throw new RecorderStartFailedError(tried, lastError);
+}
+
+/**
+ * El respaldo agotó todos los candidatos y el modo automático del navegador.
+ *
+ * Lleva los datos (`triedMimeTypes`, `lastError`) ADEMÁS del mensaje: cuando
+ * el camino acelerado también falló, `exportVideo` reconstruye UN SOLO error
+ * combinado (sin anidar dos veces la lista de formatos ni la sugerencia).
+ */
+export class RecorderStartFailedError extends Error {
+  readonly triedMimeTypes: string[];
+  readonly lastError: unknown;
+  constructor(triedMimeTypes: string[], lastError: unknown) {
+    super(buildRecorderFallbackError(triedMimeTypes, lastError).message);
+    this.name = 'RecorderStartFailedError';
+    this.triedMimeTypes = [...triedMimeTypes];
+    this.lastError = lastError;
+  }
+}
+
+/**
+ * Error final del respaldo, accionable y en español.
+ *
+ * Dice las dos cosas que pasaron cuando `hardwareDetail` viene informado (el
+ * camino acelerado falló Y el respaldo tampoco pudo grabar), lista los
+ * formatos que se probaron, conserva el detalle técnico original y sugiere
+ * una salida (navegador con WebCodecs o formato WebM).
+ */
+export function buildRecorderFallbackError(
+  triedMimeTypes: string[],
+  cause: unknown,
+  hardwareDetail?: string
+): Error {
+  const detail =
+    cause instanceof Error
+      ? `${cause.name}: ${cause.message}`
+      : String(cause ?? 'error desconocido');
+  const tried =
+    triedMimeTypes.length > 0
+      ? `se probaron los formatos ${triedMimeTypes.map((m) => `"${m}"`).join(', ')} y el modo automático del navegador`
+      : 'se probó el modo automático del navegador';
+  const hardwarePrefix = hardwareDetail
+    ? `La exportación acelerada por hardware falló (${hardwareDetail}) y el respaldo tampoco pudo grabar: `
+    : 'No se pudo grabar el vídeo con el respaldo (MediaRecorder): ';
+  return new Error(
+    `${hardwarePrefix}${tried}, sin éxito (detalle técnico: ${detail}). ` +
+      `Prueba a exportar en un navegador con WebCodecs (Chrome/Edge) o usa el formato WebM.`
+  );
 }
 
 /**
@@ -1546,9 +1695,23 @@ export async function exportVideo(params: ExportParams): Promise<Blob> {
         try {
           return await exportWithMediaRecorder(params, totalFrames, fps);
         } catch (fallbackError) {
-          // The original WebCodecs error is the most informative one.
+          // Fallaron las dos cosas (el camino acelerado Y el respaldo): el
+          // error final lo dice todo, en español y con salida accionable. Si
+          // el respaldo ya trae sus datos, se reutilizan para no anidar dos
+          // veces la lista de formatos ni la sugerencia.
           console.warn('El respaldo con MediaRecorder también falló:', fallbackError);
-          throw err;
+          if (fallbackError instanceof RecorderStartFailedError) {
+            throw buildRecorderFallbackError(
+              fallbackError.triedMimeTypes,
+              fallbackError.lastError,
+              toErrorMessage(err)
+            );
+          }
+          throw buildRecorderFallbackError(
+            resolveRecorderMimeCandidates(format),
+            fallbackError,
+            toErrorMessage(err)
+          );
         }
       }
     }
@@ -2188,37 +2351,26 @@ async function exportWithMediaRecorder(
   const mimeCandidates = resolveRecorderMimeCandidates(
     params.config.format === 'webm' ? 'webm' : 'mp4'
   );
-  let mimeType = '';
-  if (typeof MediaRecorder.isTypeSupported === 'function') {
-    mimeType =
-      mimeCandidates.find((m) => {
-        try {
-          return MediaRecorder.isTypeSupported(m);
-        } catch {
-          return false;
-        }
-      }) || '';
-  }
 
-  // The constructor throws NotSupportedError when the mimeType is rejected;
-  // retry with browser defaults before giving a clear error.
+  // El MIME se elige probando de verdad (construir + start()), no solo con
+  // `isTypeSupported()`: en Firefox esa sonda dice "sí" a vp8 pero su
+  // `start()` rechaza el stream cuando lleva pista de audio. Si todos los
+  // candidatos fallan se reintenta con los defaults del navegador; si tampoco,
+  // el error ya es accionable y en español.
   let recorder: MediaRecorder;
+  let mimeType: string;
   try {
-    recorder = mimeType
-      ? new MediaRecorder(stream, { mimeType, videoBitsPerSecond: config.bitrate })
-      : new MediaRecorder(stream, { videoBitsPerSecond: config.bitrate });
+    const started = startRecorderWithFallback(
+      stream,
+      mimeCandidates,
+      (s, options) => new MediaRecorder(s, options),
+      config.bitrate
+    );
+    recorder = started.recorder;
+    mimeType = started.mimeType;
   } catch (err) {
-    try {
-      recorder = new MediaRecorder(stream);
-      mimeType = recorder.mimeType || 'video/webm';
-    } catch {
-      const detail = err instanceof Error ? err.message : String(err);
-      isolation.restore();
-      throw new Error(
-        `Este navegador no soporta grabación de video (MediaRecorder: ${detail}). ` +
-          `Prueba con Chrome o Edge actualizados.`
-      );
-    }
+    isolation.restore();
+    throw err instanceof Error ? err : new Error(toErrorMessage(err));
   }
   const chunks: Blob[] = [];
 
@@ -2226,13 +2378,8 @@ async function exportWithMediaRecorder(
     if (e.data && e.data.size > 0) chunks.push(e.data);
   };
 
-  try {
-    recorder.start();
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    isolation.restore();
-    throw new Error(`No se pudo iniciar la grabación de respaldo: ${detail}`);
-  }
+  // El grabador ya arrancó dentro de `startRecorderWithFallback`: si estamos
+  // aquí, `start()` funcionó para el MIME elegido.
 
   return new Promise<Blob>((resolve, reject) => {
     let frameIdx = 0;
