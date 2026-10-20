@@ -1,6 +1,13 @@
 import { Clip, MediaItem, Track } from '../../types/project';
 import { mediaSourcePool } from './MediaSourcePool';
 import {
+  createCrossfadeIndexCache,
+  crossfadeInGain,
+  crossfadeOutGain,
+  refreshCrossfadeIndex,
+  type CrossfadeIndexCache,
+} from '../utils/crossfade';
+import {
   clampFilterValue,
   getCanvasFilterSupport,
   resolveColorFilter,
@@ -244,6 +251,15 @@ export class Compositor {
   private prewarmKeys: Set<string> = new Set();
 
   /**
+   * F5 · Índice de crossfades, reconstruido UNA vez por cambio de clips.
+   *
+   * `refreshCrossfadeIndex` no asigna nada cuando el contenido relevante no
+   * cambia (ni siquiera con un array nuevo por frame): cada frame posterior
+   * es un `Map.get` más aritmética escalar.
+   */
+  private crossfadeCache: CrossfadeIndexCache = createCrossfadeIndexCache();
+
+  /**
    * F9 · The colour filter of every clip, cached.
    *
    * The CSS filter string of a clip is ONLY rebuilt when the values of the
@@ -300,6 +316,23 @@ export class Compositor {
     this.activeVideoKeys.clear();
     this.prewarmKeys.clear();
     this.filterCache.clear();
+    this.crossfadeCache = createCrossfadeIndexCache();
+  }
+
+  /**
+   * F5 · Alpha multiplier of the crossfade for a clip at time `time`.
+   *
+   * 1 outside the overlap region (or when the clip takes part in no
+   * crossfade); inside the region, the LINEAR curve shared with the audio
+   * engine and the exporter (`out = 1 - p`, `in = p`, so `out + in = 1`).
+   * Scalar arithmetic only: nothing is allocated on the hot path.
+   */
+  private crossfadeAlphaAt(clipId: string, time: number): number {
+    const span = this.crossfadeCache.spans.get(clipId);
+    if (!span || span.duration <= 0) return 1;
+    if (time < span.regionStart || time >= span.regionEnd) return 1;
+    const p = (time - span.regionStart) / span.duration;
+    return span.role === 'out' ? crossfadeOutGain(p) : crossfadeInGain(p);
   }
 
   /**
@@ -471,6 +504,10 @@ export class Compositor {
       this.trackMap.set(t.id, t);
     }
 
+    // F5: the crossfade index is refreshed once per clip change (the call
+    // itself never allocates when the relevant content did not change).
+    refreshCrossfadeIndex(this.crossfadeCache, clips);
+
     this.activeVideoKeys.clear();
 
     // F9: the cache of colour filters is pruned when it grows far beyond the
@@ -613,7 +650,8 @@ export class Compositor {
               time,
               media,
               isPlaying,
-              clampedOffset
+              clampedOffset,
+              this.crossfadeAlphaAt(clip.id, time)
             );
             if (drawn !== false) {
               hasDrawnVisualFrame = true;
@@ -630,7 +668,9 @@ export class Compositor {
               media.height || 720,
               time,
               media,
-              isPlaying
+              isPlaying,
+              undefined,
+              this.crossfadeAlphaAt(clip.id, time)
             );
             if (drawn !== false) {
               hasDrawnVisualFrame = true;
@@ -652,7 +692,7 @@ export class Compositor {
         if (clip.opacity <= 0) continue;
 
         if (clip.type === 'text') {
-          this.drawTextToCanvas(ctx, clip, width, height, time);
+          this.drawTextToCanvas(ctx, clip, width, height, time, this.crossfadeAlphaAt(clip.id, time));
         }
       }
     }
@@ -741,7 +781,13 @@ export class Compositor {
     time: number = 0,
     media?: MediaItem,
     isPlaying: boolean = false,
-    sourceTime?: number
+    sourceTime?: number,
+    /**
+     * F5 · Crossfade multiplier (1 outside the overlap region). It multiplies
+     * the clip alpha together with the edge-transition alpha, so the outgoing
+     * clip ramps 1→0 while the incoming clip ramps 0→1 over the shared region.
+     */
+    crossfadeAlpha: number = 1
   ): boolean {
     const transition = calculateTransition(clip, time, canvasWidth);
 
@@ -753,9 +799,10 @@ export class Compositor {
       ctx.clip();
     }
 
-    // Opacity factoring in transition fade
+    // Opacity factoring in transition fade and crossfade (F5: the crossfade
+    // multiplies the very same alpha the edge fades use, so both combine).
     const baseAlpha = Math.max(0, Math.min(1, clip.opacity ?? 1));
-    ctx.globalAlpha = baseAlpha * transition.alphaMultiplier;
+    ctx.globalAlpha = baseAlpha * transition.alphaMultiplier * crossfadeAlpha;
 
     // Calculate aspect ratio fit
     const srcAspect = sourceWidth / sourceHeight;
@@ -879,7 +926,7 @@ export class Compositor {
     if (filtersEnabled && colorFilter && colorFilter.overlayColor && hasDrawn) {
       ctx.save();
       ctx.globalCompositeOperation = 'overlay';
-      let alpha = Math.min(1, colorFilter.overlayAlpha * baseAlpha * transition.alphaMultiplier);
+      let alpha = Math.min(1, colorFilter.overlayAlpha * baseAlpha * transition.alphaMultiplier * crossfadeAlpha);
       if (ctx.globalCompositeOperation !== 'overlay') {
         // The blend mode is not supported: fall back to a plain (weaker) tint
         // instead of ignoring the temperature altogether.
@@ -913,7 +960,9 @@ export class Compositor {
     clip: Clip,
     canvasWidth: number,
     canvasHeight: number,
-    time: number = 0
+    time: number = 0,
+    /** F5 · Crossfade multiplier (1 outside the overlap region). */
+    crossfadeAlpha: number = 1
   ): void {
     if (!clip.text) return;
 
@@ -939,7 +988,7 @@ export class Compositor {
     const preset = style.animationPreset || 'none';
 
     // Opacity calculation (including smooth fade-in/out for 'fade-phrase' and transition alpha)
-    let baseOpacity = Math.max(0, Math.min(1, (clip.opacity ?? 1) * transition.alphaMultiplier));
+    let baseOpacity = Math.max(0, Math.min(1, (clip.opacity ?? 1) * transition.alphaMultiplier * crossfadeAlpha));
     if (preset === 'fade-phrase') {
       const fadeInDuration = 0.35;
       const fadeOutDuration = 0.35;

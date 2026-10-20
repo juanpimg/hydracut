@@ -1567,10 +1567,544 @@ async function caseStorage({ browser, report, baseUrl }) {
 
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ * 6. Multi-selección (F6) + timecode frame-accurate del rango
+ *
+ *   MULTISELECT-CTRL-CLICK   Ctrl+clic suma a la selección (2 clips,
+ *                            un solo primario, aria-pressed en ambos)
+ *   MULTISELECT-SHIFT-CLICK  Mayús+clic selecciona el rango de la pista
+ *                            y nunca cruza de pista
+ *   MULTISELECT-RUBBER-BAND  la goma selecciona lo que toca, el clic en
+ *                            vacío limpia y la rueda sigue con scroll/zoom
+ *   MULTISELECT-BATCH-VOLUME el volumen en lote toca los 3 clips y un
+ *                            solo Ctrl+Z lo revierte
+ *   MULTISELECT-INSPECTOR    "N clips seleccionados" + velocidad mixta
+ *                            deshabilitada con su motivo visible
+ *   MULTISELECT-DELETE       Supr borra 2 clips y un solo Ctrl+Z los trae
+ *   TIMECODE-FRAME-ACCURATE  el resumen usa HH:MM:SS:FF y la duración
+ *                            concuerda con los tiempos mostrados
+ *
+ * Un solo contexto, una sola generación de muestras y un timeline
+ * determinista (A,B,C en Video V1 · D en Video V2 · T texto): rápido.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Los 7 checks que el escenario debe (usado cuando una recarga del dev
+ * server aborta el escenario: entonces se reportan como fallos, nunca se
+ * omiten en silencio).
+ */
+const MULTISELECT_EXPECTED = [
+  { id: 'MULTISELECT-CTRL-CLICK', title: 'Ctrl+clic suma clips a la selección' },
+  { id: 'MULTISELECT-SHIFT-CLICK', title: 'Mayús+clic selecciona el rango sin cruzar de pista' },
+  { id: 'MULTISELECT-RUBBER-BAND', title: 'La goma elástica selecciona lo que toca' },
+  { id: 'MULTISELECT-BATCH-VOLUME', title: 'El volumen en lote se deshace con un solo Ctrl+Z' },
+  { id: 'MULTISELECT-INSPECTOR', title: 'El Inspector informa de la multi-selección' },
+  { id: 'MULTISELECT-DELETE', title: 'Supr borra la selección y Ctrl+Z la devuelve' },
+  { id: 'TIMECODE-FRAME-ACCURATE', title: 'El resumen del rango es frame-accurate' },
+];
+
+async function caseMultiSelect({ browser, report, baseUrl }) {
+  const outcome = await runScenario(async () => {
+    const { context, page } = await bootApp(browser, { width: 1440, height: 900, baseUrl });
+    try {
+      const navBefore = navCount(page);
+      const checks = [];
+      const decide = (id, title, ok, message, details) =>
+        checks.push({ id, title, ok: Boolean(ok), message, details });
+
+      /** Lee la selección del store + los atributos DOM de cada clip. */
+      const readSel = () => safeEvaluate(page, () => {
+        const store = window.__projectStore;
+        if (!store) return null;
+        const st = store.getState();
+        const dom = {};
+        for (const c of st.project.clips) {
+          const el = document.querySelector(`[data-clip-id="${c.id}"]`);
+          dom[c.id] = el
+            ? {
+              selected: el.getAttribute('data-selected'),
+              primary: el.getAttribute('data-primary'),
+              pressed: el.getAttribute('aria-pressed'),
+            }
+            : null;
+        }
+        return {
+          ids: [...st.selectedClipIds],
+          primary: st.selectedClipId,
+          past: st.past.length,
+          clips: st.project.clips.map((c) => ({
+            id: c.id,
+            trackId: c.trackId,
+            start: c.start,
+            duration: c.duration,
+            type: c.type,
+            volume: c.volume ?? 1,
+          })),
+          dom,
+        };
+      });
+
+      /** Clic real sobre un clip con los modificadores que recibe la app. */
+      const clickClip = async (clipId, { ctrl = false, shift = false } = {}) => {
+        // El clip puede tardar un instante en montarse (rehidratación tras
+        // una recarga): se espera a que exista antes de clicar.
+        let found = false;
+        for (let i = 0; i < 40 && !found; i++) {
+          found = await safeEvaluate(
+            page,
+            (id, mod) => {
+              const el = document.querySelector(`[data-clip-id="${id}"]`);
+              if (!el) return false;
+              el.dispatchEvent(
+                new MouseEvent('click', {
+                  bubbles: true,
+                  cancelable: true,
+                  ctrlKey: mod.ctrl,
+                  shiftKey: mod.shift,
+                })
+              );
+              return true;
+            },
+            clipId,
+            { ctrl, shift }
+          );
+          if (!found) await delay(150);
+        }
+        if (!found) throw new Error(`el clip ${JSON.stringify(clipId)} no está en el DOM`);
+        await delay(250);
+      };
+
+      await generateSampleMedia(page);
+
+      /* --- timeline determinista ------------------------------------ */
+      const setup = await safeEvaluate(page, () => {
+        const store = window.__projectStore;
+        if (!store) return { ok: false, reason: 'la app no expone window.__projectStore' };
+        const video =
+          store.getState().project.mediaPool.find((m) => m.type === 'video') ||
+          store.getState().project.mediaPool.find((m) => m.type === 'image');
+        if (!video) return { ok: false, reason: 'el pool no tiene ningún medio de vídeo/imagen' };
+        const ids = {};
+        const plan = [
+          ['A', 'track_video_1', 5],
+          ['B', 'track_video_1', 15],
+          ['C', 'track_video_1', 25],
+          ['D', 'track_video_2', 16],
+        ];
+        for (const [key, trackId, start] of plan) {
+          const r = store.getState().addClipFromMedia(video, trackId, start);
+          if (!r.ok) return { ok: false, reason: `no se pudo colocar el clip ${key}: ${r.reason}` };
+          ids[key] = r.clipId;
+        }
+        store.getState().addTextClip('Texto lote', 35);
+        const text = store.getState().project.clips.find((c) => c.type === 'text');
+        if (!text) return { ok: false, reason: 'no se pudo crear el clip de texto' };
+        ids.T = text.id;
+        return { ok: true, ids };
+      });
+
+      if (!setup || !setup.ok) {
+        const msg = `No se pudo preparar el timeline: ${setup ? setup.reason : 'sin respuesta del store'}`;
+        for (const item of MULTISELECT_EXPECTED) {
+          decide(item.id, item.title, false, msg);
+        }
+        return { reloaded: navCount(page) !== navBefore, checks };
+      }
+      const { A, B, C, D, T } = setup.ids;
+      const idList = { A, B, C, D, T };
+      const badIds = Object.entries(idList).filter(([, v]) => typeof v !== 'string' || !v);
+      if (badIds.length > 0) {
+        const msg =
+          `El setup devolvió ids inválidos (${JSON.stringify(setup.ids)}): ` +
+          `cada clip debe tener un id de texto (quizá el servidor recargó otro trabajo en curso).`;
+        for (const item of MULTISELECT_EXPECTED) {
+          decide(item.id, item.title, false, msg, { setupIds: setup.ids });
+        }
+        return { reloaded: navCount(page) !== navBefore, checks };
+      }
+
+      try {
+      /* --- 1. MULTISELECT-CTRL-CLICK -------------------------------- */
+      await safeEvaluate(page, () => window.__projectStore.getState().clearSelection());
+      await delay(150);
+      await clickClip(A);
+      await clickClip(B, { ctrl: true });
+      const s1 = await readSel(page);
+      const s1Ok = Boolean(
+        s1 &&
+        s1.ids.length === 2 &&
+        s1.ids.includes(A) &&
+        s1.ids.includes(B) &&
+        s1.primary === A &&
+        s1.dom[A] && s1.dom[B] &&
+        s1.dom[A].selected === 'true' &&
+        s1.dom[B].selected === 'true' &&
+        s1.dom[A].pressed === 'true' &&
+        s1.dom[B].pressed === 'true' &&
+        [s1.dom[A].primary, s1.dom[B].primary].filter((v) => v === 'true').length === 1
+      );
+      decide(
+        'MULTISELECT-CTRL-CLICK',
+        'Ctrl+clic suma a la selección (2 clips, un solo primario, aria-pressed)',
+        s1Ok,
+        `selección=[${s1 ? s1.ids.length : 'n/d'}] primario=${s1?.primary} | ` +
+        `A: data-selected=${s1?.dom[A]?.selected} data-primary=${s1?.dom[A]?.primary} aria-pressed=${s1?.dom[A]?.pressed} | ` +
+        `B: data-selected=${s1?.dom[B]?.selected} data-primary=${s1?.dom[B]?.primary} aria-pressed=${s1?.dom[B]?.pressed}`,
+        { setup: setup.ids, selection: s1 }
+      );
+
+      /* --- 2. MULTISELECT-SHIFT-CLICK ------------------------------- */
+      await clickClip(A);
+      await clickClip(C, { shift: true });
+      const s2a = await readSel(page);
+      const phaseSameTrack = Boolean(
+        s2a && s2a.ids.length === 3 &&
+        s2a.ids.includes(A) && s2a.ids.includes(B) && s2a.ids.includes(C) &&
+        s2a.primary === A
+      );
+      // En otra pista el rango está vacío: el clic deja SOLO ese clip (la
+      // selección anterior no sobrevive ni se mezcla entre pistas).
+      await clickClip(A);
+      await clickClip(D, { shift: true });
+      const s2b = await readSel(page);
+      const phaseCrossTrack = Boolean(
+        s2b && s2b.ids.length === 1 && s2b.ids[0] === D &&
+        !s2b.ids.includes(A) && !s2b.ids.includes(B) && !s2b.ids.includes(C)
+      );
+      decide(
+        'MULTISELECT-SHIFT-CLICK',
+        'Mayús+clic selecciona el rango de la pista (3) y nunca cruza de pista',
+        phaseSameTrack && phaseCrossTrack,
+        `misma pista A→C: [${s2a ? s2a.ids.length : 'n/d'}] primario=${s2a?.primary} (esperado 3, primario=A) | ` +
+        `otra pista A→D: [${s2b ? s2b.ids.join(',') : 'n/d'}] (esperado solo D, sin A/B/C)`,
+        { sameTrack: s2a, crossTrack: s2b }
+      );
+
+      /* --- 3. MULTISELECT-RUBBER-BAND ------------------------------- */
+      await safeEvaluate(page, () => {
+        const store = window.__projectStore;
+        if (store) store.getState().clearSelection();
+        const lane = document.querySelector('[data-track-id="track_video_1"]');
+        const container = lane ? lane.closest('div.overflow-auto') : null;
+        if (container) container.scrollLeft = 150;
+      });
+      await delay(300);
+      const geom = await safeEvaluate(page, () => {
+        const lane = document.querySelector('[data-track-id="track_video_1"]');
+        const container = lane ? lane.closest('div.overflow-auto') : null;
+        if (!lane || !container) return null;
+        const rect = (el) => {
+          const b = el.getBoundingClientRect();
+          return { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
+        };
+        const clips = {};
+        for (const el of document.querySelectorAll('[data-clip-id]')) {
+          clips[el.getAttribute('data-clip-id')] = rect(el);
+        }
+        return { lane: rect(lane), container: rect(container), clips };
+      });
+
+      let bandVisible = false;
+      let bandBox = null;
+      let selectedAfterBand = null;
+      let touchedIds = null;
+      let emptyClickCleared = false;
+      let zoomGrew = false;
+      let rulerScrolled = false;
+      let wheelDetail = null;
+      if (geom && geom.clips[A] && geom.clips[B]) {
+        const y = (geom.lane.top + geom.lane.bottom) / 2;
+        const x0 = Math.max(geom.container.left + 5, geom.clips[A].left - 20);
+        let x1 = geom.clips[B].right + 10;
+        if (x1 > geom.container.right - 5) x1 = geom.container.right - 5;
+        await page.mouse.move(x0, y);
+        await page.mouse.down();
+        await page.mouse.move(x1, y, { steps: 15 });
+        await delay(400);
+        const band = await safeEvaluate(page, () => {
+          const el = document.querySelector('[data-testid="rubber-band"]');
+          if (!el) return null;
+          const b = el.getBoundingClientRect();
+          return { display: getComputedStyle(el).display, width: b.width, height: b.height };
+        });
+        bandBox = band;
+        bandVisible = Boolean(band && band.display !== 'none' && band.width > 10);
+        await page.mouse.up();
+        await delay(300);
+        selectedAfterBand = await readSel(page);
+        // Intersección esperada calculada en Node desde los rects medidos.
+        const lo = Math.min(x0, x1);
+        const hi = Math.max(x0, x1);
+        touchedIds = Object.entries(geom.clips)
+          .filter(([, r]) => r.left < hi && r.right > lo && r.top < y && r.bottom > y)
+          .map(([id]) => id)
+          .sort();
+        // Clic en el hueco entre A y B: debe vaciar la selección.
+        const gx = (geom.clips[A].right + geom.clips[B].left) / 2;
+        if (gx > geom.container.left + 5 && gx < geom.container.right - 5) {
+          await page.mouse.click(gx, y);
+          await delay(300);
+          const afterClick = await readSel(page);
+          emptyClickCleared = Boolean(afterClick && afterClick.ids.length === 0);
+        }
+        // La rueda no está secuestrada: Ctrl+rueda = zoom, rueda sobre la
+        // regla = scroll horizontal.
+        wheelDetail = await safeEvaluate(page, () => {
+          const lane = document.querySelector('[data-track-id="track_video_1"]');
+          const container = lane ? lane.closest('div.overflow-auto') : null;
+          const ruler = document.querySelector('[data-testid="time-ruler"]');
+          const store = window.__projectStore;
+          if (!lane || !container || !ruler || !store) return null;
+          const z0 = store.getState().zoom;
+          const s0 = container.scrollLeft;
+          container.dispatchEvent(
+            new WheelEvent('wheel', { deltaY: -100, ctrlKey: true, bubbles: true, cancelable: true })
+          );
+          const z1 = store.getState().zoom;
+          ruler.dispatchEvent(
+            new WheelEvent('wheel', { deltaY: 200, bubbles: true, cancelable: true })
+          );
+          return { z0, z1, s0, s1: container.scrollLeft, maxScroll: container.scrollWidth - container.clientWidth };
+        });
+        zoomGrew = Boolean(wheelDetail && wheelDetail.z1 > wheelDetail.z0);
+        rulerScrolled = Boolean(
+          wheelDetail && wheelDetail.maxScroll > 0 && wheelDetail.s1 > wheelDetail.s0
+        );
+      }
+      const touchedSorted = touchedIds ? [...touchedIds].sort() : null;
+      const selSorted = selectedAfterBand ? [...selectedAfterBand.ids].sort() : null;
+      const exactMatch = Boolean(
+        touchedSorted && selSorted &&
+        JSON.stringify(touchedSorted) === JSON.stringify(selSorted)
+      );
+      const nonVacuous = Boolean(
+        touchedSorted && touchedSorted.length === 2 &&
+        touchedSorted.includes(A) && touchedSorted.includes(B)
+      );
+      decide(
+        'MULTISELECT-RUBBER-BAND',
+        'La goma selecciona lo que toca, el clic en vacío limpia y la rueda sigue viva',
+        bandVisible && exactMatch && nonVacuous && emptyClickCleared && zoomGrew && rulerScrolled,
+        `goma visible durante el arrastre=${bandVisible} (${JSON.stringify(bandBox)}) | ` +
+        `tocados=[${touchedSorted ? touchedSorted.join(',') : 'n/d'}] seleccionados=[${selSorted ? selSorted.join(',') : 'n/d'}] ` +
+        `exactos=${exactMatch} (A y B, 2 clips=${nonVacuous}) | ` +
+        `clic en vacío limpia=${emptyClickCleared} | ` +
+        `zoom ${wheelDetail?.z0}→${wheelDetail?.z1} (crece=${zoomGrew}) | ` +
+        `scroll regla ${wheelDetail?.s0}→${wheelDetail?.s1} (avanza=${rulerScrolled})`,
+        { geom, bandBox, touched: touchedSorted, selected: selSorted, wheel: wheelDetail }
+      );
+
+      /* --- 4. MULTISELECT-BATCH-VOLUME ------------------------------ */
+      await safeEvaluate(
+        page,
+        (ids) => window.__projectStore.getState().selectClips(ids),
+        [A, B, C]
+      );
+      await delay(300);
+      const beforeVol = await readSel(page);
+      const sliderSet = await setRangeValue(page, 'batch-volume', 0.5);
+      await delay(400);
+      const afterVol = await readSel(page);
+      const vols = (s) => [A, B, C].map((id) => s.clips.find((c) => c.id === id)?.volume);
+      const allHalf = Boolean(afterVol && vols(afterVol).every((v) => v === 0.5));
+      const oneEntry = Boolean(
+        beforeVol && afterVol && afterVol.past - beforeVol.past === 1
+      );
+      await pressCtrl(page, 'KeyZ');
+      await delay(400);
+      const undoneVol = await readSel(page);
+      const volsBack = Boolean(
+        undoneVol && beforeVol &&
+        [A, B, C].every((id) => {
+          const prev = beforeVol.clips.find((c) => c.id === id)?.volume;
+          const now = undoneVol.clips.find((c) => c.id === id)?.volume;
+          return prev === now;
+        })
+      );
+      decide(
+        'MULTISELECT-BATCH-VOLUME',
+        'El volumen en lote pone los 3 clips a 0.5 y un solo Ctrl+Z lo revierte',
+        sliderSet !== null && allHalf && oneEntry && volsBack,
+        `slider batch-volume=${sliderSet} | volúmenes ${JSON.stringify(beforeVol ? vols(beforeVol) : null)} -> ` +
+        `${JSON.stringify(afterVol ? vols(afterVol) : null)} (los 3 a 0.5=${allHalf}) | ` +
+        `entradas de historial +${afterVol && beforeVol ? afterVol.past - beforeVol.past : 'n/d'} (una=${oneEntry}) | ` +
+        `tras Ctrl+Z: ${JSON.stringify(undoneVol ? vols(undoneVol) : null)} (de vuelta=${volsBack})`,
+        { before: vols(beforeVol), after: vols(afterVol), undone: undoneVol ? vols(undoneVol) : null }
+      );
+
+      /* --- 5. MULTISELECT-INSPECTOR --------------------------------- */
+      await safeEvaluate(
+        page,
+        (ids) => window.__projectStore.getState().selectClips(ids),
+        [A, B, C]
+      );
+      await delay(300);
+      const countText = await safeEvaluate(page, () => {
+        const el = document.querySelector('[data-testid="inspector-multi-selection-count"]');
+        return el ? (el.textContent || '').trim().replace(/\s+/g, ' ') : null;
+      });
+      const countOk = Boolean(countText && /3 clips seleccionados/.test(countText));
+      // Texto + vídeo: la velocidad en lote no tiene sentido (el texto no
+      // tiene material de origen) y el motivo debe verse.
+      await safeEvaluate(
+        page,
+        (ids) => window.__projectStore.getState().selectClips(ids),
+        [T, A]
+      );
+      await delay(300);
+      const speedState = await safeEvaluate(page, () => {
+        const input = document.querySelector('[data-testid="batch-speed"]');
+        const reason = document.querySelector('[data-testid="batch-speed-disabled-reason"]');
+        if (!input) return null;
+        let visible = false;
+        if (reason) {
+          const b = reason.getBoundingClientRect();
+          const cs = getComputedStyle(reason);
+          visible = cs.display !== 'none' && b.width > 0 && b.height > 0;
+        }
+        return {
+          disabled: input.disabled,
+          reason: reason ? (reason.textContent || '').trim().replace(/\s+/g, ' ') : null,
+          reasonVisible: visible,
+        };
+      });
+      const speedOk = Boolean(
+        speedState && speedState.disabled === true &&
+        speedState.reasonVisible && speedState.reason &&
+        /velocidad/i.test(speedState.reason)
+      );
+      decide(
+        'MULTISELECT-INSPECTOR',
+        'El Inspector muestra "N clips seleccionados" y la velocidad mixta queda deshabilitada con motivo',
+        countOk && speedOk,
+        `contador="${countText}" (esperado "3 clips seleccionados"=${countOk}) | ` +
+        `batch-speed deshabilitado=${speedState?.disabled}, motivo visible=${speedState?.reasonVisible}: ` +
+        `"${speedState?.reason ?? 'n/d'}"`,
+        { countText, speedState }
+      );
+
+      /* --- 6. MULTISELECT-DELETE ------------------------------------ */
+      await safeEvaluate(
+        page,
+        (ids) => window.__projectStore.getState().selectClips(ids),
+        [A, B]
+      );
+      await delay(300);
+      const beforeDel = await readSel(page);
+      const clipsBefore = beforeDel ? beforeDel.clips.length : null;
+      await blurActiveElement(page);
+      await page.keyboard.press('Delete');
+      await delay(500);
+      const afterDel = await readSel(page);
+      const gone = Boolean(
+        afterDel && !afterDel.clips.some((c) => c.id === A) && !afterDel.clips.some((c) => c.id === B) &&
+        clipsBefore !== null && afterDel.clips.length === clipsBefore - 2
+      );
+      const delOneEntry = Boolean(
+        beforeDel && afterDel && afterDel.past - beforeDel.past === 1
+      );
+      await pressCtrl(page, 'KeyZ');
+      await delay(500);
+      const undoneDel = await readSel(page);
+      const back = Boolean(
+        undoneDel && undoneDel.clips.some((c) => c.id === A) && undoneDel.clips.some((c) => c.id === B) &&
+        clipsBefore !== null && undoneDel.clips.length === clipsBefore
+      );
+      decide(
+        'MULTISELECT-DELETE',
+        'Supr borra los 2 clips seleccionados y un solo Ctrl+Z los devuelve',
+        gone && delOneEntry && back,
+        `clips ${clipsBefore} -> ${afterDel?.clips.length} (A y B fuera=${gone}) | ` +
+        `entradas de historial +${afterDel && beforeDel ? afterDel.past - beforeDel.past : 'n/d'} (una=${delOneEntry}) | ` +
+        `tras Ctrl+Z: ${undoneDel?.clips.length} clips (A y B de vuelta=${back})`,
+        { clipsBefore, after: afterDel?.clips.length, undone: undoneDel?.clips.length }
+      );
+
+      /* --- 7. TIMECODE-FRAME-ACCURATE ------------------------------- */
+      let rangeSummary = null;
+      let rangeFps = null;
+      try {
+        await openExportModal(page);
+        await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="export-range-custom"]');
+          if (btn) btn.click();
+        });
+        await delay(200);
+        await seekTo(page, 1);
+        await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="export-range-mark-in"]');
+          if (btn) btn.click();
+        });
+        await delay(200);
+        await seekTo(page, 2);
+        await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="export-range-mark-out"]');
+          if (btn) btn.click();
+        });
+        await delay(300);
+        const range = await safeEvaluate(page, () => {
+          const el = document.querySelector('[data-testid="export-range-summary"]');
+          const store = window.__projectStore;
+          return {
+            summary: el ? (el.textContent || '').trim() : null,
+            fps: store ? store.getState().project.fps : null,
+          };
+        });
+        rangeSummary = range?.summary ?? null;
+        rangeFps = range?.fps ?? null;
+      } finally {
+        await closeExportModal(page).catch(() => {});
+      }
+      const m = rangeSummary
+        ? rangeSummary.match(
+          /^Exportando (\d{2}):(\d{2}):(\d{2}):(\d{2}) → (\d{2}):(\d{2}):(\d{2}):(\d{2}) \((-?\d+(?:\.\d+)?) s\)$/
+        )
+        : null;
+      let agree = false;
+      if (m && rangeFps === 30) {
+        const toSec = (h, mi, s, f) => Number(h) * 3600 + Number(mi) * 60 + Number(s) + Number(f) / rangeFps;
+        const shown = toSec(m[1], m[2], m[3], m[4]);
+        const shownEnd = toSec(m[5], m[6], m[7], m[8]);
+        agree = Math.abs(shownEnd - shown - Number(m[9])) < 0.05;
+      }
+      const exactExample = rangeSummary === 'Exportando 00:00:01:00 → 00:00:02:00 (1 s)';
+      decide(
+        'TIMECODE-FRAME-ACCURATE',
+        'El resumen del rango usa HH:MM:SS:FF y la duración concuerda con los tiempos',
+        Boolean(m) && rangeFps === 30 && exactExample && agree,
+        `resumen="${rangeSummary}" (fps=${rangeFps}) | formato HH:MM:SS:FF=${Boolean(m)} | ` +
+        `ejemplo exacto 1 s→2 s=${exactExample} | tiempos↔duración concuerdan=${agree}`,
+        { rangeSummary, rangeFps }
+      );
+      } catch (err) {
+        // Un fallo de infraestructura (una recarga a mitad del escenario, un
+        // DOM que aún no rehidrató…) nunca debe tumbar la suite entera: los
+        // checks pendientes se reportan como fallos honestos.
+        const detail = err && err.message ? err.message : String(err);
+        for (const item of MULTISELECT_EXPECTED) {
+          if (checks.some((c) => c.id === item.id)) continue;
+          decide(item.id, item.title, false, `El escenario no pudo completarse: ${detail}`);
+        }
+      }
+
+      return { reloaded: navCount(page) !== navBefore, checks };
+    } finally {
+      await context.close();
+    }
+  }, { expected: MULTISELECT_EXPECTED });
+
+  for (const check of outcome.checks) {
+    report.check(check.id, check.title, check.ok, check.message, check.details);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+
 export async function run(ctx) {
   await caseClipboard(ctx);
   await caseColor(ctx);
   await caseSpeed(ctx);
   await caseExport(ctx);
   await caseStorage(ctx);
+  await caseMultiSelect(ctx);
 }

@@ -32,6 +32,21 @@ export interface ClipTransition {
   fadeInDuration: number;  // segundos
   fadeOutType: TransitionType;
   fadeOutDuration: number; // segundos
+  /**
+   * F5 · Fundido de cruce (crossfade) con el clip vecino de la misma pista.
+   *
+   * - `crossfadeOutDuration` (en el clip ANTERIOR) y `crossfadeInDuration`
+   *   (en el POSTERIOR) miden la región de solape DELIBERADO en segundos.
+   * - Ambas deben coincidir con el solape real: el solape solo es deliberado
+   *   cuando `isDeliberateCrossfadeOverlap()` lo confirma (ver
+   *   `src/core/utils/crossfade.ts`). Un solape sin estos marcadores sigue
+   *   siendo un solape ilegal según la política de solapamiento (F1).
+   * - Opcionales por compatibilidad: un clip sin marcadores no participa en
+   *   ningún fundido de cruce. La duración está cuantizada a frames del
+   *   proyecto y recortada al material más corto de los dos clips.
+   */
+  crossfadeInDuration?: number;  // segundos
+  crossfadeOutDuration?: number; // segundos
 }
 
 /**

@@ -2,6 +2,13 @@ import { Clip, MediaItem, Track } from '../../types/project';
 import { masterClock } from './MasterClock';
 import { mediaSourcePool } from './MediaSourcePool';
 import { resolvePlayback } from '../utils/playbackRate';
+import {
+  createCrossfadeIndexCache,
+  crossfadeInGain,
+  crossfadeOutGain,
+  refreshCrossfadeIndex,
+  type CrossfadeIndexCache,
+} from '../utils/crossfade';
 
 /** Minimum interval between two `play()` attempts on the same element (ms). */
 const PLAY_RETRY_INTERVAL_MS = 1000;
@@ -41,6 +48,14 @@ export class AudioEngine {
   private elementVolumeCache: WeakMap<HTMLMediaElement, number> = new WeakMap();
   private mediaMapCache: Map<string, MediaItem> = new Map();
   private trackMapCache: Map<string, Track> = new Map();
+
+  /**
+   * F5 · Crossfade spans by clip id, rebuilt ONCE per clip change (the same
+   * rule as the compositor: `refreshCrossfadeIndex` never allocates when the
+   * relevant content did not change, so the zero-Map-allocation contract of
+   * `updateAudio` holds frame after frame).
+   */
+  private crossfadeCache: CrossfadeIndexCache = createCrossfadeIndexCache();
 
   /** Media elements routed through the Web Audio graph (one source node per element). */
   private routedElements: WeakMap<HTMLMediaElement, RoutedElement> = new WeakMap();
@@ -190,6 +205,10 @@ export class AudioEngine {
       this.trackMapCache.clear();
       for (const t of tracks) this.trackMapCache.set(t.id, t);
 
+      // F5: the crossfade index is refreshed once per clip change, never
+      // per frame (zero allocations when nothing relevant changed).
+      refreshCrossfadeIndex(this.crossfadeCache, clips);
+
       // Process clips with audio
       for (const clip of clips) {
         if (clip.type !== 'audio' && clip.type !== 'video') continue;
@@ -280,6 +299,26 @@ export class AudioEngine {
             }
           }
 
+          // F5: crossfade with the neighbour clip of the same track. Both
+          // clips are physically active over the shared region (the overlap
+          // is deliberate), so both stay audible and are mixed by the LINEAR
+          // curve shared with the video path and the exporter
+          // (`out = 1 - p`, `in = p`). Each gain stays <= 1 and
+          // `out + in = 1`, so the mixed amplitude never exceeds the loudest
+          // source: no clipping beyond what a single clip could produce.
+          // Scalar arithmetic only: nothing is allocated on the hot path.
+          const xfSpan = this.crossfadeCache.spans.get(clip.id);
+          if (
+            xfSpan &&
+            xfSpan.duration > 0 &&
+            time >= xfSpan.regionStart &&
+            time < xfSpan.regionEnd
+          ) {
+            const xfProgress = (time - xfSpan.regionStart) / xfSpan.duration;
+            transitionMultiplier *=
+              xfSpan.role === 'out' ? crossfadeOutGain(xfProgress) : crossfadeInGain(xfProgress);
+          }
+
           const effectiveVolume = (clip.volume ?? 1) * this.masterVolume * transitionMultiplier;
 
           // Gain up to 100% is applied on the element; anything above is applied
@@ -345,6 +384,7 @@ export class AudioEngine {
     this.elementVolumeCache = new WeakMap();
     this.mediaMapCache.clear();
     this.trackMapCache.clear();
+    this.crossfadeCache = createCrossfadeIndexCache();
     this.failedElements = new WeakSet();
     this.playFailureCountMap = new WeakMap();
     this.nextPlayAttemptMap = new WeakMap();

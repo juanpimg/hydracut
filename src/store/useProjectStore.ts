@@ -22,6 +22,10 @@ import {
 } from '../core/storage/projectStorage';
 import type { StorageScope } from '../core/storage/projectStorage';
 import { calculateSnapping } from '../core/utils/math';
+import {
+  isDeliberateCrossfadeOverlap,
+  planCrossfade,
+} from '../core/utils/crossfade';
 import { mediaSourcePool } from '../core/engine/MediaSourcePool';
 import { compositor } from '../core/engine/Compositor';
 import { audioEngine } from '../core/engine/AudioEngine';
@@ -155,6 +159,27 @@ export type AddClipFromMediaResult =
   | { ok: true; clipId: string }
   | { ok: false; reason: string };
 
+/* ------------------------------------------------------------------ */
+/* F5 — Fundido de cruce (crossfade) entre clips consecutivos          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Result of `createCrossfade` / `removeCrossfade` / `setCrossfadeDuration`.
+ *
+ * Like `addClipFromMedia`, the UI needs to know WHY the operation did not
+ * happen (locked track, non-adjacent clips, media too short).
+ */
+export type CrossfadeResult =
+  | { ok: true; outClipId: string; inClipId: string; duration: number }
+  | { ok: false; reason: string };
+
+/**
+ * Window (ms) during which consecutive `setCrossfadeDuration` calls on the
+ * same pair share a single undo entry (same idea as S-02 for `updateClip`):
+ * dragging the duration slider produces ONE undo step, not one per tick.
+ */
+export const CROSSFADE_COALESCE_WINDOW_MS = 400;
+
 /** Tolerance (seconds) used when comparing the edges of two intervals. */
 const OVERLAP_EPSILON = 1e-6;
 
@@ -182,21 +207,53 @@ export function intervalsOverlap(
 
 /**
  * Clips of `trackId` that overlap the `[start, start + duration)` interval.
+ *
+ * The physical contract never changes: every clip sharing time with the
+ * interval is reported (a deliberate crossfade overlap IS a physical
+ * overlap). Pass `{ excludeCrossfades: true }` together with
+ * `excludeClipId` to whitelist the deliberate crossfade pair of that clip
+ * (see `isDeliberateCrossfadeOverlap`): an illegal overlap can never pass
+ * that filter because it carries no crossfade markers.
  */
 export function findOverlappingClips(
   clips: Clip[],
   trackId: string,
   start: number,
   duration: number,
-  excludeClipId?: string
+  excludeClipId?: string,
+  options?: { excludeCrossfades?: boolean }
 ): Clip[] {
   const end = start + duration;
-  return clips.filter(
+  const found = clips.filter(
     (clip) =>
       clip.trackId === trackId &&
       clip.id !== excludeClipId &&
       intervalsOverlap(clip.start, clipEnd(clip), start, end)
   );
+  if (!options?.excludeCrossfades || !excludeClipId) return found;
+  const self = clips.find((clip) => clip.id === excludeClipId);
+  if (!self) return found;
+  return found.filter((clip) => !isDeliberateCrossfadeOverlap(self, clip));
+}
+
+/**
+ * Clips of `trackId` whose overlap with `[start, start + duration)` is
+ * ILLEGAL (a deliberate crossfade pair of `excludeClipId` is whitelisted).
+ *
+ * This is the policy-level view (F1 + F5): the deliberate overlap created by
+ * `createCrossfade` must not be treated as a conflict, while any other
+ * overlap still is.
+ */
+export function findIllegalOverlappingClips(
+  clips: Clip[],
+  trackId: string,
+  start: number,
+  duration: number,
+  excludeClipId?: string
+): Clip[] {
+  return findOverlappingClips(clips, trackId, start, duration, excludeClipId, {
+    excludeCrossfades: true,
+  });
 }
 
 export interface OverwriteInsertResult {
@@ -841,6 +898,46 @@ export interface ProjectState {
    * Changes the overlap policy of the project (F1).
    */
   setOverlapPolicy: (policy: OverlapPolicy) => void;
+
+  /* ---------------------------------------------------------------- */
+  /* F5 — fundido de cruce entre clips consecutivos                    */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Creates a crossfade between two consecutive clips of the same track
+   * (F5).
+   *
+   * The incoming clip moves earlier so both share a region of `duration`
+   * seconds, and both clips record the region in their transition markers
+   * (`crossfadeOutDuration` / `crossfadeInDuration`). The overlap is
+   * DELIBERATE: `isDeliberateCrossfadeOverlap` recognises it and the overlap
+   * policy helpers can whitelist it (an illegal overlap carries no markers).
+   *
+   * Refuses with a reason when the track is locked, the clips are not
+   * adjacent on the same track, or the media is too short. Undoable, and the
+   * project duration is recalculated (an overlap shortens the timeline).
+   */
+  createCrossfade: (
+    outgoingId: string,
+    incomingId: string,
+    duration?: number
+  ) => CrossfadeResult;
+
+  /**
+   * Removes the crossfade that involves `clipId` (F5).
+   *
+   * The incoming clip of the pair moves later by the overlap amount (the
+   * timeline grows back) and both markers are cleared. Undoable.
+   */
+  removeCrossfade: (clipId: string) => CrossfadeResult;
+
+  /**
+   * Adjusts the duration of the crossfade that involves `clipId` (F5).
+   *
+   * Consecutive calls on the same pair inside the coalescing window share a
+   * single undo entry, so dragging the Inspector slider is one undo step.
+   */
+  setCrossfadeDuration: (clipId: string, duration: number) => CrossfadeResult;
 
   /* ---------------------------------------------------------------- */
   /* F7 — internal clipboard                                            */
@@ -1988,6 +2085,273 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   /* ------------------------------------------------------------------ */
+  /* F5 — fundido de cruce entre clips consecutivos                      */
+  /* ------------------------------------------------------------------ */
+
+  createCrossfade: (outgoingId, incomingId, duration) => {
+    const { project } = get();
+    const plan = planCrossfade({
+      clips: project.clips,
+      tracks: project.tracks,
+      outgoingId,
+      incomingId,
+      requestedDuration:
+        duration === undefined ? Number.NaN : (duration as number),
+      fps: project.fps ?? 30,
+    });
+    if (!plan.ok) {
+      console.warn(plan.reason);
+      set({ lastError: plan.reason });
+      return plan;
+    }
+
+    get().pushHistory();
+    set((state) => {
+      const updatedClips = state.project.clips.map((clip) => {
+        if (clip.id === plan.outClip.id) {
+          return {
+            ...clip,
+            transition: {
+              fadeInType: clip.transition?.fadeInType ?? 'none',
+              fadeInDuration: clip.transition?.fadeInDuration ?? 0,
+              fadeOutType: clip.transition?.fadeOutType ?? 'none',
+              fadeOutDuration: clip.transition?.fadeOutDuration ?? 0,
+              crossfadeInDuration: clip.transition?.crossfadeInDuration,
+              crossfadeOutDuration: plan.duration,
+            },
+          };
+        }
+        if (clip.id === plan.inClip.id) {
+          return {
+            ...clip,
+            start: plan.newIncomingStart,
+            transition: {
+              fadeInType: clip.transition?.fadeInType ?? 'none',
+              fadeInDuration: clip.transition?.fadeInDuration ?? 0,
+              fadeOutType: clip.transition?.fadeOutType ?? 'none',
+              fadeOutDuration: clip.transition?.fadeOutDuration ?? 0,
+              crossfadeInDuration: plan.duration,
+              crossfadeOutDuration: clip.transition?.crossfadeOutDuration,
+            },
+          };
+        }
+        return clip;
+      });
+      const updated: Project = {
+        ...state.project,
+        clips: updatedClips,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    // The overlap shortens the timeline: the duration is the max clip end.
+    get().recalculateDuration();
+    return {
+      ok: true,
+      outClipId: plan.outClip.id,
+      inClipId: plan.inClip.id,
+      duration: plan.duration,
+    };
+  },
+
+  removeCrossfade: (clipId) => {
+    const { project } = get();
+    const clip = project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para eliminar el fundido de cruce.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    const track = project.tracks.find((t) => t.id === clip.trackId);
+    if (track?.isLocked) {
+      const reason = `La pista «${track.name}» está bloqueada: desbloquéala para poder eliminar el fundido de cruce.`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+
+    const ordered = project.clips
+      .filter((c) => c.trackId === clip.trackId)
+      .sort((x, y) => x.start - y.start || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+    const index = ordered.findIndex((c) => c.id === clip.id);
+    const prev = index > 0 ? ordered[index - 1] : null;
+    const next = index >= 0 && index + 1 < ordered.length ? ordered[index + 1] : null;
+    const pairedPrev = prev && isDeliberateCrossfadeOverlap(prev, clip) ? prev : null;
+    const pairedNext = next && isDeliberateCrossfadeOverlap(clip, next) ? next : null;
+    if (!pairedPrev && !pairedNext) {
+      const reason = `«${clip.name}» no tiene ningún fundido de cruce activo con sus vecinos.`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+
+    const outClip = pairedPrev ? pairedPrev : clip;
+    const inClip = pairedPrev ? clip : pairedNext!;
+    const overlap = Math.min(clipEnd(outClip), clipEnd(inClip)) - Math.max(outClip.start, inClip.start);
+
+    get().pushHistory();
+    // Dropping a marker from a transition that has nothing else left removes
+    // the transition object itself (a `{none, 0, none, 0}` transition is a
+    // no-op, but `undefined` keeps the timeline data clean).
+    const stripMarker = (
+      clip: Clip,
+      marker: 'crossfadeInDuration' | 'crossfadeOutDuration'
+    ): Clip['transition'] => {
+      if (!clip.transition) return undefined;
+      const { ...rest } = clip.transition;
+      delete rest[marker];
+      const hasFades =
+        (rest.fadeInType !== undefined && rest.fadeInType !== 'none') ||
+        (rest.fadeInDuration ?? 0) > 0 ||
+        (rest.fadeOutType !== undefined && rest.fadeOutType !== 'none') ||
+        (rest.fadeOutDuration ?? 0) > 0;
+      const hasCrossfade =
+        (rest.crossfadeInDuration ?? 0) > 0 || (rest.crossfadeOutDuration ?? 0) > 0;
+      if (!hasFades && !hasCrossfade) return undefined;
+      return {
+        fadeInType: rest.fadeInType ?? 'none',
+        fadeInDuration: rest.fadeInDuration ?? 0,
+        fadeOutType: rest.fadeOutType ?? 'none',
+        fadeOutDuration: rest.fadeOutDuration ?? 0,
+        ...(rest.crossfadeInDuration !== undefined
+          ? { crossfadeInDuration: rest.crossfadeInDuration }
+          : {}),
+        ...(rest.crossfadeOutDuration !== undefined
+          ? { crossfadeOutDuration: rest.crossfadeOutDuration }
+          : {}),
+      };
+    };
+    set((state) => {
+      const updatedClips = state.project.clips.map((c) => {
+        if (c.id === inClip.id) {
+          return { ...c, start: c.start + Math.max(0, overlap), transition: stripMarker(c, 'crossfadeInDuration') };
+        }
+        if (c.id === outClip.id) {
+          return { ...c, transition: stripMarker(c, 'crossfadeOutDuration') };
+        }
+        return c;
+      });
+      const updated: Project = {
+        ...state.project,
+        clips: updatedClips,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    get().recalculateDuration();
+    return { ok: true, outClipId: outClip.id, inClipId: inClip.id, duration: 0 };
+  },
+
+  setCrossfadeDuration: (clipId, duration) => {
+    const { project } = get();
+    const clip = project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para ajustar el fundido de cruce.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    const ordered = project.clips
+      .filter((c) => c.trackId === clip.trackId)
+      .sort((x, y) => x.start - y.start || (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+    const index = ordered.findIndex((c) => c.id === clip.id);
+    const prev = index > 0 ? ordered[index - 1] : null;
+    const next = index >= 0 && index + 1 < ordered.length ? ordered[index + 1] : null;
+    const pairedPrev = prev && isDeliberateCrossfadeOverlap(prev, clip) ? prev : null;
+    const pairedNext = next && isDeliberateCrossfadeOverlap(clip, next) ? next : null;
+    if (!pairedPrev && !pairedNext) {
+      const reason = `«${clip.name}» no tiene ningún fundido de cruce activo: créalo primero con un clip vecino.`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    const outClip = pairedPrev ? pairedPrev : clip;
+    const inClip = pairedPrev ? clip : pairedNext!;
+
+    const plan = planCrossfade({
+      clips: project.clips,
+      tracks: project.tracks,
+      outgoingId: outClip.id,
+      incomingId: inClip.id,
+      requestedDuration: duration,
+      fps: project.fps ?? 30,
+    });
+    if (!plan.ok) {
+      console.warn(plan.reason);
+      set({ lastError: plan.reason });
+      return plan;
+    }
+
+    // Coalescing (same idea as S-02): dragging the slider shares ONE undo
+    // entry per pair while the gesture lasts.
+    const state = get();
+    const coalesceKey = `crossfade:${outClip.id}:${inClip.id}`;
+    const now = Date.now();
+    const canCoalesce =
+      !state.historyGesturePending &&
+      state.historyCoalesceKey === coalesceKey &&
+      now - state.historyCoalesceAt <= CROSSFADE_COALESCE_WINDOW_MS;
+    if (!canCoalesce) {
+      get().pushHistory();
+    }
+
+    set((s) => {
+      const updatedClips = s.project.clips.map((c) => {
+        if (c.id === plan.outClip.id) {
+          return {
+            ...c,
+            transition: {
+              fadeInType: c.transition?.fadeInType ?? 'none',
+              fadeInDuration: c.transition?.fadeInDuration ?? 0,
+              fadeOutType: c.transition?.fadeOutType ?? 'none',
+              fadeOutDuration: c.transition?.fadeOutDuration ?? 0,
+              crossfadeInDuration: c.transition?.crossfadeInDuration,
+              crossfadeOutDuration: plan.duration,
+            },
+          };
+        }
+        if (c.id === plan.inClip.id) {
+          return {
+            ...c,
+            start: plan.newIncomingStart,
+            transition: {
+              fadeInType: c.transition?.fadeInType ?? 'none',
+              fadeInDuration: c.transition?.fadeInDuration ?? 0,
+              fadeOutType: c.transition?.fadeOutType ?? 'none',
+              fadeOutDuration: c.transition?.fadeOutDuration ?? 0,
+              crossfadeInDuration: plan.duration,
+              crossfadeOutDuration: c.transition?.crossfadeOutDuration,
+            },
+          };
+        }
+        return c;
+      });
+      const updated: Project = {
+        ...s.project,
+        clips: updatedClips,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return {
+        project: updated,
+        historyCoalesceKey: state.historyGesturePending ? null : coalesceKey,
+        historyCoalesceAt: state.historyGesturePending ? 0 : now,
+        lastError: null,
+      };
+    });
+    get().recalculateDuration();
+    return {
+      ok: true,
+      outClipId: plan.outClip.id,
+      inClipId: plan.inClip.id,
+      duration: plan.duration,
+    };
+  },
+
+  /* ------------------------------------------------------------------ */
   /* F7 — internal clipboard                                             */
   /* ------------------------------------------------------------------ */
 
@@ -2581,11 +2945,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const secondSourceStart = clip.sourceStart + firstDuration * speed;
 
     // Seamless transition splitting: clip 1 preserves In fade, clip 2 preserves Out fade
+    // F5: a split breaks any crossfade pair the clip belonged to (the halves
+    // no longer share the deliberate overlap with the partner), so the
+    // crossfade markers are dropped from both halves. Keeping them would
+    // leave stale markers that claim a crossfade which no longer exists.
     const clip1Transition = clip.transition
       ? {
           ...clip.transition,
           fadeOutType: 'none' as const,
           fadeOutDuration: 0,
+          crossfadeInDuration: undefined,
+          crossfadeOutDuration: undefined,
         }
       : undefined;
 
@@ -2594,6 +2964,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
           ...clip.transition,
           fadeInType: 'none' as const,
           fadeInDuration: 0,
+          crossfadeInDuration: undefined,
+          crossfadeOutDuration: undefined,
         }
       : undefined;
 

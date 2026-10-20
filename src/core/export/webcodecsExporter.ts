@@ -4,6 +4,11 @@ import { Compositor } from '../engine/Compositor';
 import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
 import { applyDetuneToParam, resolvePlayback } from '../utils/playbackRate';
 import { buildCssFilterString, getCanvasFilterSupport } from '../utils/colorFilters';
+import {
+  buildCrossfadeAudioSchedule,
+  buildCrossfadeIndex,
+  type CrossfadeSpan,
+} from '../utils/crossfade';
 
 export interface ExportParams {
   config: ExportConfig;
@@ -821,8 +826,14 @@ async function readMediaArrayBuffer(media: MediaItem): Promise<ArrayBuffer> {
 
 /**
  * Mixes audio from all audio/video clips into an AudioBuffer using OfflineAudioContext.
+ *
+ * F5: two clips that share a deliberate crossfade overlap are BOTH started
+ * (their sounded intervals overlap, exactly like the preview keeps both
+ * elements audible) and their gains follow the LINEAR crossfade curve shared
+ * with the preview (`buildCrossfadeAudioSchedule`). Exported for the
+ * regression tests so the offline mix can be asserted directly.
  */
-async function renderOfflineAudio(
+export async function renderOfflineAudio(
   totalDuration: number,
   tracks: Track[],
   clips: Clip[],
@@ -858,6 +869,14 @@ async function renderOfflineAudio(
     pendingUses.set(clip.mediaId, (pendingUses.get(clip.mediaId) ?? 0) + 1);
   }
 
+  // F5: the deliberate crossfade pairs, resolved ONCE for the whole render
+  // (not per clip change per frame: this function runs once per export).
+  // The video path needs no equivalent handling: it renders every frame
+  // through the very same `Compositor` class the preview uses, so the
+  // exported pixels already dissolve exactly like the previewed ones.
+  const crossfadeSpans = new Map<string, CrossfadeSpan>();
+  buildCrossfadeIndex(clips, crossfadeSpans);
+
   for (const clip of audioClips) {
     // EX-14: honour cancellation while decoding (the decode of a large file
     // can take seconds and used to be completely uninterruptible).
@@ -892,8 +911,20 @@ async function renderOfflineAudio(
       const gainNode = offlineCtx.createGain();
       const baseVol = clip.volume ?? 1;
 
-      // Transitions for audio fade-in and fade-out
-      if (clip.transition) {
+      // F5: a clip inside a deliberate crossfade overlap follows the shared
+      // linear curve (the preview multiplies the same curve per frame, so
+      // both envelopes agree). Clips outside any crossfade keep the exact
+      // historical automation below (untouched).
+      const crossfadeSpan = crossfadeSpans.get(clip.id);
+      if (crossfadeSpan && crossfadeSpan.duration > 0) {
+        for (const event of buildCrossfadeAudioSchedule(clip, crossfadeSpan)) {
+          if (event.type === 'set') {
+            gainNode.gain.setValueAtTime(event.value, event.time);
+          } else {
+            gainNode.gain.linearRampToValueAtTime(event.value, event.time);
+          }
+        }
+      } else if (clip.transition) {
         const { fadeInType, fadeInDuration, fadeOutType, fadeOutDuration } = clip.transition;
         const totalFade =
           (fadeInDuration > 0 ? fadeInDuration : 0) + (fadeOutDuration > 0 ? fadeOutDuration : 0);

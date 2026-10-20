@@ -33,6 +33,11 @@ import {
   type ColorFilterKey,
   type ColorFilterPresetId,
 } from '../../core/utils/colorFilters';
+import {
+  CROSSFADE_DEFAULT_DURATION,
+  crossfadeFrameDuration,
+  describeCrossfadeForClip,
+} from '../../core/utils/crossfade';
 
 /**
  * The six sliders of the "Color" section (F9).
@@ -381,6 +386,10 @@ export const ClipInspector: React.FC = () => {
   const mediaPool = useProjectStore((s) => s.project.mediaPool);
   const overlapPolicy = useProjectStore((s) => s.project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY);
   const setOverlapPolicy = useProjectStore((s) => s.setOverlapPolicy);
+  const projectFps = useProjectStore((s) => s.project.fps);
+  const createCrossfade = useProjectStore((s) => s.createCrossfade);
+  const removeCrossfade = useProjectStore((s) => s.removeCrossfade);
+  const setCrossfadeDuration = useProjectStore((s) => s.setCrossfadeDuration);
 
   /**
    * F9 · Does the browser support `ctx.filter`?
@@ -394,6 +403,42 @@ export const ClipInspector: React.FC = () => {
     setFilterSupport(getCanvasFilterSupport());
   }, []);
   const colorFiltersEnabled = filterSupport === true;
+
+  /**
+   * F5 · Disponibilidad del fundido de cruce para el clip seleccionado.
+   *
+   * La MISMA lógica pura que valida el store (`describeCrossfadeForClip`),
+   * así que el motivo por el que el control está deshabilitado es siempre el
+   * motivo por el que el store rechazaría la operación.
+   */
+  const crossfadeInfo = useMemo(
+    () =>
+      describeCrossfadeForClip(
+        project.clips,
+        project.tracks,
+        clip?.id ?? '',
+        projectFps ?? 30
+      ),
+    [project.clips, project.tracks, clip?.id, projectFps]
+  );
+
+  /**
+   * F5 · Duración deseada para CREAR el fundido (el fundido activo se edita
+   * directamente con su duración real). Se reinicia al cambiar de clip.
+   */
+  const [desiredCrossfade, setDesiredCrossfade] = useState(CROSSFADE_DEFAULT_DURATION);
+  useEffect(() => {
+    setDesiredCrossfade(
+      crossfadeInfo.currentDuration > 0
+        ? crossfadeInfo.currentDuration
+        : Math.min(
+            CROSSFADE_DEFAULT_DURATION,
+            crossfadeInfo.maxDuration > 0 ? crossfadeInfo.maxDuration : CROSSFADE_DEFAULT_DURATION
+          )
+    );
+    // Solo al cambiar de clip: la duración real manda mientras se arrastra.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clip?.id]);
 
   /**
    * F6 · The clips of the current selection, in timeline order.
@@ -1171,6 +1216,124 @@ export const ClipInspector: React.FC = () => {
               />
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* F5 · FUNDIDO DE CRUCE */}
+      <div className="space-y-3 mb-4" data-testid="crossfade-section">
+        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+          <Sparkles size={13} className="text-violet-400" />
+          <span>Fundido de cruce</span>
+        </div>
+        <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+          {crossfadeInfo.activePair && crossfadeInfo.neighbour ? (
+            <>
+              <p className="text-[11px] leading-snug text-slate-400" data-testid="crossfade-active-label">
+                {crossfadeInfo.neighbour.selectedRole === 'out' ? (
+                  <>«{clip.name}» sale y «{crossfadeInfo.neighbour.name}» entra ({crossfadeInfo.currentDuration.toFixed(2)} s).</>
+                ) : (
+                  <>«{crossfadeInfo.neighbour.name}» sale y «{clip.name}» entra ({crossfadeInfo.currentDuration.toFixed(2)} s).</>
+                )}
+              </p>
+              <div>
+                <label htmlFor={`crossfade-duration-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+                  Duración del fundido: {crossfadeInfo.currentDuration.toFixed(2)} s
+                </label>
+                <input
+                  id={`crossfade-duration-${clip.id}`}
+                  data-testid="crossfade-duration"
+                  type="range"
+                  min={Math.min(crossfadeFrameDuration(projectFps ?? 30), crossfadeInfo.currentDuration)}
+                  max={Math.max(crossfadeInfo.maxDuration, crossfadeInfo.currentDuration)}
+                  step={crossfadeFrameDuration(projectFps ?? 30)}
+                  value={crossfadeInfo.currentDuration}
+                  disabled={!crossfadeInfo.canCreate}
+                  aria-label="Duración del fundido de cruce"
+                  onChange={(e) => setCrossfadeDuration(clip.id, parseFloat(e.target.value))}
+                  className="w-full h-1.5 bg-dark-750 accent-violet-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+              </div>
+              <button
+                onClick={() => removeCrossfade(clip.id)}
+                disabled={!crossfadeInfo.canRemove}
+                data-testid="crossfade-remove"
+                aria-label="Eliminar fundido de cruce"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Eliminar fundido
+              </button>
+              {!crossfadeInfo.canCreate && crossfadeInfo.createReason && (
+                <p
+                  role="status"
+                  data-testid="crossfade-disabled-reason"
+                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                >
+                  {crossfadeInfo.createReason}
+                </p>
+              )}
+            </>
+          ) : crossfadeInfo.neighbour ? (
+            <>
+              <p className="text-[11px] leading-snug text-slate-400" data-testid="crossfade-neighbour-label">
+                Vecino: «{crossfadeInfo.neighbour.name}» (
+                {crossfadeInfo.neighbour.selectedRole === 'out' ? 'este clip sale' : 'este clip entra'}).
+                Ambos se mezclarán durante el fundido.
+              </p>
+              <div>
+                <label htmlFor={`crossfade-desired-duration-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+                  Duración del fundido: {Math.min(Math.max(desiredCrossfade, crossfadeFrameDuration(projectFps ?? 30)), crossfadeInfo.maxDuration).toFixed(2)} s
+                </label>
+                <input
+                  id={`crossfade-desired-duration-${clip.id}`}
+                  data-testid="crossfade-desired-duration"
+                  type="range"
+                  min={crossfadeFrameDuration(projectFps ?? 30)}
+                  max={crossfadeInfo.maxDuration}
+                  step={crossfadeFrameDuration(projectFps ?? 30)}
+                  value={Math.min(Math.max(desiredCrossfade, crossfadeFrameDuration(projectFps ?? 30)), crossfadeInfo.maxDuration)}
+                  disabled={!crossfadeInfo.canCreate}
+                  aria-label="Duración del fundido de cruce a crear"
+                  onChange={(e) => setDesiredCrossfade(parseFloat(e.target.value))}
+                  className="w-full h-1.5 bg-dark-750 accent-violet-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+              </div>
+              <button
+                onClick={() => {
+                  const nb = crossfadeInfo.neighbour;
+                  if (!nb) return;
+                  const value = Math.min(
+                    Math.max(desiredCrossfade, crossfadeFrameDuration(projectFps ?? 30)),
+                    crossfadeInfo.maxDuration
+                  );
+                  if (nb.selectedRole === 'out') createCrossfade(clip.id, nb.id, value);
+                  else createCrossfade(nb.id, clip.id, value);
+                }}
+                disabled={!crossfadeInfo.canCreate}
+                data-testid="crossfade-create"
+                aria-label="Crear fundido de cruce"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-violet-700 hover:bg-violet-600 rounded border border-violet-600 transition focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Crear fundido
+              </button>
+              {!crossfadeInfo.canCreate && crossfadeInfo.createReason && (
+                <p
+                  role="status"
+                  data-testid="crossfade-disabled-reason"
+                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                >
+                  {crossfadeInfo.createReason}
+                </p>
+              )}
+            </>
+          ) : (
+            <p
+              role="status"
+              data-testid="crossfade-no-neighbour"
+              className="text-[11px] leading-snug text-slate-500"
+            >
+              {crossfadeInfo.createReason ?? 'Sin clip vecino para fundir.'}
+            </p>
+          )}
         </div>
       </div>
 
