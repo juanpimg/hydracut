@@ -26,6 +26,55 @@ import { useLiveAnnouncement, announce } from './liveRegion';
  */
 const ExportModal = lazy(() => import('../export/ExportModal'));
 
+/**
+ * F7: the clipboard shortcut of a keyboard event.
+ */
+export type ClipboardShortcut = 'copy' | 'paste' | 'duplicate';
+
+/**
+ * True when the given element is a text entry (an `<input>`, a `<textarea>`, a
+ * `<select>` or a `contenteditable` region).
+ *
+ * The clipboard shortcuts must NOT hijack the system clipboard while the user
+ * is typing: `Ctrl+C` inside a text field has to copy the selected text.
+ */
+export function isTextEntryTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element || typeof element !== 'object') return false;
+  const tag = typeof element.tagName === 'string' ? element.tagName.toLowerCase() : '';
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+  if (element.isContentEditable === true) return true;
+  const editable =
+    typeof element.getAttribute === 'function' ? element.getAttribute('contenteditable') : null;
+  return editable !== null && editable !== 'false';
+}
+
+/**
+ * Resolves the clipboard shortcut (F7) of a keyboard event.
+ *
+ * Returns `null` when the event is not a clipboard shortcut (no modifier, an
+ * `Alt` combination or an unknown key).
+ */
+export function resolveClipboardShortcut(event: {
+  key: string;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
+}): ClipboardShortcut | null {
+  if (!event.ctrlKey && !event.metaKey) return null;
+  if (event.altKey) return null;
+  switch (event.key.toLowerCase()) {
+    case 'c':
+      return 'copy';
+    case 'v':
+      return 'paste';
+    case 'd':
+      return 'duplicate';
+    default:
+      return null;
+  }
+}
+
 export const MainLayout: React.FC = () => {
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
@@ -67,9 +116,9 @@ export const MainLayout: React.FC = () => {
   // Global keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if user is typing in an input, textarea or select
-      const activeTag = document.activeElement?.tagName.toLowerCase();
-      if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') {
+      // Ignore if user is typing in an input, textarea, select or a
+      // contenteditable region (the system clipboard must keep working there).
+      if (isTextEntryTarget(document.activeElement)) {
         // Still allow Escape to blur out of fields
         if (e.key === 'Escape') {
           (document.activeElement as HTMLElement)?.blur();
@@ -160,6 +209,40 @@ export const MainLayout: React.FC = () => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
         e.preventDefault();
         redo();
+        return;
+      }
+
+      // F7: Ctrl/Cmd + C / V / D → copy / paste / duplicate the selected clip.
+      const clipboardShortcut = resolveClipboardShortcut(e);
+      if (clipboardShortcut) {
+        e.preventDefault();
+        const state = useProjectStore.getState();
+        const selectedIds = state.selectedClipId ? [state.selectedClipId] : [];
+        if (clipboardShortcut === 'copy') {
+          if (selectedIds.length === 0) return;
+          const copied = state.copyClips(selectedIds);
+          if (copied > 0) {
+            announce(
+              copied === 1
+                ? 'Clip copiado: usa Ctrl+V para pegarlo'
+                : `${copied} clips copiados: usa Ctrl+V para pegarlos`
+            );
+          }
+          return;
+        }
+        if (clipboardShortcut === 'paste') {
+          const pasted = state.pasteClips();
+          if (pasted.length > 0) {
+            announce(pasted.length === 1 ? 'Clip pegado' : `${pasted.length} clips pegados`);
+          }
+          return;
+        }
+        const duplicated = state.duplicateClips(selectedIds);
+        if (duplicated.length > 0) {
+          announce(
+            duplicated.length === 1 ? 'Clip duplicado' : `${duplicated.length} clips duplicados`
+          );
+        }
         return;
       }
     };

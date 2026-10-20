@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useMemo } from 'react';
-import { Film, Music, Type, VolumeX, AlertTriangle } from 'lucide-react';
+import { Film, Music, Type, VolumeX, AlertTriangle, Copy, ClipboardPaste, CopyPlus } from 'lucide-react';
 import { Clip } from '../../types/project';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -222,6 +222,11 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const splitClip = useProjectStore((s) => s.splitClip);
   const setSnappingGuideTime = useProjectStore((s) => s.setSnappingGuideTime);
   const mediaPool = useProjectStore((s) => s.project.mediaPool);
+  // F7: the internal clipboard (copy / paste / duplicate).
+  const copyClips = useProjectStore((s) => s.copyClips);
+  const pasteClips = useProjectStore((s) => s.pasteClips);
+  const duplicateClips = useProjectStore((s) => s.duplicateClips);
+  const hasClipboard = useProjectStore((s) => s.clipboard.length > 0);
 
   const { activeTool, setActiveTab } = useUIStore();
   const clipRef = useRef<HTMLDivElement>(null);
@@ -752,6 +757,47 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
           {formatDuration(clip.duration)}
         </span>
       </div>
+
+      {/* F7: clipboard actions of the selected clip (copy / paste / duplicate). */}
+      {isSelected && (
+        <div
+          data-testid="clip-clipboard-actions"
+          role="group"
+          aria-label="Acciones de portapapeles del clip"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute bottom-0.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-0.5 px-1 py-0.5 rounded-md bg-dark-950/95 border border-dark-700 shadow-md"
+        >
+          <button
+            type="button"
+            title="Copiar"
+            aria-label={`Copiar ${clip.name}`}
+            onClick={() => copyClips([clip.id])}
+            className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          >
+            <Copy size={11} />
+          </button>
+          <button
+            type="button"
+            title="Pegar"
+            aria-label={`Pegar en ${clip.name}`}
+            disabled={!hasClipboard}
+            onClick={() => pasteClips(clip.trackId)}
+            className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-dark-700 disabled:opacity-30 disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          >
+            <ClipboardPaste size={11} />
+          </button>
+          <button
+            type="button"
+            title="Duplicar"
+            aria-label={`Duplicar ${clip.name}`}
+            onClick={() => duplicateClips([clip.id])}
+            className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          >
+            <CopyPlus size={11} />
+          </button>
+        </div>
+      )}
 
       {/* Right Trim Handle (CapCut Style Pill with Expanded Touch Hitbox) */}
       <div
