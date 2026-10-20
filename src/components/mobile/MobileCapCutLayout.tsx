@@ -27,6 +27,48 @@ const ExportModal = lazy(() => import('../export/ExportModal'));
  */
 const MobilePreviewPlayer = lazy(() => import('./MobilePreviewPlayer'));
 
+/**
+ * Mobile/desktop parity data (pure logic, unit-tested in
+ * `src/tests/mobile-parity.test.ts`). The sheets below render FROM these
+ * constants so the list a test asserts is the list the user taps.
+ */
+
+/** Clip-speed presets offered by the mobile speed sheet (desktop reaches 4x via its slider; mobile now does too). */
+export const MOBILE_SPEED_PRESETS: readonly number[] = [0.5, 1, 1.5, 2, 4];
+/** Bounds of the mobile speed slider (same upper bound as the desktop inspector). */
+export const MOBILE_SPEED_MIN = 0.25;
+export const MOBILE_SPEED_MAX = 4;
+
+export interface MobileTransitionOption {
+  id: TransitionType;
+  label: string;
+}
+
+/** Fade-in options (parity with the desktop inspector select, mobile labels). */
+export const MOBILE_FADE_IN_OPTIONS: readonly MobileTransitionOption[] = [
+  { id: 'none', label: 'Ninguno' },
+  { id: 'fade-black', label: 'Fundido Negro' },
+  { id: 'fade-white', label: 'Fundido Blanco' },
+  { id: 'slide-left', label: 'Deslizar' },
+];
+
+/** Fade-out options (parity with the desktop inspector select, mobile labels). */
+export const MOBILE_FADE_OUT_OPTIONS: readonly MobileTransitionOption[] = [
+  { id: 'none', label: 'Ninguno' },
+  { id: 'fade-black', label: 'Fundido Negro' },
+  { id: 'fade-white', label: 'Fundido Blanco' },
+  { id: 'wipe-right', label: 'Cortinilla' },
+];
+
+/**
+ * Maximum of the transition-duration sliders.
+ * Same formula as the desktop inspector
+ * (`Math.min(5, Math.max(0.2, clip.duration / 2))`).
+ */
+export function transitionDurationMax(clipDuration: number): number {
+  return Math.min(5, Math.max(0.2, clipDuration / 2));
+}
+
 export const MobileCapCutLayout: React.FC = () => {
   const [activeSheet, setActiveSheet] = useState<MobileSheetType>(null);
   const isCompact = useIsCompactHeight(500);
@@ -95,7 +137,7 @@ export const MobileCapCutLayout: React.FC = () => {
 
       {/* 2. VIDEO PREVIEW MONITOR (Canvas + Floating Controls, ensuring canvas >= 150px and > 120px) */}
       <div className={isCompact 
-        ? "flex-1 min-h-[140px] flex flex-col overflow-hidden [&>div]:!min-h-0 [&>div]:!max-h-none [&>div]:!p-1 [&_.max-w-sm]:!pt-0.5 [&_.max-w-sm]:!gap-1 [&_.max-w-sm_button]:!min-h-0 [&_.max-w-sm_button]:!h-7 [&_.max-w-sm_button]:!py-0.5" 
+        ? "flex-1 min-h-[140px] flex flex-col overflow-hidden [&>div]:!min-h-0 [&>div]:!max-h-none [&>div]:!p-1 [&_.max-w-sm]:!pt-0.5 [&_.max-w-sm]:!gap-1 [&_.max-w-sm_button]:!min-h-0 [&_.max-w-sm_button]:!h-7 [&_.max-w-sm_button]:!py-0.5 [&_.max-w-sm_input]:!min-h-0 [&_.max-w-sm_input]:!h-6" 
         : "flex-1 min-h-[180px] max-h-[46dvh] flex flex-col overflow-hidden"
       }>
         {/*
@@ -257,13 +299,14 @@ export const MobileCapCutLayout: React.FC = () => {
               </span>
             </div>
 
-            {/* Quick preset buttons */}
-            <div className="grid grid-cols-4 gap-2">
-              {[0.5, 1.0, 1.5, 2.0].map((preset) => (
+            {/* Quick preset buttons (parity with desktop: up to 4x) */}
+            <div className="grid grid-cols-5 gap-1.5">
+              {MOBILE_SPEED_PRESETS.map((preset) => (
                 <button
                   key={preset}
                   onClick={() => updateClip(selectedClip.id, { speed: preset })}
-                  className={`min-h-[44px] px-2 rounded-lg text-xs font-bold transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
+                  aria-pressed={(selectedClip.speed || 1) === preset}
+                  className={`min-h-[44px] px-1 rounded-lg text-xs font-bold transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
                     (selectedClip.speed || 1) === preset
                       ? 'bg-amber-500 text-dark-950 shadow-md shadow-amber-500/20'
                       : 'bg-dark-850 text-slate-300 hover:bg-dark-800 border border-dark-750'
@@ -274,14 +317,20 @@ export const MobileCapCutLayout: React.FC = () => {
               ))}
             </div>
 
+            <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+              <span>{MOBILE_SPEED_MIN}x</span>
+              <span>1x (Normal)</span>
+              <span>{MOBILE_SPEED_MAX.toFixed(1)}x</span>
+            </div>
+
             <input
               type="range"
-              min="0.25"
-              max="3"
+              min={MOBILE_SPEED_MIN}
+              max={MOBILE_SPEED_MAX}
               step="0.05"
               value={selectedClip.speed || 1}
               onChange={(e) => updateClip(selectedClip.id, { speed: parseFloat(e.target.value) })}
-              className="w-full h-8 bg-dark-750 accent-amber-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="w-full min-h-[44px] bg-dark-750 accent-amber-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
               aria-label="Velocidad del clip"
             />
           </div>
@@ -307,7 +356,7 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.volume ?? 1}
               onChange={(e) => updateClip(selectedClip.id, { volume: parseFloat(e.target.value) })}
-              className="w-full h-8 bg-dark-750 accent-emerald-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="w-full min-h-[44px] bg-dark-750 accent-emerald-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
               aria-label="Volumen del clip"
             />
 
@@ -324,16 +373,17 @@ export const MobileCapCutLayout: React.FC = () => {
           <div className="space-y-4 py-2">
             {/* Fade In */}
             <div>
-              <label className="text-xs font-bold text-slate-200 block mb-2 flex items-center gap-1.5">
-                <Sparkles size={13} className="text-blue-400" />
-                <span>Efecto de Entrada (Fade In):</span>
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'none', label: 'Ninguno' },
-                  { id: 'fade-black', label: 'Fundido Negro' },
-                  { id: 'slide-left', label: 'Deslizar' },
-                ].map((t) => (
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                  <Sparkles size={13} className="text-blue-400" />
+                  <span>Efecto de Entrada (Fade In):</span>
+                </label>
+                <span className="text-[11px] font-mono text-slate-400">
+                  {(selectedClip.transition?.fadeInDuration ?? 0).toFixed(1)}s
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {MOBILE_FADE_IN_OPTIONS.map((t) => (
                   <button
                     key={t.id}
                     onClick={() =>
@@ -346,6 +396,7 @@ export const MobileCapCutLayout: React.FC = () => {
                         },
                       })
                     }
+                    aria-pressed={(selectedClip.transition?.fadeInType || 'none') === t.id}
                     className={`py-2 px-1 min-h-[44px] text-center rounded-lg text-xs font-medium border transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
                       (selectedClip.transition?.fadeInType || 'none') === t.id
                         ? 'bg-blue-600/30 border-blue-400 text-blue-200 font-bold'
@@ -356,20 +407,46 @@ export const MobileCapCutLayout: React.FC = () => {
                   </button>
                 ))}
               </div>
+              {/* Transition duration (parity with the desktop inspector) */}
+              <label className="text-[11px] text-slate-400 block mt-2 mb-1" htmlFor="mobile-fade-in-duration">
+                Duración de entrada:
+              </label>
+              <input
+                id="mobile-fade-in-duration"
+                type="range"
+                min="0.1"
+                max={transitionDurationMax(selectedClip.duration)}
+                step="0.1"
+                aria-label="Duración del fundido de entrada"
+                disabled={!selectedClip.transition?.fadeInType || selectedClip.transition.fadeInType === 'none'}
+                value={selectedClip.transition?.fadeInDuration || 0.8}
+                onChange={(e) =>
+                  updateClip(selectedClip.id, {
+                    transition: {
+                      fadeInType: selectedClip.transition?.fadeInType || 'fade-black',
+                      fadeInDuration: parseFloat(e.target.value),
+                      fadeOutType: selectedClip.transition?.fadeOutType || 'none',
+                      fadeOutDuration: selectedClip.transition?.fadeOutDuration || 0,
+                    },
+                  })
+                }
+                className="w-full min-h-[44px] bg-dark-750 accent-blue-500 rounded cursor-pointer disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              />
             </div>
 
             {/* Fade Out */}
             <div>
-              <label className="text-xs font-bold text-slate-200 block mb-2 flex items-center gap-1.5">
-                <Sparkles size={13} className="text-amber-400" />
-                <span>Efecto de Salida (Fade Out):</span>
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: 'none', label: 'Ninguno' },
-                  { id: 'fade-black', label: 'Fundido Negro' },
-                  { id: 'wipe-right', label: 'Cortinilla' },
-                ].map((t) => (
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                  <Sparkles size={13} className="text-amber-400" />
+                  <span>Efecto de Salida (Fade Out):</span>
+                </label>
+                <span className="text-[11px] font-mono text-slate-400">
+                  {(selectedClip.transition?.fadeOutDuration ?? 0).toFixed(1)}s
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {MOBILE_FADE_OUT_OPTIONS.map((t) => (
                   <button
                     key={t.id}
                     onClick={() =>
@@ -382,6 +459,7 @@ export const MobileCapCutLayout: React.FC = () => {
                         },
                       })
                     }
+                    aria-pressed={(selectedClip.transition?.fadeOutType || 'none') === t.id}
                     className={`py-2 px-1 min-h-[44px] text-center rounded-lg text-xs font-medium border transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
                       (selectedClip.transition?.fadeOutType || 'none') === t.id
                         ? 'bg-amber-600/30 border-amber-400 text-amber-200 font-bold'
@@ -392,6 +470,31 @@ export const MobileCapCutLayout: React.FC = () => {
                   </button>
                 ))}
               </div>
+              {/* Transition duration (parity with the desktop inspector) */}
+              <label className="text-[11px] text-slate-400 block mt-2 mb-1" htmlFor="mobile-fade-out-duration">
+                Duración de salida:
+              </label>
+              <input
+                id="mobile-fade-out-duration"
+                type="range"
+                min="0.1"
+                max={transitionDurationMax(selectedClip.duration)}
+                step="0.1"
+                aria-label="Duración del fundido de salida"
+                disabled={!selectedClip.transition?.fadeOutType || selectedClip.transition.fadeOutType === 'none'}
+                value={selectedClip.transition?.fadeOutDuration || 0.8}
+                onChange={(e) =>
+                  updateClip(selectedClip.id, {
+                    transition: {
+                      fadeInType: selectedClip.transition?.fadeInType || 'none',
+                      fadeInDuration: selectedClip.transition?.fadeInDuration || 0,
+                      fadeOutType: selectedClip.transition?.fadeOutType || 'fade-black',
+                      fadeOutDuration: parseFloat(e.target.value),
+                    },
+                  })
+                }
+                className="w-full min-h-[44px] bg-dark-750 accent-amber-500 rounded cursor-pointer disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
+              />
             </div>
           </div>
         )}
@@ -416,7 +519,7 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.opacity ?? 1}
               onChange={(e) => updateClip(selectedClip.id, { opacity: parseFloat(e.target.value) })}
-              className="w-full h-8 bg-dark-750 accent-purple-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="w-full min-h-[44px] bg-dark-750 accent-purple-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
               aria-label="Opacidad del clip"
             />
           </div>

@@ -103,6 +103,38 @@ function clampNumber(value: number, min: number, max: number, fallback: number):
 }
 
 /**
+ * Coverage required by the `LAYOUT-*-crisp` browser check: the backing store
+ * must hold at least this fraction of the device pixels of the painted box.
+ */
+const CRISP_COVERAGE = 0.98;
+
+/**
+ * `backingPixels / paintedDevicePixels` for a candidate backing store.
+ *
+ * The painted box is derived exactly like the browser harness does: the
+ * preview canvas is always `object-fit: contain`, so the painted box is the
+ * backing store scaled to fit inside the CSS box, times `devicePixelRatio`.
+ */
+function crispCoverage(
+  cssWidth: number,
+  cssHeight: number,
+  dpr: number,
+  backingWidth: number,
+  backingHeight: number
+): number {
+  let paintedWidth = cssWidth;
+  let paintedHeight = cssHeight;
+  if (backingWidth > 0 && backingHeight > 0) {
+    const s = Math.min(cssWidth / backingWidth, cssHeight / backingHeight);
+    paintedWidth = backingWidth * s;
+    paintedHeight = backingHeight * s;
+  }
+  const paintedDevicePixels = paintedWidth * paintedHeight * dpr;
+  if (!(paintedDevicePixels > 0)) return Number.POSITIVE_INFINITY;
+  return (backingWidth * backingHeight) / paintedDevicePixels;
+}
+
+/**
  * Computes the backing store of the preview canvas.
  *
  * The formula (all the maths is pure, so it is unit tested):
@@ -119,8 +151,14 @@ function clampNumber(value: number, min: number, max: number, fallback: number):
  *      → the absolute pixel ceiling is enforced, but it never forces the
  *        preview below the resolution the display actually needs (that would
  *        blur a HiDPI preview) and never above the project resolution.
- *   4. The backing store is `round(logical * scale)`, rounded DOWN to an even
- *      number (H.264 friendly), keeping the project aspect ratio.
+  *   4. Each axis snaps to an EVEN number (H.264 friendly): every axis offers
+  *      its floor-even and ceil-even neighbours, and the combination with the
+  *      smallest project-aspect error wins among those that fit the pixel
+  *      budget AND cover the device pixels of the painted box (the crisp
+  *      contract of the layout checks). A blind round-down under-sampled
+  *      small boxes by ~2 % (soft preview); a blind round-up stretched them
+  *      past the aspect tolerance. Every candidate stays even, so the export
+  *      constraint is always respected.
  */
 export function computeRenderScale(input: RenderScaleInput): RenderScaleResult {
   const logicalWidth = Math.max(1, Math.round(clampNumber(input.logicalWidth, 1, 1e6, 1920)));
@@ -153,13 +191,51 @@ export function computeRenderScale(input: RenderScaleInput): RenderScaleResult {
 
   if (!Number.isFinite(scale) || scale <= 0) scale = 1;
 
-  // 4. Backing store: even numbers, project aspect ratio preserved.
-  let width = Math.max(2, Math.round(logicalWidth * scale));
-  let height = Math.max(2, Math.round(logicalHeight * scale));
-  if (width % 2 !== 0) width -= 1;
-  if (height % 2 !== 0) height -= 1;
-  if (width < 2) width = 2;
-  if (height < 2) height = 2;
+  // 4. Backing store: even numbers (H.264 friendly) that still cover the
+  // painted box. Each axis offers its floor-even and ceil-even neighbours;
+  // the combination with the smallest project-aspect error wins among those
+  // that fit the pixel budget and pass the crisp coverage check. A blind
+  // round-down under-sampled small boxes by ~2 % (soft preview,
+  // LAYOUT-320x568@1-crisp); a blind round-up stretched small boxes past the
+  // 1 % aspect tolerance (568x320@1). Falling back to the floor-even pair
+  // when nothing fits keeps the previous behaviour for pathological inputs.
+  const projectAspect = logicalWidth / logicalHeight;
+  const rawWidth = logicalWidth * scale;
+  const rawHeight = logicalHeight * scale;
+  const downWidth = Math.max(2, 2 * Math.floor(rawWidth / 2));
+  const upWidth = downWidth < rawWidth ? downWidth + 2 : downWidth;
+  const downHeight = Math.max(2, 2 * Math.floor(rawHeight / 2));
+  const upHeight = downHeight < rawHeight ? downHeight + 2 : downHeight;
+  const candidateWidths = upWidth === downWidth ? [downWidth] : [downWidth, upWidth];
+  const candidateHeights = upHeight === downHeight ? [downHeight] : [downHeight, upHeight];
+  const pixelCap = Math.min(pixelBudget, projectPixels);
+  let width = downWidth;
+  let height = downHeight;
+  let foundCrisp = false;
+  let bestCrispAspectError = Number.POSITIVE_INFINITY;
+  let bestCoverage = -1;
+  for (const candidateWidth of candidateWidths) {
+    for (const candidateHeight of candidateHeights) {
+      if (candidateWidth * candidateHeight > pixelCap) continue;
+      const coverage = crispCoverage(cssWidth, cssHeight, dpr, candidateWidth, candidateHeight);
+      if (coverage >= CRISP_COVERAGE) {
+        const aspectError =
+          projectAspect > 0
+            ? Math.abs(candidateWidth / candidateHeight - projectAspect) / projectAspect
+            : 1;
+        if (!foundCrisp || aspectError < bestCrispAspectError) {
+          foundCrisp = true;
+          bestCrispAspectError = aspectError;
+          width = candidateWidth;
+          height = candidateHeight;
+        }
+      } else if (!foundCrisp && coverage > bestCoverage) {
+        bestCoverage = coverage;
+        width = candidateWidth;
+        height = candidateHeight;
+      }
+    }
+  }
 
   const pixels = width * height;
   const cssPixels = cssWidth * cssHeight;

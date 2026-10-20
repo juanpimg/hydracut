@@ -4,16 +4,63 @@ import {
   Pause, 
   SkipBack, 
   Scissors, 
-  Maximize2 
+  Maximize2,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { compositor, computeRenderScale } from '../../core/engine/Compositor';
 import { masterClock } from '../../core/engine/MasterClock';
 import { audioEngine } from '../../core/engine/AudioEngine';
+import { readMasterVolume, subscribeMasterVolume, writeMasterVolume } from '../../core/utils/masterVolume';
 import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
 import { formatTimecode } from '../../core/utils/time';
 import { useIsCompactHeight } from '../../hooks/useIsMobile';
 import { canSplitAtTime } from '../timeline/TimelineToolbar';
+
+/**
+ * Mobile/desktop parity helpers (pure logic, unit-tested in
+ * `src/tests/mobile-parity.test.ts`).
+ *
+ * The production path NEVER reimplements the desktop behaviour:
+ * - frame stepping goes through `masterClock.stepFrame(delta, fps)`, the exact
+ *   same call `PlayerControls` (desktop) makes;
+ * - the master volume goes through `audioEngine.setMasterVolume`, the exact
+ *   same audio path the desktop uses (`AudioEngine.masterVolume` scales every
+ *   clip in `updateAudio`).
+ * These helpers only expose the pure pieces (frame math, label strings,
+ * clamping) so they can be asserted without a DOM.
+ */
+
+/** Seconds advanced by `deltaFrames` at `fps` (same math as `MasterClock.stepFrame`). */
+export function frameStepSeconds(deltaFrames: number, fps: number): number {
+  const safeFps = fps > 0 ? fps : 30;
+  return deltaFrames / safeFps;
+}
+
+/**
+ * Accessible label of the preview `<canvas>`.
+ * Must stay identical to the desktop `PreviewPlayer` label.
+ */
+export function buildPreviewAriaLabel(clipCount: number): string {
+  return clipCount === 0
+    ? 'Monitor vacío: importa medios para empezar'
+    : `Monitor: ${clipCount} clips en el timeline`;
+}
+
+/**
+ * Text of the resolution badge.
+ * Must stay identical to the desktop `PreviewPlayer` badge.
+ */
+export function formatResolutionBadge(width: number, height: number, aspectRatio: string): string {
+  return `${width}x${height} (${aspectRatio})`;
+}
+
+/** Clamp for the master-volume slider (same clamp as `AudioEngine.setMasterVolume`). */
+export function clampMasterVolume(vol: number): number {
+  if (Number.isNaN(vol)) return 0;
+  return Math.max(0, Math.min(vol, 1));
+}
 
 const MobileTimecodeDisplay: React.FC<{ fps: number; duration: number }> = ({ fps, duration }) => {
   const currentSpanRef = useRef<HTMLSpanElement>(null);
@@ -58,6 +105,30 @@ export const MobilePreviewPlayer: React.FC = () => {
   const fps = useProjectStore((s) => s.project.fps);
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const [canSplit, setCanSplit] = useState(false);
+
+  /**
+   * Master volume: the SAME shared preview preference the desktop
+   * `PlayerControls` reads and writes (localStorage + live sync), not a
+   * second local copy. The persisted value is pushed into the engine on
+   * mount so a reload restores what was heard; `subscribeMasterVolume`
+   * keeps this control in sync while the desktop one changes it.
+   * Same audio path: `audioEngine.setMasterVolume`.
+   */
+  const [masterVolume, setMasterVolume] = useState<number>(() => readMasterVolume());
+  const [isMasterMuted, setIsMasterMuted] = useState<boolean>(false);
+
+  /**
+   * Applies the persisted volume on mount and follows live changes from the
+   * desktop control (and vice versa: writes below notify its subscriber).
+   */
+  useEffect(() => {
+    const persisted = readMasterVolume();
+    setMasterVolume(persisted);
+    audioEngine.setMasterVolume(persisted);
+    return subscribeMasterVolume((next) => {
+      setMasterVolume(next);
+    });
+  }, []);
 
   // Landscape / short viewports (the compact CapCut shell).
   const isCompact = useIsCompactHeight();
@@ -295,6 +366,38 @@ export const MobilePreviewPlayer: React.FC = () => {
     masterClock.seek(0);
   };
 
+  /**
+   * Step ±1 frame (mobile parity with the desktop `PlayerControls`).
+   * Same shared logic: `masterClock.stepFrame(delta, fps)` pauses when playing
+   * and seeks exactly `delta / fps` seconds.
+   */
+  const handleStepBack = () => {
+    masterClock.stepFrame(-1, fps);
+  };
+
+  const handleStepForward = () => {
+    masterClock.stepFrame(1, fps);
+  };
+
+  /** Master volume (mobile parity with the desktop `PlayerControls`). */
+  const handleMasterVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = clampMasterVolume(parseFloat(e.target.value));
+    const next = writeMasterVolume(val);
+    setMasterVolume(next);
+    setIsMasterMuted(next === 0);
+    audioEngine.setMasterVolume(next);
+  };
+
+  const handleToggleMasterMute = () => {
+    if (isMasterMuted) {
+      setIsMasterMuted(false);
+      audioEngine.setMasterVolume(masterVolume || 1);
+    } else {
+      setIsMasterMuted(true);
+      audioEngine.setMasterVolume(0);
+    }
+  };
+
   const handleFullscreen = () => {
     if (containerRef.current) {
       if (document.fullscreenElement) {
@@ -327,10 +430,27 @@ export const MobilePreviewPlayer: React.FC = () => {
           width={resolution.width}
           height={resolution.height}
           className="w-full h-full object-contain"
+          role="img"
+          aria-label={buildPreviewAriaLabel(clips.length)}
         />
 
         {/* Floating Timecode Pill */}
         <MobileTimecodeDisplay fps={fps} duration={duration} />
+
+        {/* Resolution Badge (parity with the desktop PreviewPlayer) */}
+        <div className="absolute bottom-2 left-2 z-10 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-slate-400 pointer-events-none border border-white/5">
+          {formatResolutionBadge(resolution.width, resolution.height, aspectRatio)}
+        </div>
+
+        {/* Empty-state guide (parity with the desktop PreviewPlayer) */}
+        {clips.length === 0 && (
+          <div className="absolute inset-0 z-[5] flex flex-col items-center justify-center text-center p-4 gap-1.5 bg-black/40 pointer-events-none">
+            <p className="text-sm font-bold text-white">Timeline vacío</p>
+            <p className="text-[11px] text-slate-400 max-w-[32ch]">
+              Importa videos o genera clips de prueba para verlos aquí.
+            </p>
+          </div>
+        )}
 
         {/* Fullscreen Button */}
         <button
@@ -358,14 +478,19 @@ export const MobilePreviewPlayer: React.FC = () => {
       {/* Floating Bottom Minimal Controls Bar.
           In the compact (landscape) shell the bar is overlaid on the bottom of
           the preview: in a 320px tall viewport the flow layout left the
-          canvas with only 128px of visible height (the requirement is 150px). */}
+          canvas with only 128px of visible height (the requirement is 150px).
+          Row 1: transport. Row 2: frame stepping + master volume (parity with
+          the desktop PlayerControls). Both rows live inside this container so
+          the compact overlay covers them together without stealing canvas
+          height. */}
       <div
-        className={`w-full max-w-sm flex items-center justify-between px-3 pt-2 gap-2 ${
+        className={`w-full max-w-sm flex flex-col px-3 pt-2 gap-2 ${
           isCompact
             ? 'absolute bottom-0 left-0 right-0 mx-auto bg-gradient-to-t from-black/90 via-black/55 to-transparent z-20'
             : ''
         }`}
       >
+      <div className="w-full flex items-center justify-between gap-2">
         <button
           onClick={handleToStart}
           className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white rounded-lg active:scale-90 transition"
@@ -407,6 +532,53 @@ export const MobilePreviewPlayer: React.FC = () => {
           <Scissors size={15} className={canSplit ? 'text-cyan-400' : ''} />
           <span>Dividir</span>
         </button>
+      </div>
+
+      {/* Row 2: frame stepping (±1 fotograma, same logic as desktop) + master
+          volume (same audio path as desktop). All targets ≥ 44 px. */}
+      <div className="w-full flex items-center gap-2" role="group" aria-label="Precisión de fotograma y volumen maestro">
+        <button
+          onClick={handleStepBack}
+          className="min-w-[44px] min-h-[44px] shrink-0 flex items-center justify-center text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg active:scale-90 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          title="Retroceder 1 cuadro (←)"
+          aria-label="Retroceder 1 fotograma"
+        >
+          <span className="text-xs font-mono font-bold">-1f</span>
+        </button>
+
+        <button
+          onClick={handleStepForward}
+          className="min-w-[44px] min-h-[44px] shrink-0 flex items-center justify-center text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg active:scale-90 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          title="Avanzar 1 cuadro (→)"
+          aria-label="Avanzar 1 fotograma"
+        >
+          <span className="text-xs font-mono font-bold">+1f</span>
+        </button>
+
+        <button
+          onClick={handleToggleMasterMute}
+          className="min-w-[44px] min-h-[44px] shrink-0 flex items-center justify-center text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg active:scale-90 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          title={isMasterMuted ? 'Activar sonido' : 'Silenciar'}
+          aria-label={isMasterMuted ? 'Activar sonido maestro' : 'Silenciar sonido maestro'}
+        >
+          {isMasterMuted || masterVolume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+        </button>
+
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value={isMasterMuted ? 0 : masterVolume}
+          onChange={handleMasterVolumeChange}
+          aria-label="Volumen maestro"
+          title="Volumen general"
+          className="flex-1 min-w-0 min-h-[44px] bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+        />
+        <span aria-hidden="true" className="shrink-0 w-10 text-right font-mono text-[11px] text-slate-400">
+          {Math.round((isMasterMuted ? 0 : masterVolume) * 100)}%
+        </span>
+      </div>
       </div>
     </div>
   );

@@ -10,6 +10,7 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { formatTimecode } from '../../core/utils/time';
 import { audioEngine } from '../../core/engine/AudioEngine';
+import { readMasterVolume, subscribeMasterVolume, writeMasterVolume } from '../../core/utils/masterVolume';
 
 const TimecodeCurrentDisplay: React.FC<{ fps: number }> = ({ fps }) => {
   const spanRef = useRef<HTMLDivElement>(null);
@@ -43,8 +44,25 @@ export const PlayerControls: React.FC = () => {
   const fps = useProjectStore((s) => s.project.fps);
   const duration = useProjectStore((s) => s.project.duration);
 
-  const [volume, setVolume] = useState<number>(1);
+  const [volume, setVolume] = useState<number>(() => readMasterVolume());
   const [isMuted, setIsMuted] = useState<boolean>(false);
+
+  /**
+   * The master volume is a shared preview preference (localStorage + live
+   * sync with the mobile control), not local state: it is read from the
+   * single source on mount, pushed into the engine so a reload restores
+   * what was heard, and kept in sync while the mobile control changes it.
+   * Mute stays local and transient. The export is unaffected (per-clip
+   * volumes only).
+   */
+  useEffect(() => {
+    const persisted = readMasterVolume();
+    setVolume(persisted);
+    audioEngine.setMasterVolume(persisted);
+    return subscribeMasterVolume((next) => {
+      setVolume(next);
+    });
+  }, []);
 
   const handleTogglePlay = () => {
     masterClock.togglePlay();
@@ -63,11 +81,11 @@ export const PlayerControls: React.FC = () => {
   };
 
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = parseFloat(e.target.value);
-    setVolume(val);
-    if (val === 0) setIsMuted(true);
+    const next = writeMasterVolume(parseFloat(e.target.value));
+    setVolume(next);
+    if (next === 0) setIsMuted(true);
     else setIsMuted(false);
-    audioEngine.setMasterVolume(val);
+    audioEngine.setMasterVolume(next);
   };
 
   const handleToggleMute = () => {

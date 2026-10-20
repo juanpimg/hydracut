@@ -98,6 +98,60 @@ describe('KI-02 · computeRenderScale', () => {
     expect(r.deviceHeight).toBe(956);
   });
 
+  it('covers the painted box on small boxes (LAYOUT-320x568@1-crisp regression)', () => {
+    // Real browser failure: backing 204x114 vs a 206.1x115.2 painted box
+    // (object-fit: contain, DPR 1) = 23256 px vs 23737 px, margin -0.0202.
+    // Rounding both axes DOWN to even under-sampled the preview by ~2 %.
+    //
+    // Intent (unchanged): the backing store covers the painted box. Exact
+    // rounding (changed, see computeRenderScale step 4): each axis snaps to
+    // the even neighbour that covers, so 204.8x115.2 raw becomes 206x116,
+    // not 204x114. Every candidate stays even (H.264): only the direction of
+    // the snap changed, and this test fails on the old rounding.
+    const cssWidth = 206.1;
+    const cssHeight = 115.2;
+    const r = computeRenderScale({
+      logicalWidth: LOGICAL.width,
+      logicalHeight: LOGICAL.height,
+      cssWidth,
+      cssHeight,
+      devicePixelRatio: 1,
+    });
+    expect(r.width).toBe(206);
+    expect(r.height).toBe(116);
+    expect(r.width % 2).toBe(0);
+    expect(r.height % 2).toBe(0);
+    // The browser check, verbatim: backing >= painted * dpr * 0.98.
+    const s = Math.min(cssWidth / r.width, cssHeight / r.height);
+    const paintedDevicePixels = r.width * s * (r.height * s) * 1;
+    expect(r.pixels).toBeGreaterThanOrEqual(paintedDevicePixels * 0.98);
+    expect(aspectError(r.width, r.height, LOGICAL.width, LOGICAL.height)).toBeLessThan(0.01);
+  });
+
+  it('keeps the aspect tolerance where snapping up would stretch it (568x320@1)', () => {
+    // Counter-case to the crisp fix: snapping UP is not always right either.
+    // Raw 190.2x107.0 snapped to the mixed pair 190x108 is 1.04 % off the
+    // project aspect (over the 1 % tolerance), so the winner must satisfy
+    // BOTH contracts at once: cover the painted box AND keep the aspect.
+    // This passes on the old rounding (190x106) and on the fixed one
+    // (192x108, exact aspect): it only pins the dual contract, not exact dims.
+    const cssWidth = 192;
+    const cssHeight = 107;
+    const r = computeRenderScale({
+      logicalWidth: LOGICAL.width,
+      logicalHeight: LOGICAL.height,
+      cssWidth,
+      cssHeight,
+      devicePixelRatio: 1,
+    });
+    expect(r.width % 2).toBe(0);
+    expect(r.height % 2).toBe(0);
+    expect(aspectError(r.width, r.height, LOGICAL.width, LOGICAL.height)).toBeLessThan(0.01);
+    const s = Math.min(cssWidth / r.width, cssHeight / r.height);
+    const paintedDevicePixels = r.width * s * (r.height * s) * 1;
+    expect(r.pixels).toBeGreaterThanOrEqual(paintedDevicePixels * 0.98);
+  });
+
   it('never exceeds the project resolution (a 4K project in a small box)', () => {
     const r = computeRenderScale({
       logicalWidth: 3840,
