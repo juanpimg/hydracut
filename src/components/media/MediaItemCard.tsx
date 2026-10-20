@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Video, Music, Image as ImageIcon, Plus, Trash2, Clock, AlertTriangle } from 'lucide-react';
+import { Video, Music, Image as ImageIcon, Plus, Trash2, Clock, AlertTriangle, HardDrive } from 'lucide-react';
 import { MediaItem } from '../../types/project';
 import { formatDuration } from '../../core/utils/time';
+import { formatStorageBytes } from '../../core/storage/projectStorage';
 import { useProjectStore } from '../../store/useProjectStore';
 
 interface MediaItemCardProps {
@@ -151,6 +152,18 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item }) => {
           <span>Añadir</span>
         </button>
       </div>
+
+      {/* F1: the size the file occupies on the disk (the storage manager). */}
+      {item.size > 0 && (
+        <span
+          data-testid={`media-size-${item.id}`}
+          className="flex items-center gap-1 text-[10px] text-slate-500"
+          title="Espacio que ocupa este archivo en el almacenamiento del navegador"
+        >
+          <HardDrive size={9} />
+          <span>{formatStorageBytes(item.size)}</span>
+        </span>
+      )}
 
       {/* F1: the reason of a refused insertion (never a silent no-op). */}
       {refusal && (

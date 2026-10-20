@@ -1037,6 +1037,37 @@ export async function setActiveProjectId(id: string): Promise<void> {
 /* Export / import (S-15 / S-16)                                       */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A media file embedded inside a `.hydra` export.
+ *
+ * The bytes travel as base64 inside the JSON payload: the backup stays a
+ * single self-contained text document (no companion folder, no binary
+ * container) at the cost of a 33 % size overhead (4 base64 characters per
+ * 3 bytes).
+ */
+export interface EmbeddedMediaFile {
+  /** Id of the media item inside the project. */
+  mediaId: string;
+  /** Original file name (used to rebuild the file in OPFS). */
+  fileName: string;
+  /** Best effort MIME type. */
+  mimeType: string;
+  /** Size of the original file in bytes. */
+  size: number;
+  /** The bytes, base64 encoded (without the `data:` prefix). */
+  data: string;
+}
+
+/**
+ * Why the media bytes were NOT embedded in the exported file.
+ *
+ * - `no-media`     : the project has no media at all.
+ * - `disabled`     : the caller asked for a media-less export.
+ * - `too-large`    : the payload would exceed the size limit.
+ * - `unavailable`  : the bytes could not be read from the local storage.
+ */
+export type MediaEmbedSkipReason = 'no-media' | 'disabled' | 'too-large' | 'unavailable';
+
 export interface HydraProjectFile {
   version: number;
   app: 'HydraCut';
@@ -1050,59 +1081,652 @@ export interface HydraProjectFile {
   mediaEmbedded?: boolean;
   /** Number of media items referenced by the project (not embedded). */
   mediaCount?: number;
+  /** v2: the media bytes (base64). */
+  embeddedMedia?: EmbeddedMediaFile[];
+  /** v2: why the media was not embedded (absent when it was embedded). */
+  mediaEmbedSkipped?: MediaEmbedSkipReason;
+}
+
+/**
+ * Maximum size (in bytes, base64 encoded) of the media payload embedded in a
+ * `.hydra` file. Beyond that the export falls back to the media-less format
+ * (and says so in the file name).
+ */
+export const MAX_EMBEDDED_MEDIA_BYTES = 64 * 1024 * 1024;
+
+/* ----------------------------- base64 ------------------------------- */
+
+const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** Lookup table: char code -> base64 value (-1 when it is not base64). */
+const BASE64_LOOKUP = (() => {
+  const table = new Int8Array(256).fill(-1);
+  for (let i = 0; i < BASE64_ALPHABET.length; i++) {
+    table[BASE64_ALPHABET.charCodeAt(i)] = i;
+  }
+  return table;
+})();
+
+/**
+ * Size (in bytes) of the base64 representation of a payload.
+ *
+ * Base64 encodes 3 bytes into 4 characters: the overhead is 33 %.
+ */
+export function base64EncodedSize(bytes: number): number {
+  if (!Number.isFinite(bytes) || bytes <= 0) return 0;
+  return Math.ceil(bytes / 3) * 4;
+}
+
+/**
+ * Encodes bytes as base64 (pure, no DOM, no Buffer).
+ */
+export function encodeBase64(bytes: Uint8Array): string {
+  const length = bytes.length;
+  // The string is built in chunks: a single concatenation of millions of
+  // characters would make the encoder crawl on big media files.
+  const parts: string[] = [];
+  let chunk = '';
+  for (let i = 0; i < length; i += 3) {
+    const b0 = bytes[i];
+    const b1 = i + 1 < length ? bytes[i + 1] : 0;
+    const b2 = i + 2 < length ? bytes[i + 2] : 0;
+    chunk += BASE64_ALPHABET[b0 >> 2];
+    chunk += BASE64_ALPHABET[((b0 & 0x03) << 4) | (b1 >> 4)];
+    chunk += i + 1 < length ? BASE64_ALPHABET[((b1 & 0x0f) << 2) | (b2 >> 6)] : '=';
+    chunk += i + 2 < length ? BASE64_ALPHABET[b2 & 0x3f] : '=';
+    if (chunk.length >= 65536) {
+      parts.push(chunk);
+      chunk = '';
+    }
+  }
+  if (chunk.length > 0) parts.push(chunk);
+  return parts.join('');
+}
+
+/**
+ * Decodes a base64 string (pure, no DOM, no Buffer).
+ */
+export function decodeBase64(text: string): Uint8Array<ArrayBuffer> {
+  if (typeof text !== 'string' || text.length === 0) return new Uint8Array(new ArrayBuffer(0));
+  const clean = text.replace(/[\r\n\t ]/g, '').replace(/=+$/, '');
+  const out = new Uint8Array(new ArrayBuffer(Math.floor((clean.length * 3) / 4)));
+  let o = 0;
+  for (let i = 0; i < clean.length; i += 4) {
+    const c0 = BASE64_LOOKUP[clean.charCodeAt(i)];
+    const c1 = BASE64_LOOKUP[clean.charCodeAt(i + 1)];
+    if (c0 < 0 || c1 < 0) throw new Error('Datos base64 no válidos.');
+    out[o++] = ((c0 << 2) | (c1 >> 4)) & 0xff;
+    if (i + 2 < clean.length) {
+      const c2 = BASE64_LOOKUP[clean.charCodeAt(i + 2)];
+      if (c2 < 0) throw new Error('Datos base64 no válidos.');
+      out[o++] = ((c1 << 4) | (c2 >> 2)) & 0xff;
+      if (i + 3 < clean.length) {
+        const c3 = BASE64_LOOKUP[clean.charCodeAt(i + 3)];
+        if (c3 < 0) throw new Error('Datos base64 no válidos.');
+        out[o++] = ((c2 << 6) | c3) & 0xff;
+      }
+    }
+  }
+  return out.subarray(0, o);
+}
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  mp4: 'video/mp4',
+  m4v: 'video/x-m4v',
+  webm: 'video/webm',
+  mov: 'video/quicktime',
+  mkv: 'video/x-matroska',
+  avi: 'video/x-msvideo',
+  ogv: 'video/ogg',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  m4a: 'audio/mp4',
+  aac: 'audio/aac',
+  ogg: 'audio/ogg',
+  opus: 'audio/opus',
+  flac: 'audio/flac',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml',
+};
+
+/**
+ * Guesses the MIME type of a file from its extension (pure).
+ */
+export function guessMimeType(fileName: string): string {
+  const name = typeof fileName === 'string' ? fileName : '';
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
+  return MIME_BY_EXTENSION[ext] ?? '';
+}
+
+/**
+ * Keeps only the base name of a file (no folders, no weird characters).
+ */
+export function sanitizeMediaFileName(fileName: string): string {
+  const base = (typeof fileName === 'string' ? fileName : '').split(/[\\/]/).pop() ?? '';
+  const clean = base.replace(/[^\w.\- ]+/g, '_').trim();
+  return clean || 'medio.bin';
+}
+
+/* --------------------------- export envelope -------------------------- */
+
+export interface SerializeExportOptions {
+  /** The media bytes to embed (base64). */
+  embeddedMedia?: EmbeddedMediaFile[];
+  /** Why the media was not embedded. */
+  mediaEmbedSkipped?: MediaEmbedSkipReason;
 }
 
 /**
  * Builds the export envelope for a project.
+ *
+ * Without options the envelope is the legacy v1 one (project structure only,
+ * `mediaEmbedded: false`). With `embeddedMedia` the envelope becomes v2 and
+ * carries the media bytes: the exported file is then a REAL backup.
  */
-export function serializeProjectForExport(project: Project): HydraProjectFile {
+export function serializeProjectForExport(
+  project: Project,
+  options: SerializeExportOptions = {}
+): HydraProjectFile {
+  const mediaCount = Array.isArray(project.mediaPool) ? project.mediaPool.length : 0;
+  const embedded = options.embeddedMedia;
+
+  if (!embedded && !options.mediaEmbedSkipped) {
+    return {
+      version: 1,
+      app: 'HydraCut',
+      exportedAt: Date.now(),
+      project,
+      mediaEmbedded: false,
+      mediaCount,
+    };
+  }
+
   return {
-    version: 1,
+    version: 2,
     app: 'HydraCut',
     exportedAt: Date.now(),
     project,
-    mediaEmbedded: false,
-    mediaCount: Array.isArray(project.mediaPool) ? project.mediaPool.length : 0,
+    mediaEmbedded: !!embedded && embedded.length > 0,
+    mediaCount,
+    ...(embedded ? { embeddedMedia: embedded } : {}),
+    ...(options.mediaEmbedSkipped ? { mediaEmbedSkipped: options.mediaEmbedSkipped } : {}),
   };
 }
 
 /**
- * Exports project as a downloadable .hydra or .json file.
- *
- * The exported file does NOT contain the media bytes: it is a media-less
- * project file. The name says so explicitly (`<name>-sin-medios.hydra`) and a
- * notice is published so the UI can warn the user.
+ * Name of the exported file. It says explicitly whether the media travelled
+ * with the project (`-sin-medios` when it did not).
  */
-export function exportProjectToFile(project: Project, extension: 'hydra' | 'json' = 'json'): void {
-  const fileContent = serializeProjectForExport(project);
-  const jsonStr = JSON.stringify(fileContent, null, 2);
+export function buildExportFileName(
+  projectName: string,
+  extension: string,
+  mediaEmbedded: boolean
+): string {
+  const raw = typeof projectName === 'string' ? projectName : '';
+  const safeName = raw.toLowerCase().replace(/[^a-z0-9_-]/gi, '_') || 'proyecto';
+  return mediaEmbedded ? `${safeName}.${extension}` : `${safeName}-sin-medios.${extension}`;
+}
+
+/* ------------------------- media embedding plan ----------------------- */
+
+export interface ExportOptions {
+  /**
+   * Include the media bytes in the exported file.
+   * Defaults to `true` (the media is embedded when it fits under the limit).
+   */
+  includeMedia?: boolean;
+  /** Maximum size (bytes, base64 encoded) of the embedded payload. */
+  maxEmbeddedBytes?: number;
+}
+
+export interface MediaEmbeddingPlan {
+  /** True when the media bytes will be embedded. */
+  embed: boolean;
+  /** Why the media is not embedded (null when it is). */
+  skipped: MediaEmbedSkipReason | null;
+  /** Number of media items considered (pool + trash). */
+  mediaCount: number;
+  /** Estimated size of the base64 payload in bytes. */
+  estimatedBytes: number;
+  /** The limit that applies. */
+  limitBytes: number;
+}
+
+/**
+ * Media items that travel with the project: the pool plus the trash (the
+ * bytes of a trashed media are still on disk and can be restored).
+ */
+function collectEmbeddableMedia(project: Project): MediaItem[] {
+  const pool = Array.isArray(project?.mediaPool) ? project.mediaPool : [];
+  const trash = Array.isArray(project?.trash)
+    ? project.trash.map((entry) => entry?.media).filter(Boolean)
+    : [];
+  const seen = new Set<string>();
+  const out: MediaItem[] = [];
+  for (const item of [...pool, ...trash]) {
+    if (!item || typeof item.id !== 'string' || item.id.length === 0) continue;
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Decides whether the media bytes can travel with the exported file (pure).
+ */
+export function planMediaEmbedding(
+  project: Project,
+  options: ExportOptions = {}
+): MediaEmbeddingPlan {
+  const requestedLimit = Number(options.maxEmbeddedBytes);
+  const limitBytes =
+    Number.isFinite(requestedLimit) && requestedLimit >= 0
+      ? requestedLimit
+      : MAX_EMBEDDED_MEDIA_BYTES;
+
+  const items = collectEmbeddableMedia(project);
+  const mediaCount = items.length;
+  const estimatedBytes = items.reduce(
+    (sum, item) => sum + base64EncodedSize(Number(item?.size) || 0),
+    0
+  );
+  const base = { mediaCount, estimatedBytes, limitBytes };
+
+  if (options.includeMedia === false) return { ...base, embed: false, skipped: 'disabled' };
+  if (mediaCount === 0) return { ...base, embed: false, skipped: 'no-media' };
+  if (estimatedBytes > limitBytes) return { ...base, embed: false, skipped: 'too-large' };
+  return { ...base, embed: true, skipped: null };
+}
+
+export interface EmbeddedMediaCollection {
+  /** The media files that could be read (base64 encoded). */
+  files: EmbeddedMediaFile[];
+  /** Names of the media that could not be read. */
+  missing: string[];
+}
+
+/**
+ * Reads the bytes of every media of the project from the local storage and
+ * encodes them as base64.
+ */
+export async function collectEmbeddedMedia(project: Project): Promise<EmbeddedMediaCollection> {
+  const items = collectEmbeddableMedia(project);
+  const files: EmbeddedMediaFile[] = [];
+  const missing: string[] = [];
+
+  for (const item of items) {
+    const path = typeof item.opfsPath === 'string' ? item.opfsPath : '';
+    const label = item.name || item.id;
+    if (!path) {
+      missing.push(label);
+      continue;
+    }
+
+    let file: File | null = null;
+    try {
+      file = await opfsStorage.getMediaFromOPFS(path);
+    } catch (err) {
+      console.warn(`Could not read the media "${label}" for the export:`, err);
+    }
+    if (!file) {
+      missing.push(label);
+      continue;
+    }
+
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      files.push({
+        mediaId: item.id,
+        fileName: sanitizeMediaFileName(item.name || path),
+        mimeType: file.type || guessMimeType(item.name),
+        size: bytes.byteLength,
+        data: encodeBase64(bytes),
+      });
+    } catch (err) {
+      console.warn(`Could not encode the media "${label}" for the export:`, err);
+      missing.push(label);
+    }
+  }
+
+  return { files, missing };
+}
+
+/* ------------------------------ export ------------------------------- */
+
+export interface ExportOutcome {
+  /** The name of the downloaded file. */
+  fileName: string;
+  /** True when the file carries the media bytes. */
+  mediaEmbedded: boolean;
+  /** Number of media items referenced by the project. */
+  mediaCount: number;
+  /** Number of media files actually embedded. */
+  embeddedCount: number;
+  /** Why the media was not embedded (null when it was). */
+  skipped: MediaEmbedSkipReason | null;
+  /** Size (bytes, base64 encoded) of the embedded payload. */
+  encodedBytes: number;
+}
+
+/**
+ * Triggers the download of an export envelope and returns the file name.
+ */
+function triggerProjectDownload(
+  envelope: HydraProjectFile,
+  extension: 'hydra' | 'json',
+  mediaEmbedded: boolean
+): string {
+  const jsonStr = JSON.stringify(envelope, null, 2);
   const mimeType = extension === 'hydra' ? 'application/x-hydracut+json' : 'application/json';
   const blob = new Blob([jsonStr], { type: mimeType });
-
-  reportStorageNotice(
-    'export',
-    'El archivo exportado no incluye los archivos multimedia: reimportarlo no recuperará los clips.',
-    { mediaCount: fileContent.mediaCount }
-  );
+  const fileName = buildExportFileName(envelope.project?.name ?? 'proyecto', extension, mediaEmbedded);
 
   if (typeof document !== 'undefined') {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    const safeName = project.name.toLowerCase().replace(/[^a-z0-9_-]/gi, '_');
-    a.download = `${safeName || 'proyecto'}-sin-medios.${extension}`;
+    a.download = fileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // The object URL is released a bit later: with a big backup (tens of
+    // MB) some browsers cancel the download if the URL is revoked while it
+    // is still being read.
+    const revokeTimer = setTimeout(() => {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        /* ignore */
+      }
+    }, 30_000);
+    // Do not keep a Node process alive just for the revoke timer.
+    const maybeUnref = revokeTimer as unknown as { unref?: () => void };
+    if (typeof maybeUnref.unref === 'function') maybeUnref.unref();
   }
+
+  return fileName;
+}
+
+/**
+ * Exports a project as a downloadable .hydra or .json file.
+ *
+ * The media bytes are embedded by default (that is what makes the file a real
+ * backup): the size is checked first and, when the payload would exceed the
+ * limit, the export falls back to the media-less format, whose file name says
+ * so explicitly (`<name>-sin-medios.hydra`).
+ *
+ * The download of a media-less export is triggered synchronously (there are
+ * no bytes to read); when the media travels with the project the returned
+ * promise resolves once the file has been written.
+ */
+export function exportProjectToFile(
+  project: Project,
+  extension: 'hydra' | 'json' = 'json',
+  options: ExportOptions = {}
+): Promise<ExportOutcome> {
+  const plan = planMediaEmbedding(project, options);
+
+  if (!plan.embed) {
+    const skipped = plan.skipped ?? 'disabled';
+    // A project without media keeps the exact legacy envelope.
+    const envelope =
+      skipped === 'no-media'
+        ? serializeProjectForExport(project)
+        : serializeProjectForExport(project, { mediaEmbedSkipped: skipped });
+    const fileName = triggerProjectDownload(envelope, extension, false);
+
+    if (skipped === 'too-large') {
+      reportStorageNotice(
+        'export',
+        `Los medios del proyecto (${formatStorageBytes(plan.estimatedBytes)}) superan el límite de ${formatStorageBytes(plan.limitBytes)}: el archivo se ha exportado SIN los archivos multimedia.`,
+        { mediaCount: plan.mediaCount, estimatedBytes: plan.estimatedBytes }
+      );
+    } else {
+      reportStorageNotice(
+        'export',
+        'El archivo exportado no incluye los archivos multimedia: reimportarlo no recuperará los clips.',
+        { mediaCount: envelope.mediaCount }
+      );
+    }
+
+    return Promise.resolve({
+      fileName,
+      mediaEmbedded: false,
+      mediaCount: plan.mediaCount,
+      embeddedCount: 0,
+      skipped,
+      encodedBytes: 0,
+    });
+  }
+
+  return exportWithEmbeddedMedia(project, extension, plan);
+}
+
+/**
+ * Reads the media bytes and writes the export file with them.
+ */
+async function exportWithEmbeddedMedia(
+  project: Project,
+  extension: 'hydra' | 'json',
+  plan: MediaEmbeddingPlan
+): Promise<ExportOutcome> {
+  let envelope: HydraProjectFile;
+  let embeddedCount = 0;
+  let encodedBytes = 0;
+  let skipped: MediaEmbedSkipReason | null = null;
+
+  try {
+    const { files, missing } = await collectEmbeddedMedia(project);
+    encodedBytes = files.reduce((sum, file) => sum + file.data.length, 0);
+
+    if (files.length === 0 || encodedBytes > plan.limitBytes) {
+      // Nothing could be read, or the real payload is bigger than expected.
+      skipped = files.length === 0 ? 'unavailable' : 'too-large';
+      envelope = serializeProjectForExport(project, { mediaEmbedSkipped: skipped });
+    } else {
+      embeddedCount = files.length;
+      envelope = serializeProjectForExport(project, { embeddedMedia: files });
+      if (missing.length > 0) {
+        reportStorageNotice(
+          'export',
+          `${missing.length} medio(s) no se pudieron incluir en la copia de seguridad: ${missing.join(', ')}.`,
+          { missing }
+        );
+      }
+    }
+  } catch (err) {
+    reportStorageError('export', err, 'Failed to export the project with its media:');
+    skipped = 'unavailable';
+    envelope = serializeProjectForExport(project, { mediaEmbedSkipped: skipped });
+  }
+
+  const mediaEmbedded = envelope.mediaEmbedded === true;
+  let fileName = '';
+  try {
+    fileName = triggerProjectDownload(envelope, extension, mediaEmbedded);
+  } catch (err) {
+    // The download could not be triggered: the caller must not see an
+    // unhandled rejection (the export is fire-and-forget in the UI).
+    reportStorageError('export', err, 'Failed to write the export file:');
+  }
+
+  if (mediaEmbedded) {
+    reportStorageNotice(
+      'export',
+      `Copia de seguridad creada con ${embeddedCount} medio(s) (${formatStorageBytes(encodedBytes)}).`,
+      { embeddedCount, encodedBytes }
+    );
+  } else {
+    reportStorageNotice(
+      'export',
+      'El archivo exportado no incluye los archivos multimedia: reimportarlo no recuperará los clips.',
+      { mediaCount: envelope.mediaCount }
+    );
+  }
+
+  return {
+    fileName,
+    mediaEmbedded,
+    mediaCount: envelope.mediaCount ?? plan.mediaCount,
+    embeddedCount,
+    skipped,
+    encodedBytes,
+  };
 }
 
 /**
  * Exports project as a downloadable .json file (backward-compatible alias).
  */
-export function exportProjectToJson(project: Project): void {
-  exportProjectToFile(project, 'json');
+export function exportProjectToJson(project: Project): Promise<ExportOutcome> {
+  return exportProjectToFile(project, 'json');
+}
+
+/* ------------------------------------------------------------------ */
+/* Storage manager (F1 / S-08): quota, projects, media and trash        */
+/* ------------------------------------------------------------------ */
+
+/** Percentage of the quota above which the user must be warned. */
+export const STORAGE_QUOTA_WARNING_PERCENT = 80;
+
+export type StorageQuotaLevel = 'ok' | 'warning' | 'critical';
+
+export interface StorageQuotaSnapshot {
+  /** Bytes used by the origin. */
+  usage: number;
+  /** Bytes available to the origin. */
+  quota: number;
+  /** Percentage of the quota in use (0..100, one decimal). */
+  percent: number;
+  /** `warning` above 80 %, `critical` when the quota is exhausted. */
+  level: StorageQuotaLevel;
+  /** Actionable message (Spanish) or null when everything is fine. */
+  message: string | null;
+}
+
+/**
+ * Builds the snapshot of the storage quota (pure).
+ *
+ * `usage` / `quota` come from `navigator.storage.estimate()`; the snapshot
+ * also carries the level of alert and an actionable message in Spanish.
+ */
+export function buildQuotaSnapshot(usage: number, quota: number): StorageQuotaSnapshot {
+  const safeUsage = Number.isFinite(usage) && usage > 0 ? usage : 0;
+  const safeQuota = Number.isFinite(quota) && quota > 0 ? quota : 0;
+  const percent =
+    safeQuota > 0 ? Math.min(100, Math.round((safeUsage / safeQuota) * 1000) / 10) : 0;
+
+  let level: StorageQuotaLevel = 'ok';
+  let message: string | null = null;
+
+  if (safeQuota > 0 && percent >= 100) {
+    level = 'critical';
+    message =
+      'Almacenamiento lleno: no se pueden guardar más cambios. Vacía la papelera o elimina proyectos para liberar espacio.';
+  } else if (safeQuota > 0 && percent > STORAGE_QUOTA_WARNING_PERCENT) {
+    level = 'warning';
+    message = `Queda poco espacio (${percent} %): vacía la papelera o elimina proyectos para no perder tus cambios.`;
+  }
+
+  return { usage: safeUsage, quota: safeQuota, percent, level, message };
+}
+
+/**
+ * Formats a size in bytes for the UI (Spanish, decimal comma).
+ */
+export function formatStorageBytes(bytes: number): string {
+  const value = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
+  if (value < 1024) return `${Math.round(value)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let scaled = value / 1024;
+  let unit = 0;
+  while (scaled >= 1024 && unit < units.length - 1) {
+    scaled /= 1024;
+    unit++;
+  }
+  const rounded =
+    scaled >= 100 ? String(Math.round(scaled)) : scaled.toFixed(1).replace('.', ',');
+  return `${rounded} ${units[unit]}`;
+}
+
+export interface StorageUsageSummary {
+  /** Number of projects saved in this browser. */
+  projects: number;
+  /** Number of media items in the current project. */
+  mediaItems: number;
+  /** Size of the media items of the current project (bytes). */
+  mediaBytes: number;
+  /** Number of media items in the trash of the current project. */
+  trashItems: number;
+  /** Size of the trash (bytes). */
+  trashBytes: number;
+}
+
+/**
+ * Summarises what is stored in this browser (pure).
+ *
+ * `projects` accepts the number of saved projects or the index itself.
+ */
+export function summarizeStorageUsage(
+  projects: number | ProjectMetadata[] | null | undefined,
+  project: Partial<Project> | null | undefined
+): StorageUsageSummary {
+  const pool = Array.isArray(project?.mediaPool) ? project.mediaPool : [];
+  const trash = Array.isArray(project?.trash) ? project.trash : [];
+
+  const mediaBytes = pool.reduce(
+    (sum, item) => sum + (Number.isFinite(item?.size) && item.size > 0 ? item.size : 0),
+    0
+  );
+  const trashBytes = trash.reduce(
+    (sum, entry) =>
+      sum + (Number.isFinite(entry?.media?.size) && entry.media.size > 0 ? entry.media.size : 0),
+    0
+  );
+
+  const projectCount =
+    typeof projects === 'number'
+      ? Number.isFinite(projects) && projects > 0
+        ? projects
+        : 0
+      : Array.isArray(projects)
+        ? projects.length
+        : 0;
+
+  return {
+    projects: projectCount,
+    mediaItems: pool.length,
+    mediaBytes,
+    trashItems: trash.length,
+    trashBytes,
+  };
+}
+
+/**
+ * Reads the storage estimate of the origin.
+ *
+ * Returns `null` when the API is not available (private mode, old browser,
+ * non browser environment): the caller must degrade gracefully instead of
+ * breaking.
+ */
+export async function readStorageEstimate(): Promise<{ usage: number; quota: number } | null> {
+  try {
+    const nav = (globalThis as { navigator?: Navigator }).navigator;
+    const storage = nav?.storage;
+    if (!storage || typeof storage.estimate !== 'function') return null;
+    const estimate = await storage.estimate();
+    return {
+      usage: Number(estimate?.usage) || 0,
+      quota: Number(estimate?.quota) || 0,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /* ----------------------------- validation ---------------------------- */
@@ -1155,6 +1779,53 @@ function clampNumber(value: unknown, min: number, max: number, fallback: number)
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(max, Math.max(min, parsed));
+}
+
+/**
+ * Colour filters of a clip (F9).
+ *
+ * The shape mirrors `ClipColorFilters` of `src/types/project.ts` (it is
+ * declared here so the sanitiser keeps working even if that type is moved).
+ */
+interface SanitizedClipFilters {
+  brightness?: number;
+  contrast?: number;
+  saturation?: number;
+  temperature?: number;
+  grayscale?: number;
+  sepia?: number;
+}
+
+/** Neutral value, minimum and maximum of every colour filter. */
+const CLIP_FILTER_RANGES: Record<string, [number, number, number]> = {
+  brightness: [0, 2, 1],
+  contrast: [0, 2, 1],
+  saturation: [0, 2, 1],
+  temperature: [-1, 1, 0],
+  grayscale: [0, 1, 0],
+  sepia: [0, 1, 0],
+};
+
+/**
+ * Sanitises the colour filters of a clip (F9).
+ *
+ * Returns `undefined` when the clip has no filters: an imported project must
+ * keep the filters it was exported with (they change how the clip is drawn
+ * in the preview AND in the export).
+ */
+function sanitizeClipFilters(raw: unknown): SanitizedClipFilters | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const source = raw as Record<string, unknown>;
+  const out: Record<string, number> = {};
+  let found = false;
+  for (const key of Object.keys(CLIP_FILTER_RANGES)) {
+    const value = Number(source[key]);
+    if (!Number.isFinite(value)) continue;
+    const [min, max] = CLIP_FILTER_RANGES[key];
+    out[key] = Math.min(max, Math.max(min, value));
+    found = true;
+  }
+  return found ? (out as SanitizedClipFilters) : undefined;
 }
 
 export interface ProjectSanitizeResult {
@@ -1256,6 +1927,9 @@ export function sanitizeImportedProject(
     }
     seenClipIds.add(c.id);
     const speed = clampNumber(c.speed, 0.1, 10, 1);
+    // F9: the colour filters of the clip travel with it (they change how it
+    // is drawn in the preview AND in the export).
+    const filters = sanitizeClipFilters(c.filters);
     clips.push({
       id: c.id,
       trackId: c.trackId,
@@ -1276,6 +1950,11 @@ export function sanitizeImportedProject(
       positionY: Number.isFinite(Number(c.positionY)) ? Number(c.positionY) : 0,
       muted: !!c.muted,
       speed,
+      // F4: "conservar el tono" is a per-clip flag. It used to be dropped
+      // here (the clip was rebuilt field by field), so an imported project
+      // silently reverted to the default behaviour.
+      preservePitch: typeof c.preservePitch === 'boolean' ? c.preservePitch : undefined,
+      ...(filters ? { filters } : {}),
       text: typeof c.text === 'string' ? c.text : undefined,
       textStyle: c.textStyle,
       words: Array.isArray(c.words) ? c.words : undefined,
@@ -1431,6 +2110,11 @@ export function sanitizeImportedProject(
     clips,
     mediaPool,
     duration,
+    // The opt-in tail of the timeline travels with the project: without it
+    // the imported project would be shorter than the exported one.
+    endPaddingSeconds: Number.isFinite(Number(candidate.endPaddingSeconds))
+      ? Math.max(0, Number(candidate.endPaddingSeconds))
+      : undefined,
     // F1: the policy is sanitised (an unknown value falls back to `block`).
     overlapPolicy,
     // F2: the trash travels with the project.
@@ -1449,6 +2133,8 @@ export interface ImportReport {
   missingMedia: string[];
   /** True when the source file carried the media bytes (never for v1). */
   mediaEmbedded: boolean;
+  /** Media items that were written back to the local storage. */
+  restoredMedia?: string[];
   droppedClips: number;
   droppedTracks: number;
   droppedMedia: number;
@@ -1470,9 +2156,100 @@ export async function importProjectFromFile(file: File): Promise<Project> {
 }
 
 /**
+ * Parses the `embeddedMedia` section of an exported file (pure).
+ *
+ * Only the entries that can be restored are kept: a malformed entry is
+ * ignored instead of breaking the whole import.
+ */
+export function parseEmbeddedMedia(value: unknown): EmbeddedMediaFile[] {
+  if (!Array.isArray(value)) return [];
+  const out: EmbeddedMediaFile[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Partial<EmbeddedMediaFile>;
+    if (typeof entry.mediaId !== 'string' || entry.mediaId.length === 0) continue;
+    if (typeof entry.data !== 'string' || entry.data.length === 0) continue;
+    out.push({
+      mediaId: entry.mediaId,
+      fileName:
+        typeof entry.fileName === 'string' && entry.fileName.length > 0
+          ? sanitizeMediaFileName(entry.fileName)
+          : `${sanitizeMediaFileName(entry.mediaId)}.bin`,
+      mimeType: typeof entry.mimeType === 'string' ? entry.mimeType : '',
+      size: Number.isFinite(Number(entry.size)) ? Number(entry.size) : 0,
+      data: entry.data,
+    });
+  }
+  return out;
+}
+
+export interface RestoreEmbeddedMediaResult {
+  /** The project with the new local paths of the restored media. */
+  project: Project;
+  /** Ids of the media that were written back to the local storage. */
+  restored: string[];
+  /** Ids of the media that could not be restored. */
+  failed: string[];
+}
+
+/**
+ * Writes the embedded media bytes back into the local storage (OPFS, with
+ * the IndexedDB fallback) and points the media items to their new path.
+ *
+ * The media keeps its id, so the clips that reference it keep working; the
+ * dead `blob:` URL of the exported file is replaced later by the
+ * rehydration.
+ */
+export async function restoreEmbeddedMedia(
+  project: Project,
+  files: EmbeddedMediaFile[]
+): Promise<RestoreEmbeddedMediaResult> {
+  const restored: string[] = [];
+  const failed: string[] = [];
+  if (!Array.isArray(files) || files.length === 0) return { project, restored, failed };
+
+  /** mediaId -> { path, size } */
+  const written = new Map<string, { path: string; size: number }>();
+
+  for (const entry of files) {
+    try {
+      const bytes = decodeBase64(entry.data);
+      if (bytes.byteLength === 0) throw new Error('El archivo incrustado está vacío.');
+      const file = new File([bytes], entry.fileName, {
+        type: entry.mimeType || guessMimeType(entry.fileName),
+      });
+      const path = await opfsStorage.saveMediaToOPFS(entry.mediaId, file);
+      written.set(entry.mediaId, { path, size: bytes.byteLength });
+      restored.push(entry.mediaId);
+    } catch (err) {
+      console.warn(`Could not restore the embedded media "${entry.mediaId}":`, err);
+      failed.push(entry.mediaId);
+    }
+  }
+
+  const apply = (item: MediaItem): MediaItem => {
+    const local = written.get(item.id);
+    if (!local) return item;
+    return { ...item, opfsPath: local.path, size: local.size };
+  };
+
+  const mediaPool = (Array.isArray(project.mediaPool) ? project.mediaPool : []).map(apply);
+  const trash = (Array.isArray(project.trash) ? project.trash : []).map((entry) => ({
+    ...entry,
+    media: apply(entry.media),
+  }));
+
+  return { project: { ...project, mediaPool, trash }, restored, failed };
+}
+
+/**
  * Imports a project file and returns a detailed report (warnings, missing
- * media, dropped items). The media bytes are never embedded in v1 exports,
- * so media that cannot be found in the local OPFS is reported explicitly
+ * media, dropped items).
+ *
+ * A v2 file may carry the media bytes: they are written back into the local
+ * storage and the project is rehydrated with them, so the imported project
+ * really plays. A v1 (media-less) file keeps working exactly as before and
+ * the media that cannot be found in the local storage is reported explicitly
  * instead of producing a silently broken project.
  */
 export async function importProjectFromFileWithReport(file: File): Promise<ImportReport> {
@@ -1497,6 +2274,7 @@ export async function importProjectFromFileWithReport(file: File): Promise<Impor
 
   let candidate: Partial<Project> | null = null;
   let mediaEmbedded = false;
+  let embeddedFiles: EmbeddedMediaFile[] = [];
 
   if (parsed && typeof parsed === 'object') {
     const obj = parsed as Record<string, unknown>;
@@ -1506,6 +2284,8 @@ export async function importProjectFromFileWithReport(file: File): Promise<Impor
     } else if (Array.isArray(obj.tracks) || Array.isArray(obj.clips) || obj.id) {
       candidate = obj as Partial<Project>;
     }
+    embeddedFiles = parseEmbeddedMedia(obj.embeddedMedia);
+    if (embeddedFiles.length > 0) mediaEmbedded = true;
   }
 
   if (!candidate || !Array.isArray(candidate.tracks) || !Array.isArray(candidate.clips)) {
@@ -1532,13 +2312,28 @@ export async function importProjectFromFileWithReport(file: File): Promise<Impor
   const sanitized = sanitizeImportedProject(candidate, { projectId, fallbackName, now });
   const warnings = [...sanitized.warnings];
 
+  // The file carries the media bytes: they are written back to the local
+  // storage BEFORE the rehydration, so the media plays again.
+  let projectToRehydrate = sanitized.project;
+  const restoredMedia: string[] = [];
+  if (embeddedFiles.length > 0) {
+    const restore = await restoreEmbeddedMedia(sanitized.project, embeddedFiles);
+    projectToRehydrate = restore.project;
+    restoredMedia.push(...restore.restored);
+    if (restore.failed.length > 0) {
+      warnings.push(
+        `No se pudieron restaurar ${restore.failed.length} medio(s) del archivo exportado: ${restore.failed.join(', ')}.`
+      );
+    }
+  }
+
   if (!mediaEmbedded && sanitized.project.mediaPool.length > 0) {
     warnings.push(
       'El archivo exportado no incluye los archivos multimedia: los medios sólo se recuperarán si ya están en este equipo.'
     );
   }
 
-  const rehydrated = await rehydrateProjectMediaWithReport(sanitized.project);
+  const rehydrated = await rehydrateProjectMediaWithReport(projectToRehydrate);
   if (rehydrated.missingMedia.length > 0) {
     warnings.push(
       `No se pudieron recuperar ${rehydrated.missingMedia.length} medio(s) del almacenamiento local: ${rehydrated.missingMedia.join(', ')}.`
@@ -1555,6 +2350,7 @@ export async function importProjectFromFileWithReport(file: File): Promise<Impor
     droppedClips: sanitized.droppedClips,
     droppedTracks: sanitized.droppedTracks,
     droppedMedia: sanitized.droppedMedia,
+    restoredMedia,
   };
   lastImportReport = report;
 

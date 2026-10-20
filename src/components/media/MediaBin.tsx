@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   UploadCloud,
   Sparkles,
@@ -10,12 +10,24 @@ import {
   Trash2,
   Link2,
   RotateCcw,
+  HardDrive,
+  Download,
 } from 'lucide-react';
 import { MediaItem, MediaType } from '../../types/project';
 import { useProjectStore } from '../../store/useProjectStore';
 import { generateVideoThumbnail, createPlaceholderThumbnail, generateFilmstrip, generatePlaceholderFilmstrip } from '../../core/utils/thumbnails';
 import { extractWaveformPeaksFromBlob, generateSyntheticWaveform } from '../../core/utils/waveform';
 import { saveMediaToOPFS } from '../../core/storage/opfsStorage';
+import {
+  MAX_EMBEDDED_MEDIA_BYTES,
+  buildQuotaSnapshot,
+  exportProjectToFile,
+  formatStorageBytes,
+  listProjects,
+  readStorageEstimate,
+  summarizeStorageUsage,
+  type StorageQuotaSnapshot,
+} from '../../core/storage/projectStorage';
 import { createPresetMediaItems } from '../../core/utils/sampleMedia';
 import { MediaItemCard } from './MediaItemCard';
 
@@ -192,6 +204,21 @@ export const MediaBin: React.FC = () => {
   const [showTrash, setShowTrash] = useState(true);
   /** True when the purge of the whole trash is armed (two step confirmation). */
   const [purgeArmed, setPurgeArmed] = useState(false);
+  /* --- F1: gestor de almacenamiento ------------------------------- */
+  /** Shows/hides the "Almacenamiento" panel. */
+  const [showStorage, setShowStorage] = useState(false);
+  /** Quota snapshot (null when the browser does not expose the estimate). */
+  const [quota, setQuota] = useState<StorageQuotaSnapshot | null>(null);
+  /** null = loading, false = the API is not available, true = it is. */
+  const [quotaAvailable, setQuotaAvailable] = useState<boolean | null>(null);
+  /** Number of projects saved in this browser. */
+  const [projectCount, setProjectCount] = useState(0);
+  /** Result of the last storage action (Spanish). */
+  const [storageMessage, setStorageMessage] = useState<string | null>(null);
+  /** True when the purge from the storage panel is armed. */
+  const [storagePurgeArmed, setStoragePurgeArmed] = useState(false);
+  /** True while the backup is being written. */
+  const [isBackingUp, setIsBackingUp] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   /** Hidden input used to pick the replacement file of a missing media (F3). */
@@ -200,6 +227,90 @@ export const MediaBin: React.FC = () => {
   const relinkTargetRef = useRef<string | null>(null);
 
   const missingMedia = mediaPool.filter((m) => m.status === 'missing' || m.status === 'error');
+
+  /* ------------------------------------------------------------------ */
+  /* F1 — Almacenamiento: cuota, proyectos, medios y papelera            */
+  /* ------------------------------------------------------------------ */
+
+  const storageSummary = summarizeStorageUsage(projectCount, { mediaPool, trash });
+
+  /**
+   * Reads the quota and the number of projects. It never throws: when the
+   * Storage API is not available (private mode, old browser) the panel
+   * degrades to "no disponible" instead of breaking the media bin.
+   */
+  const refreshStorage = useCallback(async () => {
+    const estimate = await readStorageEstimate();
+    if (estimate) {
+      setQuota(buildQuotaSnapshot(estimate.usage, estimate.quota));
+      setQuotaAvailable(true);
+    } else {
+      setQuota(null);
+      setQuotaAvailable(false);
+    }
+    try {
+      const projects = await listProjects();
+      setProjectCount(Array.isArray(projects) ? projects.length : 0);
+    } catch {
+      setProjectCount(0);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshStorage();
+  }, [refreshStorage, mediaPool.length, trash.length]);
+
+  /**
+   * F1: empties the trash for good (the OPFS blobs are deleted with it).
+   * Two step confirmation: the first tap arms it, the second one deletes.
+   */
+  const handleStoragePurge = () => {
+    if (trash.length === 0) return;
+    if (!storagePurgeArmed) {
+      setStoragePurgeArmed(true);
+      return;
+    }
+    setStoragePurgeArmed(false);
+    const purged = purgeTrash();
+    setStorageMessage(
+      `Papelera vaciada: ${purged} medio(s) borrados del disco.`
+    );
+    void refreshStorage();
+  };
+
+  /**
+   * F2: writes a real backup (project + media bytes) of the current project.
+   */
+  const handleBackup = async () => {
+    if (isBackingUp) return;
+    setIsBackingUp(true);
+    setStorageMessage(null);
+    try {
+      // The project is read on demand: the media bin does not have to
+      // re-render on every edit of the timeline.
+      const current = useProjectStore.getState().project;
+      const outcome = await exportProjectToFile(current, 'hydra', { includeMedia: true });
+      if (outcome.mediaEmbedded) {
+        setStorageMessage(
+          `Copia de seguridad creada con ${outcome.embeddedCount} medio(s) (${formatStorageBytes(outcome.encodedBytes)}): ${outcome.fileName}`
+        );
+      } else if (outcome.skipped === 'too-large') {
+        setStorageMessage(
+          `Los medios superan el límite de ${formatStorageBytes(MAX_EMBEDDED_MEDIA_BYTES)}: la copia se ha creado SIN los archivos multimedia (${outcome.fileName}).`
+        );
+      } else {
+        setStorageMessage(
+          `Copia de seguridad creada sin los archivos multimedia (${outcome.fileName}).`
+        );
+      }
+    } catch (err) {
+      setStorageMessage(
+        `No se pudo crear la copia de seguridad: ${(err as Error).message ?? 'error desconocido'}`
+      );
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
 
   const processFile = async (file: File) => {
     const item = await buildMediaItemFromFile(file);
@@ -508,6 +619,176 @@ export const MediaBin: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* F1 — Almacenamiento: qué ocupa el disco y cómo liberar espacio. */}
+      <div
+        data-testid="storage-panel"
+        className="mt-2 shrink-0 p-2 rounded-lg border border-dark-700 bg-dark-950/60"
+      >
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => {
+              const next = !showStorage;
+              setShowStorage(next);
+              if (next) void refreshStorage();
+            }}
+            data-testid="storage-panel-toggle"
+            className="flex-1 min-h-[32px] flex items-center gap-1.5 text-slate-300 text-[11px] font-semibold uppercase tracking-wider focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            aria-expanded={showStorage}
+            title="Ver el espacio usado y liberar almacenamiento"
+          >
+            <HardDrive size={12} />
+            <span>Almacenamiento</span>
+          </button>
+          {quota && (
+            <span
+              data-testid="storage-quota-percent"
+              className={`shrink-0 text-[10px] font-semibold ${
+                quota.level === 'critical'
+                  ? 'text-rose-300'
+                  : quota.level === 'warning'
+                    ? 'text-amber-300'
+                    : 'text-slate-400'
+              }`}
+            >
+              {quota.percent} %
+            </span>
+          )}
+        </div>
+
+        {showStorage && (
+          <div className="mt-1.5 space-y-2 max-h-[45%] overflow-y-auto">
+            {/* Cuota del navegador */}
+            <div>
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span data-testid="storage-quota-text">
+                  {quota
+                    ? `${formatStorageBytes(quota.usage)} de ${formatStorageBytes(quota.quota)}`
+                    : 'Espacio usado: no disponible'}
+                </span>
+                {quota && <span>{quota.percent} %</span>}
+              </div>
+              <div
+                role="progressbar"
+                aria-label="Espacio de almacenamiento usado"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={quota ? Math.round(quota.percent) : 0}
+                className="h-1.5 w-full rounded bg-dark-800 overflow-hidden mt-1"
+              >
+                <div
+                  data-testid="storage-quota-bar"
+                  className={`h-full transition-all ${
+                    quota?.level === 'critical'
+                      ? 'bg-rose-500'
+                      : quota?.level === 'warning'
+                        ? 'bg-amber-500'
+                        : 'bg-blue-500'
+                  }`}
+                  style={{ width: `${quota ? Math.min(100, quota.percent) : 0}%` }}
+                />
+              </div>
+              {quota?.message && (
+                <p
+                  data-testid="storage-quota-warning"
+                  role="alert"
+                  className={`mt-1 text-[10px] leading-tight rounded px-1.5 py-1 border ${
+                    quota.level === 'critical'
+                      ? 'bg-rose-950/50 border-rose-800/60 text-rose-200'
+                      : 'bg-amber-950/40 border-amber-800/50 text-amber-200'
+                  }`}
+                >
+                  {quota.message}
+                </p>
+              )}
+              {quotaAvailable === false && (
+                <p
+                  data-testid="storage-quota-unavailable"
+                  className="mt-1 text-[10px] leading-tight text-slate-500"
+                >
+                  Este navegador no permite consultar el espacio disponible (puede estar en modo privado).
+                </p>
+              )}
+            </div>
+
+            {/* Proyectos, medios y papelera */}
+            <dl className="grid grid-cols-2 gap-x-2 gap-y-1 text-[11px]">
+              <div className="flex items-center justify-between gap-1">
+                <dt className="text-slate-500">Proyectos</dt>
+                <dd data-testid="storage-projects-count" className="text-slate-200 font-semibold">
+                  {storageSummary.projects}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-1">
+                <dt className="text-slate-500">Medios</dt>
+                <dd data-testid="storage-media-count" className="text-slate-200 font-semibold">
+                  {storageSummary.mediaItems}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-1">
+                <dt className="text-slate-500">Tamaño</dt>
+                <dd data-testid="storage-media-size" className="text-slate-200 font-semibold">
+                  {formatStorageBytes(storageSummary.mediaBytes)}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-1">
+                <dt className="text-slate-500">Papelera</dt>
+                <dd data-testid="storage-trash-size" className="text-slate-200 font-semibold">
+                  {storageSummary.trashItems} · {formatStorageBytes(storageSummary.trashBytes)}
+                </dd>
+              </div>
+            </dl>
+
+            {/* Acciones: liberar espacio y copia de seguridad */}
+            <button
+              onClick={handleStoragePurge}
+              disabled={storageSummary.trashItems === 0}
+              data-testid="storage-purge-trash"
+              className={`w-full min-h-[36px] flex items-center justify-center gap-1.5 px-2 py-1.5 rounded border text-[11px] font-semibold transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed ${
+                storagePurgeArmed
+                  ? 'bg-red-600 text-white border-red-500'
+                  : 'border-dark-600 text-slate-300 bg-dark-900 hover:bg-dark-800'
+              }`}
+              title={
+                storagePurgeArmed
+                  ? 'Pulsa otra vez para borrar los archivos de la papelera para siempre'
+                  : 'Borrar los archivos de la papelera para siempre y liberar espacio'
+              }
+            >
+              <Trash2 size={12} />
+              <span>
+                {storagePurgeArmed
+                  ? 'Confirmar: vaciar papelera'
+                  : `Vaciar papelera${storageSummary.trashItems > 0 ? ` (${storageSummary.trashItems})` : ''}`}
+              </span>
+            </button>
+
+            <button
+              onClick={handleBackup}
+              disabled={isBackingUp}
+              data-testid="storage-backup"
+              className="w-full min-h-[36px] flex items-center justify-center gap-1.5 px-2 py-1.5 rounded border border-blue-600/50 bg-blue-900/40 text-blue-200 text-[11px] font-semibold transition hover:bg-blue-900/70 active:scale-[0.99] focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none disabled:opacity-50"
+              title="Crear una copia de seguridad del proyecto con sus archivos multimedia"
+            >
+              {isBackingUp ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Download size={12} />
+              )}
+              <span>{isBackingUp ? 'Creando copia...' : 'Copia de seguridad (con medios)'}</span>
+            </button>
+
+            {storageMessage && (
+              <p
+                data-testid="storage-message"
+                className="text-[10px] leading-tight text-slate-300 bg-dark-900 border border-dark-700 rounded px-1.5 py-1"
+              >
+                {storageMessage}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Hidden input used to pick the replacement file of a missing media (F3). */}
       <input
