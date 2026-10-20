@@ -1309,6 +1309,93 @@ export function isAbortLikeError(err: unknown): boolean {
 }
 
 /**
+ * Formatos de contenedor que `exportVideo` sabe producir.
+ *
+ * - `mp4`: camino acelerado WebCodecs (H.264 + mp4-muxer) con degradación a
+ *   MediaRecorder cuando el encoder de la plataforma falla.
+ * - `webm`: SIEMPRE el grabador de respaldo (`exportWithMediaRecorder`, el
+ *   MISMO que ya existe: sin segundo grabador). Es el formato nativo del
+ *   camino MediaRecorder (VP9/VP8) y produce un archivo válido y reproducible
+ *   con vídeo y audio.
+ */
+export type ExportContainerFormat = 'mp4' | 'webm';
+
+/**
+ * Candidatos MIME del grabador de respaldo según el formato pedido.
+ *
+ * El orden importa: `MediaRecorder` usa el primero soportado. Para WebM los
+ * VP9/VP8 van primero (el formato nativo del grabador); para MP4 se mantiene
+ * EXACTAMENTE el orden histórico (mp4 primero), así que el camino MP4 no
+ * cambia ni un byte.
+ */
+export function resolveRecorderMimeCandidates(format: ExportContainerFormat): string[] {
+  if (format === 'webm') {
+    return ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+  }
+  return [
+    'video/mp4;codecs=avc1',
+    'video/mp4',
+    'video/webm;codecs=vp9',
+    'video/webm;codecs=vp8',
+    'video/webm',
+  ];
+}
+
+/**
+ * Elige el MIME del grabador de respaldo para el formato pedido.
+ *
+ * Reutiliza la detección que ya existe (`MediaRecorder.isTypeSupported`, la
+ * misma que usa `getSupportedVideoMimeType` en `sampleMedia.ts`): devuelve el
+ * primer candidato soportado o `''` cuando hay que dejar que el navegador
+ * decida. Exportada para los tests de regresión.
+ */
+export function pickRecorderMimeType(
+  format: ExportContainerFormat,
+  isTypeSupported?: (mime: string) => boolean
+): string {
+  const probe =
+    isTypeSupported ??
+    (typeof MediaRecorder !== 'undefined' &&
+    typeof MediaRecorder.isTypeSupported === 'function'
+      ? (mime: string) => {
+          try {
+            return MediaRecorder.isTypeSupported(mime);
+          } catch {
+            return false;
+          }
+        }
+      : undefined);
+  if (!probe) return '';
+  return resolveRecorderMimeCandidates(format).find((mime) => probe(mime)) ?? '';
+}
+
+/**
+ * Extensión del archivo descargado a partir del MIME grabado y del formato
+ * pedido. El MIME manda (es lo que realmente contiene el blob); el formato es
+ * el respaldo cuando el MIME viene vacío.
+ */
+export function exportFileExtensionFor(mimeType: string, format: ExportContainerFormat): 'mp4' | 'webm' {
+  if (mimeType.includes('mp4')) return 'mp4';
+  if (mimeType.includes('webm')) return 'webm';
+  return format === 'webm' ? 'webm' : 'mp4';
+}
+
+/**
+ * Nombre del archivo descargado (`minusculas_con_guiones_resolucion.ext`).
+ * Exportado para los tests: la extensión debe acompañar al formato.
+ */
+export function buildExportFilename(
+  projectName: string,
+  resolutionLabel: string,
+  range: { start: number; end: number } | null,
+  extension: 'mp4' | 'webm'
+): string {
+  const base = projectName.toLowerCase().replace(/\s+/g, '_');
+  const rangeSuffix = range ? `_${range.start}-${range.end}` : '';
+  return `${base}_${resolutionLabel}${rangeSuffix}.${extension}`;
+}
+
+/**
  * Seeks every video clip that is active at `time` so the frame that is about
  * to be composited is the right one.
  *
@@ -1415,6 +1502,16 @@ export async function exportVideo(params: ExportParams): Promise<Blob> {
   const fps = Math.max(1, Math.round(params.config.fps || 30));
   const totalFrames = Math.max(1, Math.round(params.duration * fps));
   const startTime = performance.now();
+  const format: ExportContainerFormat = params.config.format === 'webm' ? 'webm' : 'mp4';
+
+  // WebM: SIEMPRE el grabador de respaldo (MediaRecorder, VP9/VP8), el MISMO
+  // `exportWithMediaRecorder` que ya existe — sin segundo grabador — y con los
+  // MISMOS fotogramas del `Compositor` que el preview. Es una grabación en
+  // tiempo real (un proyecto de 10 s tarda 10 s) y NO usa la aceleración GPU
+  // del camino MP4 (ver el aviso del modal de exportación).
+  if (format === 'webm') {
+    return await exportWithMediaRecorder(params, totalFrames, fps);
+  }
 
   // Fast path: no WebCodecs at all -> MediaRecorder fallback.
   const webCodecsSupported = await isWebCodecsSupported();
@@ -2088,13 +2185,9 @@ async function exportWithMediaRecorder(
     );
   }
 
-  const mimeCandidates = [
-    'video/mp4;codecs=avc1',
-    'video/mp4',
-    'video/webm;codecs=vp9',
-    'video/webm;codecs=vp8',
-    'video/webm',
-  ];
+  const mimeCandidates = resolveRecorderMimeCandidates(
+    params.config.format === 'webm' ? 'webm' : 'mp4'
+  );
   let mimeType = '';
   if (typeof MediaRecorder.isTypeSupported === 'function') {
     mimeType =
@@ -2239,7 +2332,12 @@ async function exportWithMediaRecorder(
         );
         return;
       }
-      const finalBlob = new Blob(chunks, { type: mimeType });
+      const finalBlob = new Blob(chunks, {
+        // WebM sin MIME detectado: el blob debe declararse webm para que la
+        // descarga lleve la extensión correcta. El camino MP4 se queda EXACTO
+        // como estaba (`mimeType`, aunque venga vacío).
+        type: mimeType || (params.config.format === 'webm' ? 'video/webm' : mimeType),
+      });
       onProgress({
         state: 'completed',
         progress: 100,

@@ -25,6 +25,10 @@ import {
 } from '../../store/useProjectStore';
 import { formatDuration } from '../../core/utils/time';
 import {
+  TEXT_PRESETS,
+  matchTextPreset,
+} from '../../core/utils/textPresets';
+import {
   COLOR_FILTER_PRESETS,
   COLOR_FILTER_PRESET_ORDER,
   COLOR_FILTER_UNSUPPORTED_MESSAGE,
@@ -451,6 +455,7 @@ export const ClipInspector: React.FC = () => {
   const removeKeyframe = useProjectStore((s) => s.removeKeyframe);
   const updateKeyframe = useProjectStore((s) => s.updateKeyframe);
   const clearKeyframes = useProjectStore((s) => s.clearKeyframes);
+  const applyTextPreset = useProjectStore((s) => s.applyTextPreset);
   const createCrossfade = useProjectStore((s) => s.createCrossfade);
   const removeCrossfade = useProjectStore((s) => s.removeCrossfade);
   const setCrossfadeDuration = useProjectStore((s) => s.setCrossfadeDuration);
@@ -830,6 +835,72 @@ export const ClipInspector: React.FC = () => {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* Plantillas de títulos: un clic aplica un estilo completo y
+              coherente (fusiona con el estilo actual, no borra el texto).
+              Cada vista previa se pinta con el estilo REAL de la plantilla
+              (familia, peso, colores y caja), no con un nombre. */}
+          <div>
+            <span id={`text-preset-label-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+              Plantillas:
+            </span>
+            <div
+              role="group"
+              aria-labelledby={`text-preset-label-${clip.id}`}
+              data-testid="text-preset-picker"
+              className="grid grid-cols-2 gap-1.5"
+            >
+              {TEXT_PRESETS.map((preset) => {
+                const isActive = matchTextPreset(clip.textStyle) === preset.id;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    data-testid={`text-preset-${preset.id}`}
+                    aria-label={`Aplicar plantilla ${preset.label}`}
+                    aria-pressed={isActive}
+                    title={`${preset.label} — ${preset.hint}`}
+                    onClick={() => applyTextPreset(clip.id, preset.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        applyTextPreset(clip.id, preset.id);
+                      }
+                    }}
+                    className={`rounded-lg border p-1.5 text-left transition focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:outline-none ${
+                      isActive
+                        ? 'border-blue-500 bg-blue-950/40 shadow-sm'
+                        : 'border-dark-750 bg-dark-950 hover:border-slate-500'
+                    }`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="block truncate px-1 py-1 text-center leading-tight"
+                      style={{
+                        fontFamily: preset.style.fontFamily,
+                        fontWeight: preset.style.fontWeight,
+                        fontSize: 15,
+                        color: preset.style.color,
+                        backgroundColor:
+                          preset.style.backgroundColor === 'transparent'
+                            ? '#0f172a'
+                            : preset.style.backgroundColor,
+                        borderRadius: preset.style.borderRadius ?? 4,
+                      }}
+                    >
+                      Ag
+                    </span>
+                    <span className="mt-1 block truncate text-center text-[10px] font-medium text-slate-300">
+                      {preset.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[10px] leading-snug text-slate-500">
+              Aplicar una plantilla no borra tu texto y se puede deshacer con Ctrl+Z.
+            </p>
           </div>
 
           {/* Animación & Sincronización de Letras */}

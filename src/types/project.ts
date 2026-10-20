@@ -363,7 +363,14 @@ export interface ExportConfig {
   height: number;
   fps: number;
   bitrate: number;
-  format: 'mp4';
+  /**
+   * Contenedor del archivo exportado.
+   *
+   * - `mp4`: camino acelerado WebCodecs (H.264) con respaldo MediaRecorder.
+   * - `webm`: SIEMPRE el grabador de respaldo (MediaRecorder, VP9/VP8), en
+   *   tiempo real. Ver `exportVideo` en `src/core/export/webcodecsExporter.ts`.
+   */
+  format: 'mp4' | 'webm';
 }
 
 export interface ExportProgress {

@@ -46,8 +46,14 @@ export const EXPORT_PROGRESS_MILESTONE = 25;
  * Returns `null` when the state must NOT be announced (idle) and an empty
  * string for the terminal states, which are announced through the app-wide
  * live region instead (so they are not read twice).
+ *
+ * `format` only changes the container named in the muxing message (MP4 por
+ * defecto: las llamadas existentes sin formato siguen diciendo MP4).
  */
-export function describeExportProgress(progress: ExportProgress): string | null {
+export function describeExportProgress(
+  progress: ExportProgress,
+  format: 'mp4' | 'webm' = 'mp4'
+): string | null {
   switch (progress.state) {
     case 'idle':
       return null;
@@ -57,7 +63,7 @@ export function describeExportProgress(progress: ExportProgress): string | null 
       return `Exportando vídeo: ${milestone} %`;
     }
     case 'muxing':
-      return 'Generando el archivo MP4 final…';
+      return format === 'webm' ? 'Generando el archivo WebM final…' : 'Generando el archivo MP4 final…';
     case 'completed':
     case 'error':
       // Announced once through the app-wide live region.
@@ -328,6 +334,15 @@ export const ExportModal: React.FC = () => {
   const [fps, setFps] = useState<number>(30);
   const [bitrateMbps, setBitrateMbps] = useState<number>(8);
   /**
+   * Formato del archivo exportado (MP4 por defecto: el comportamiento
+   * histórico no cambia).
+   *
+   * - `mp4`: camino acelerado WebCodecs (H.264) con respaldo MediaRecorder.
+   * - `webm`: SIEMPRE el grabador de respaldo (MediaRecorder, VP9/VP8), en
+   *   tiempo real y sin aceleración GPU (ver el aviso bajo el selector).
+   */
+  const [exportFormat, setExportFormat] = useState<'mp4' | 'webm'>('mp4');
+  /**
    * F10: the aspect ratio of the EXPORTED FILE.
    *
    * It belongs to the modal, NOT to the project: clicking the "Vertical"
@@ -419,15 +434,22 @@ export const ExportModal: React.FC = () => {
    * through the app-wide live region, so they are heard even after the modal
    * is closed.
    */
-  const liveMessage = useMemo(() => describeExportProgress(progressState) ?? '', [progressState]);
+  const liveMessage = useMemo(
+    () => describeExportProgress(progressState, exportFormat) ?? '',
+    [progressState, exportFormat]
+  );
 
   useEffect(() => {
     if (progressState.state === 'completed') {
-      announce('Exportación completada: el vídeo MP4 se ha descargado');
+      announce(
+        exportFormat === 'webm'
+          ? 'Exportación completada: el vídeo WebM se ha descargado'
+          : 'Exportación completada: el vídeo MP4 se ha descargado'
+      );
     } else if (progressState.state === 'error') {
       announce(`Error al exportar: ${progressState.error ?? 'error desconocido'}`);
     }
-  }, [progressState.state, progressState.error]);
+  }, [progressState.state, progressState.error, exportFormat]);
 
   if (!isExportModalOpen) return null;
 
@@ -494,7 +516,7 @@ export const ExportModal: React.FC = () => {
       height: dims.height,
       fps,
       bitrate: bitrateMbps * 1_000_000,
-      format: 'mp4',
+      format: exportFormat,
     };
 
     abortControllerRef.current = new AbortController();
@@ -617,8 +639,14 @@ export const ExportModal: React.FC = () => {
               <Film size={18} />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white">Exportar Video MP4</h3>
-              <p className="text-xs text-slate-400">100% acelerado en el cliente (GPU nativa)</p>
+              <h3 className="text-sm font-bold text-white">
+                {exportFormat === 'webm' ? 'Exportar Video WebM' : 'Exportar Video MP4'}
+              </h3>
+              <p className="text-xs text-slate-400">
+                {exportFormat === 'webm'
+                  ? 'Grabación en tiempo real (respaldo MediaRecorder)'
+                  : '100% acelerado en el cliente (GPU nativa)'}
+              </p>
             </div>
           </div>
           <button
@@ -656,6 +684,55 @@ export const ExportModal: React.FC = () => {
 
           {progressState.state === 'idle' ? (
             <>
+              {/* Formato del archivo: MP4 (acelerado) o WebM (respaldo en tiempo real) */}
+              <div>
+                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                  Formato de exportación:
+                </label>
+                <div className="grid grid-cols-2 gap-2" data-testid="export-format-picker">
+                  <button
+                    type="button"
+                    data-testid="export-format-mp4"
+                    aria-pressed={exportFormat === 'mp4'}
+                    aria-label="Exportar en formato MP4 (acelerado por GPU)"
+                    onClick={() => setExportFormat('mp4')}
+                    className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
+                      exportFormat === 'mp4'
+                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
+                    }`}
+                  >
+                    MP4
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="export-format-webm"
+                    aria-pressed={exportFormat === 'webm'}
+                    aria-label="Exportar en formato WebM (respaldo en tiempo real)"
+                    onClick={() => setExportFormat('webm')}
+                    className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
+                      exportFormat === 'webm'
+                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
+                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
+                    }`}
+                  >
+                    WebM
+                  </button>
+                </div>
+                {exportFormat === 'webm' && (
+                  <div
+                    role="note"
+                    data-testid="export-webm-realtime-note"
+                    className="mt-2 p-2 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-[11px] leading-snug"
+                  >
+                    WebM usa el grabador de respaldo (MediaRecorder, VP9/VP8): graba en
+                    tiempo real — un proyecto de 10 s tarda 10 s en exportarse — y no
+                    usa la aceleración por GPU del camino MP4. El resultado es válido
+                    y reproducible, con vídeo y audio.
+                  </div>
+                )}
+              </div>
+
               {/* F10: one-click export presets */}
               <div>
                 <label className="text-xs font-semibold text-slate-300 block mb-1.5 flex items-center gap-1.5">
@@ -887,8 +964,8 @@ export const ExportModal: React.FC = () => {
 
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-300 font-medium">
-                  {progressState.state === 'rendering' && 'Codificando fotogramas con GPU...'}
-                  {progressState.state === 'muxing' && 'Generando archivo MP4 final...'}
+                  {progressState.state === 'rendering' && (exportFormat === 'webm' ? 'Grabando en tiempo real con MediaRecorder...' : 'Codificando fotogramas con GPU...')}
+                  {progressState.state === 'muxing' && (exportFormat === 'webm' ? 'Generando archivo WebM final...' : 'Generando archivo MP4 final...')}
                   {progressState.state === 'completed' && '¡Exportación exitosa!'}
                   {progressState.state === 'error' && 'Error al exportar'}
                 </span>
@@ -931,7 +1008,11 @@ export const ExportModal: React.FC = () => {
               {progressState.state === 'completed' && (
                 <div className="p-3 bg-emerald-950/40 border border-emerald-800/60 rounded-lg text-emerald-300 text-xs flex items-center gap-2">
                   <CheckCircle size={16} />
-                  <span>Tu video MP4 ha sido descargado automáticamente.</span>
+                  <span>
+                    {exportFormat === 'webm'
+                      ? 'Tu video WebM ha sido descargado automáticamente.'
+                      : 'Tu video MP4 ha sido descargado automáticamente.'}
+                  </span>
                 </div>
               )}
 

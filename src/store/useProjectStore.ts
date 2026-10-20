@@ -10,6 +10,7 @@ import {
   MediaType,
   OverlapPolicy,
   Project,
+  TextStyle,
   Track,
   TrackRole,
   TrackType,
@@ -45,6 +46,7 @@ import {
   type KeyframePatch,
 } from '../core/utils/keyframes';
 import { mediaSourcePool } from '../core/engine/MediaSourcePool';
+import { applyTextPreset as applyTextPresetToStyle } from '../core/utils/textPresets';
 import { compositor } from '../core/engine/Compositor';
 import { audioEngine } from '../core/engine/AudioEngine';
 import { masterClock } from '../core/engine/MasterClock';
@@ -918,6 +920,15 @@ export interface ProjectState {
   ) => AddClipFromMediaResult;
   addTextClip: (text?: string, startTime?: number) => void;
   updateClip: (clipId: string, updates: Partial<Clip>) => void;
+  /**
+   * Aplica una plantilla de título (`src/core/utils/textPresets.ts`) al
+   * `textStyle` de un clip de texto.
+   *
+   * FUSIONA el estilo (el texto del clip no se toca) y delega en `updateClip`,
+   * así que es UN solo paso deshacible. Devuelve `false` (sin escribir nada)
+   * si el clip no existe, no es de texto o la plantilla es desconocida.
+   */
+  applyTextPreset: (clipId: string, presetId: string) => boolean;
   removeClip: (clipId: string) => void;
   moveClip: (clipId: string, newStart: number, newTrackId?: string) => void;
   commitClipChange: () => void;
@@ -3112,6 +3123,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       };
     });
     get().recalculateDuration();
+  },
+
+  applyTextPreset: (clipId, presetId) => {
+    const clip = get().project.clips.find((c) => c.id === clipId);
+    if (!clip || clip.type !== 'text') return false;
+    let next: TextStyle;
+    try {
+      next = applyTextPresetToStyle(clip.textStyle, presetId);
+    } catch {
+      return false;
+    }
+    get().updateClip(clipId, { textStyle: next });
+    return true;
   },
 
   removeClip: (clipId) => {
