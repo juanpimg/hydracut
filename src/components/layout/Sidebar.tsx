@@ -1,9 +1,35 @@
-import React, { useRef } from 'react';
+import React, { Suspense, lazy, useRef } from 'react';
 import { Film, Type, Sliders, Plus } from 'lucide-react';
 import { useUIStore, SidebarTab } from '../../store/useUIStore';
 import { useProjectStore } from '../../store/useProjectStore';
-import { MediaBin } from '../media/MediaBin';
 import { ClipInspector } from '../inspector/ClipInspector';
+
+/**
+ * Bundle audit: the media bin (~32 KB of sources plus its exclusive
+ * `sampleMedia` dependency) is only mounted while the "media" tab is
+ * active. It lives in its own chunk; the fallback keeps the exact panel
+ * box (same flex/sizing classes, pulsing placeholders, no text) so the
+ * chunk loading never shifts the layout.
+ */
+const MediaBin = lazy(() => import('../media/MediaBin'));
+
+const MediaBinFallback: React.FC = () => (
+  <div
+    aria-hidden="true"
+    className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-hidden select-none"
+  >
+    <div className="h-5 w-32 rounded bg-dark-800 animate-pulse mb-3" />
+    <div className="h-9 w-full rounded-lg bg-dark-850 animate-pulse mb-3" />
+    <div className="flex-1 rounded-lg border border-dashed border-dark-750 bg-dark-950/50 p-2">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
+        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
+        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
+        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
+      </div>
+    </div>
+  </div>
+);
 
 export const Sidebar: React.FC = () => {
   // UI-29: subscribe to the individual fields instead of the whole store.
@@ -86,7 +112,11 @@ export const Sidebar: React.FC = () => {
         tabIndex={0}
         className="flex-1 h-full overflow-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-400"
       >
-        {activeTab === 'media' && <MediaBin />}
+        {activeTab === 'media' && (
+          <Suspense fallback={<MediaBinFallback />}>
+            <MediaBin />
+          </Suspense>
+        )}
         {activeTab === 'inspector' && <ClipInspector />}
         {activeTab === 'text' && (
           <div className="flex flex-col h-full bg-dark-900 p-4 select-none">

@@ -3,6 +3,7 @@ import {
   AspectRatio,
   AudioFade,
   Clip,
+  ClipKeyframe,
   MediaItem,
   MediaStatus,
   MediaType,
@@ -28,6 +29,18 @@ import {
   planCrossfade,
 } from '../core/utils/crossfade';
 import { clampClipAudioFades } from '../core/utils/audioFades';
+import {
+  clampKeyframeProps,
+  clampKeyframeTime,
+  cropKeyframesToDuration,
+  evaluateKeyframes,
+  hasKeyframeProps,
+  normalizeKeyframesForWrite,
+  prepareSortedKeyframes,
+  shiftKeyframesAfterTrimStart,
+  splitKeyframesAt,
+  type KeyframePatch,
+} from '../core/utils/keyframes';
 import { mediaSourcePool } from '../core/engine/MediaSourcePool';
 import { compositor } from '../core/engine/Compositor';
 import { audioEngine } from '../core/engine/AudioEngine';
@@ -985,6 +998,50 @@ export interface ProjectState {
   clearAudioFades: (clipId: string) => boolean;
 
   /* ---------------------------------------------------------------- */
+  /* F8 — keyframes de transform                                       */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Adds a keyframe at the LOCAL time `t` (seconds relative to the start of
+   * the clip).
+   *
+   * - `t` is clamped to `[0, clip.duration]` and quantised to a frame;
+   * - when `props` is omitted the keyframe is created with the CURRENT
+   *   EFFECTIVE values at that instant (so animating from the current state
+   *   is the default);
+   * - the values are clamped (`scale` into `[0.1, 3]`, `opacity` into
+   *   `[0, 1]`) and the keyframes stay sorted and unique by `t` (adding
+   *   twice at the same instant merges into one keyframe);
+   * - undoable as ONE history entry.
+   *
+   * Returns `true` when a keyframe was created or merged.
+   */
+  addKeyframe: (clipId: string, t: number, props?: KeyframePatch) => boolean;
+
+  /**
+   * Removes the keyframe at the LOCAL time `t` (quantised to a frame).
+   * Undoable as ONE history entry. Returns `true` when one was removed.
+   */
+  removeKeyframe: (clipId: string, t: number) => boolean;
+
+  /**
+   * Merges `props` (clamped) into the keyframe at the LOCAL time `t`.
+   * Returns `false` (and pushes no history) when there is no keyframe at
+   * that instant — creating one is `addKeyframe`.
+   *
+   * Consecutive calls on the same keyframe inside the coalescing window
+   * share a single undo entry, so dragging an Inspector slider over a
+   * keyframe is one undo step.
+   */
+  updateKeyframe: (clipId: string, t: number, props: KeyframePatch) => boolean;
+
+  /**
+   * Removes every keyframe of a clip (undoable). Returns `true` when the
+   * clip had keyframes.
+   */
+  clearKeyframes: (clipId: string) => boolean;
+
+  /* ---------------------------------------------------------------- */
   /* F7 — internal clipboard                                            */
   /* ---------------------------------------------------------------- */
 
@@ -1224,6 +1281,61 @@ function commitBatchEdit(
   });
   get().recalculateDuration();
   return changed;
+}
+
+/**
+ * F8 · Escribe los keyframes de un clip como UN paso de historial.
+ *
+ * Idéntica disciplina que `updateClip` (S-02): sin cambios no hay escritura
+ * (ni entrada de historial fantasma); con `coalesceKey` las ediciones
+ * consecutivas del mismo keyframe comparten UNA entrada (arrastrar un
+ * deslizador del Inspector es un solo Ctrl+Z).
+ */
+function commitKeyframeWrite(
+  get: () => ProjectState,
+  set: SetProjectState,
+  clipId: string,
+  next: ClipKeyframe[] | undefined,
+  coalesceKey: string | null
+): boolean {
+  const state = get();
+  const clip = state.project.clips.find((c) => c.id === clipId);
+  if (!clip) return false;
+  if (JSON.stringify(clip.keyframes ?? null) === JSON.stringify(next ?? null)) return false;
+
+  const now = Date.now();
+  // While a drag/trim gesture is open the gesture owns the history entry.
+  const inGesture = state.historyGesturePending;
+  const canCoalesce =
+    coalesceKey !== null &&
+    !inGesture &&
+    state.historyCoalesceKey === coalesceKey &&
+    now - state.historyCoalesceAt <= UPDATE_COALESCE_WINDOW_MS;
+  if (!inGesture && !canCoalesce) {
+    get().pushHistory();
+  }
+
+  set((s) => {
+    const updatedClips = s.project.clips.map((c) => {
+      if (c.id !== clipId) return c;
+      if (next === undefined) {
+        const copy: Clip = { ...c };
+        delete copy.keyframes;
+        return copy;
+      }
+      return { ...c, keyframes: next };
+    });
+    const updated: Project = { ...s.project, clips: updatedClips, updatedAt: Date.now() };
+    persistProject(updated);
+    return {
+      project: updated,
+      historyCoalesceKey: inGesture ? null : coalesceKey,
+      historyCoalesceAt: inGesture ? 0 : now,
+      // F6: a successful edit clears the stale refusal of a previous action.
+      lastError: null,
+    };
+  });
+  return true;
 }
 
 /**
@@ -2447,6 +2559,88 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   /* ------------------------------------------------------------------ */
+  /* F8 — keyframes de transform                                         */
+  /* ------------------------------------------------------------------ */
+
+  addKeyframe: (clipId, t, props) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para añadir el keyframe.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    const fps = state.project.fps;
+    const localT = clampKeyframeTime(t, clip.duration, fps);
+    // Sin propiedades: el keyframe nace con los valores EFECTIVOS actuales
+    // (animar desde el estado actual es el defecto).
+    const patch: KeyframePatch =
+      props === undefined ? evaluateKeyframes(clip, localT) : clampKeyframeProps(props);
+    if (!hasKeyframeProps(patch)) return false;
+    const existing = Array.isArray(clip.keyframes) ? clip.keyframes : [];
+    // Añadir dos veces en el mismo instante fusiona en un solo keyframe (el
+    // posterior gana por propiedad): `prepareSortedKeyframes` lo garantiza.
+    const next = prepareSortedKeyframes([...existing, { ...patch, t: localT }]);
+    return commitKeyframeWrite(get, set, clipId, next.length > 0 ? next : undefined, null);
+  },
+
+  removeKeyframe: (clipId, t) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para eliminar el keyframe.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    const localT = clampKeyframeTime(t, clip.duration, state.project.fps);
+    const existing = Array.isArray(clip.keyframes) ? clip.keyframes : [];
+    if (!existing.some((k) => k.t === localT)) return false;
+    const next = existing.filter((k) => k.t !== localT);
+    return commitKeyframeWrite(get, set, clipId, next.length > 0 ? next : undefined, null);
+  },
+
+  updateKeyframe: (clipId, t, props) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para editar el keyframe.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    const localT = clampKeyframeTime(t, clip.duration, state.project.fps);
+    const existing = Array.isArray(clip.keyframes) ? clip.keyframes : [];
+    const target = existing.find((k) => k.t === localT);
+    // Actualizar lo inexistente no crea nada (crear es `addKeyframe`).
+    if (!target) return false;
+    const patch = clampKeyframeProps(props);
+    if (!hasKeyframeProps(patch)) return false;
+    // Mismo instante: el orden no cambia.
+    const next = existing.map((k) => (k === target ? { ...k, ...patch } : k));
+    return commitKeyframeWrite(
+      get,
+      set,
+      clipId,
+      next,
+      `keyframe:${clipId}:${localT}`
+    );
+  },
+
+  clearKeyframes: (clipId) => {
+    const clip = get().project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para borrar sus keyframes.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    if (!Array.isArray(clip.keyframes) || clip.keyframes.length === 0) return false;
+    return commitKeyframeWrite(get, set, clipId, undefined, null);
+  },
+
+  /* ------------------------------------------------------------------ */
   /* F7 — internal clipboard                                             */
   /* ------------------------------------------------------------------ */
 
@@ -2798,6 +2992,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       audioFadeClampReason = clamped.reason;
     }
 
+    // F8: toda escritura de keyframes pasa por la normalización con los fps
+    // reales del proyecto (tiempos cuantizados a frames y recortados a la
+    // duración del clip, valores acotados, ordenados y sin duplicados).
+    // `'keyframes' in nextUpdates` (y no `!== undefined`) porque limpiar es
+    // asignar `undefined` explícito.
+    if ('keyframes' in nextUpdates) {
+      const fps = state.project.fps;
+      const effectiveDuration =
+        nextUpdates.duration !== undefined ? nextUpdates.duration : clip.duration;
+      nextUpdates.keyframes = normalizeKeyframesForWrite(
+        nextUpdates.keyframes,
+        fps,
+        effectiveDuration
+      );
+    }
+
     set((s) => {
       const updatedClips = s.project.clips.map((c) => (c.id === clipId ? { ...c, ...nextUpdates } : c));
       const updated = { ...s.project, clips: updatedClips, updatedAt: Date.now() };
@@ -2968,7 +3178,25 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((state) => {
       const updatedClips = state.project.clips.map((c) =>
         c.id === clipId
-          ? { ...c, start: effectiveStart, duration: newDuration, sourceStart: newSourceStart }
+          ? {
+              ...c,
+              start: effectiveStart,
+              duration: newDuration,
+              sourceStart: newSourceStart,
+              // F8: el `t` es relativo al inicio: al moverlo, los keyframes se
+              // desplazan con él y los que quedan fuera se descartan. Sin
+              // keyframes el objeto es idéntico al de hoy.
+              ...(c.keyframes && c.keyframes.length > 0
+                ? {
+                    keyframes: shiftKeyframesAfterTrimStart(
+                      c.keyframes,
+                      delta,
+                      newDuration,
+                      project.fps
+                    ),
+                  }
+                : {}),
+            }
           : c
       );
       // S-05: a trim is an edit, so the project must rise in the projects gallery.
@@ -3027,7 +3255,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     set((state) => {
       const updatedClips = state.project.clips.map((c) =>
-        c.id === clipId ? { ...c, duration: newDuration } : c
+        c.id === clipId
+          ? {
+              ...c,
+              duration: newDuration,
+              // F8: los keyframes más allá del nuevo final desaparecen con el
+              // material recortado. Sin keyframes el objeto es idéntico al de hoy.
+              ...(c.keyframes && c.keyframes.length > 0
+                ? { keyframes: cropKeyframesToDuration(c.keyframes, newDuration) }
+                : {}),
+            }
+          : c
       );
       // S-05: a trim is an edit, so the project must rise in the projects gallery.
       return {
@@ -3096,6 +3334,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const secondWords = clip.words ? clip.words.filter((w) => w.start >= cutPoint) : undefined;
 
     // Modify original clip as first part
+    // F8: el corte reparte los keyframes (relativos al inicio): la primera
+    // mitad conserva los anteriores al corte y la segunda los posteriores
+    // desplazados. Sin keyframes ambas mitades son idénticas a las de hoy.
+    const [firstKeyframes, secondKeyframes] =
+      clip.keyframes && clip.keyframes.length > 0
+        ? splitKeyframesAt(clip.keyframes, cutPoint - clip.start, project.fps ?? 30)
+        : [undefined, undefined];
     const updatedClip1: Clip = {
       ...clip,
       duration: firstDuration,
@@ -3103,6 +3348,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // Fundidos de audio: la primera mitad conserva la entrada y pierde la
       // salida (igual que los fundidos de borde del `transition` de arriba).
       audioFadeOut: undefined,
+      ...(clip.keyframes && clip.keyframes.length > 0 ? { keyframes: firstKeyframes } : {}),
       ...(firstWords ? { words: firstWords } : {}),
     };
 
@@ -3118,6 +3364,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       transition: clip2Transition,
       // La segunda mitad conserva la salida y pierde la entrada.
       audioFadeIn: undefined,
+      ...(clip.keyframes && clip.keyframes.length > 0 ? { keyframes: secondKeyframes } : {}),
       ...(secondWords ? { words: secondWords } : {}),
     };
 

@@ -802,3 +802,11 @@ export const MediaBin: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * Default export for `React.lazy` (bundle splitting): the media bin (and its
+ * exclusive `sampleMedia` dependency) is loaded on demand instead of being
+ * part of the initial chunk. The named exports stay for direct imports and
+ * unit tests.
+ */
+export default MediaBin;

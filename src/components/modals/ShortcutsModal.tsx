@@ -83,3 +83,10 @@ export const ShortcutsModal: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * Default export for `React.lazy` (bundle splitting): the modal is loaded
+ * on demand instead of being part of the initial chunk. The named export
+ * stays for direct imports.
+ */
+export default ShortcutsModal;

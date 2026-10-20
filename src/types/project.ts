@@ -127,6 +127,32 @@ export interface TrashEntry {
   deletedAt: number;
 }
 
+/**
+ * F8 · Un keyframe de transform de un clip.
+ *
+ * - `t` es el tiempo RELATIVO al inicio del clip (segundos), cuantizado a
+ *   frames del proyecto. Los keyframes de un clip están ordenados por `t` y
+ *   no hay dos con el mismo `t`.
+ * - Cada propiedad es OPCIONAL: una propiedad ausente en un keyframe no vale
+ *   cero — la pista de esa propiedad se interpola entre los keyframes que SÍ
+ *   la definen (ver `evaluateSortedKeyframesInto`).
+ * - `x` / `y` son el desplazamiento en px desde el centro (como `positionX` /
+ *   `positionY`); `scale` y `opacity` siguen el mismo rango que el valor
+ *   estático del clip.
+ */
+export interface ClipKeyframe {
+  /** Tiempo relativo al inicio del clip (segundos, cuantizado a frames). */
+  t: number;
+  /** Desplazamiento horizontal en px (como `positionX`). */
+  x?: number;
+  /** Desplazamiento vertical en px (como `positionY`). */
+  y?: number;
+  /** Escala (como `scale`: 1 = 100 %). */
+  scale?: number;
+  /** Opacidad (como `opacity`: 0..1). */
+  opacity?: number;
+}
+
 export interface Clip {
   id: string;
   trackId: string;
@@ -145,6 +171,17 @@ export interface Clip {
   positionX: number;      // Offset horizontal desde el centro en px
   positionY: number;      // Offset vertical desde el centro en px
   muted: boolean;
+
+  /**
+   * F8 · Keyframes de animación de la transformación.
+   *
+   * Opcional por compatibilidad: un clip sin keyframes se dibuja con su
+   * transformación ESTÁTICA (`positionX/Y`, `scale`, `opacity`), exactamente
+   * como hoy. Cuando hay keyframes, el `Compositor` interpola linealmente la
+   * posición, la escala y la opacidad en función del tiempo dentro del clip
+   * (ver `src/core/utils/keyframes.ts`).
+   */
+  keyframes?: ClipKeyframe[];
 
   /**
    * F9 · Colour filters. Optional: a clip without filters is drawn with the

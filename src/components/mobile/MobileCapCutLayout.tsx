@@ -3,11 +3,8 @@ import { MobileHeader } from './MobileHeader';
 import { Timeline } from '../timeline/Timeline';
 import { MobileBottomBar, MobileSheetType } from './MobileBottomBar';
 import { MobileBottomSheet } from './MobileBottomSheet';
-import { MediaBin } from '../media/MediaBin';
 import { MediaItemCard } from '../media/MediaItemCard';
 import { ClipInspector } from '../inspector/ClipInspector';
-import { ShortcutsModal } from '../modals/ShortcutsModal';
-import { ProjectsModal } from '../modals/ProjectsModal';
 import { WelcomeModal } from '../modals/WelcomeModal';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -26,6 +23,29 @@ const ExportModal = lazy(() => import('../export/ExportModal'));
  * F3: the mobile preview player lives in its own chunk.
  */
 const MobilePreviewPlayer = lazy(() => import('./MobilePreviewPlayer'));
+
+/**
+ * Bundle audit: the modals and the media bin are only needed on demand
+ * (the sheets mount them when opened), so they live in their own chunks
+ * shared with the desktop shell. The modal fallbacks are `null` (fixed
+ * overlays, no layout impact); the media-bin fallback keeps a stable
+ * placeholder so the sheet body never jumps while the chunk loads.
+ */
+const ProjectsModal = lazy(() => import('../modals/ProjectsModal'));
+const ShortcutsModal = lazy(() => import('../modals/ShortcutsModal'));
+const MediaBin = lazy(() => import('../media/MediaBin'));
+
+const MediaBinSheetFallback: React.FC = () => (
+  <div aria-hidden="true" className="h-full min-h-[240px]">
+    <div className="h-9 w-full rounded-xl bg-dark-850 animate-pulse mb-3" />
+    <div className="grid grid-cols-2 gap-3">
+      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
+      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
+      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
+      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
+    </div>
+  </div>
+);
 
 /**
  * Mobile/desktop parity data (pure logic, unit-tested in
@@ -85,6 +105,8 @@ export const MobileCapCutLayout: React.FC = () => {
 
   /** F3: the export modal chunk is only fetched when the modal is opened. */
   const isExportModalOpen = useUIStore((s) => s.isExportModalOpen);
+  const isProjectsModalOpen = useUIStore((s) => s.isProjectsModalOpen);
+  const isShortcutsModalOpen = useUIStore((s) => s.isShortcutsModalOpen);
 
   /**
    * F3: the box of the preview while its chunk is being fetched.
@@ -179,7 +201,9 @@ export const MobileCapCutLayout: React.FC = () => {
         {/* Media Sheet */}
         {activeSheet === 'media' && (
           <div className="h-full">
-            <MediaBin />
+            <Suspense fallback={<MediaBinSheetFallback />}>
+              <MediaBin />
+            </Suspense>
           </div>
         )}
 
@@ -554,8 +578,16 @@ export const MobileCapCutLayout: React.FC = () => {
           <ExportModal />
         </Suspense>
       )}
-      <ShortcutsModal />
-      <ProjectsModal />
+      {isShortcutsModalOpen && (
+        <Suspense fallback={null}>
+          <ShortcutsModal />
+        </Suspense>
+      )}
+      {isProjectsModalOpen && (
+        <Suspense fallback={null}>
+          <ProjectsModal />
+        </Suspense>
+      )}
       <WelcomeModal />
 
       {/* UI-16: single polite live region for the whole app */}

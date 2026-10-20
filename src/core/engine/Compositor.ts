@@ -1,4 +1,4 @@
-import { Clip, MediaItem, Track } from '../../types/project';
+import { Clip, ClipKeyframe, MediaItem, Track } from '../../types/project';
 import { mediaSourcePool } from './MediaSourcePool';
 import {
   createCrossfadeIndexCache,
@@ -13,6 +13,13 @@ import {
   resolveColorFilter,
   type ResolvedColorFilter,
 } from '../utils/colorFilters';
+import {
+  evaluateSortedKeyframesInto,
+  hasKeyframes,
+  prepareSortedKeyframes,
+  staticTransformInto,
+  type ResolvedKeyframeTransform,
+} from '../utils/keyframes';
 
 export interface RenderOptions {
   time: number;
@@ -355,6 +362,26 @@ export class Compositor {
     }
   > = new Map();
 
+  /**
+   * F8 · Los keyframes ordenados de cada clip, cacheados.
+   *
+   * El array ordenado se reconstruye SOLO cuando cambia la referencia de
+   * `clip.keyframes` (una edición, nunca un frame): el camino caliente (60
+   * fps) es un `Map.get` más aritmética escalar sobre el array cacheado.
+   */
+  private keyframeCache: Map<
+    string,
+    { ref: readonly ClipKeyframe[]; sorted: ClipKeyframe[] }
+  > = new Map();
+
+  /**
+   * F8 · Scratch reutilizable de la transformación evaluada.
+   *
+   * `resolveClipTransform` escribe aquí (nunca asigna): el llamante debe
+   * consumir el resultado de forma síncrona antes del siguiente dibujado.
+   */
+  private kfScratch: ResolvedKeyframeTransform = { x: 0, y: 0, scale: 1, opacity: 1 };
+
   // Dirty-checking state
   private lastRenderedTime = -1;
   private lastRenderedCanvasRef: HTMLCanvasElement | OffscreenCanvas | null = null;
@@ -392,6 +419,7 @@ export class Compositor {
     this.activeVideoKeys.clear();
     this.prewarmKeys.clear();
     this.filterCache.clear();
+    this.keyframeCache.clear();
     this.crossfadeCache = createCrossfadeIndexCache();
   }
 
@@ -420,6 +448,43 @@ export class Compositor {
     for (const id of this.filterCache.keys()) {
       if (!alive.has(id)) this.filterCache.delete(id);
     }
+  }
+
+  /**
+   * Drops the cached keyframes of the clips that no longer exist.
+   */
+  private pruneKeyframeCache(clips: Clip[]): void {
+    const alive = new Set<string>();
+    for (let i = 0; i < clips.length; i++) alive.add(clips[i].id);
+    for (const id of this.keyframeCache.keys()) {
+      if (!alive.has(id)) this.keyframeCache.delete(id);
+    }
+  }
+
+  /**
+   * F8 · Resuelve la transformación de un clip en `localTime` (segundos
+   * relativos a su inicio).
+   *
+   * Sin keyframes escribe los valores ESTÁTICOS (el comportamiento de hoy,
+   * bit a bit). Con keyframes interpola linealmente en el array ordenado
+   * cacheado. Cero asignaciones por frame: el resultado vive en el scratch
+   * reutilizable (consumo síncrono) y el array ordenado solo se reconstruye
+   * cuando cambia la referencia de `clip.keyframes`.
+   */
+  private resolveClipTransform(clip: Clip, localTime: number): ResolvedKeyframeTransform {
+    const out = this.kfScratch;
+    const keyframes = clip.keyframes;
+    if (!keyframes || keyframes.length === 0) {
+      return staticTransformInto(clip, out);
+    }
+    let entry = this.keyframeCache.get(clip.id);
+    if (!entry || entry.ref !== keyframes) {
+      entry = { ref: keyframes, sorted: prepareSortedKeyframes(keyframes) };
+      this.keyframeCache.set(clip.id, entry);
+    }
+    staticTransformInto(clip, out);
+    if (entry.sorted.length === 0) return out;
+    return evaluateSortedKeyframesInto(entry.sorted, out, localTime, out);
   }
 
   /**
@@ -594,6 +659,11 @@ export class Compositor {
       this.pruneFilterCache(clips);
     }
 
+    // F8: same rule for the cached keyframes.
+    if (this.keyframeCache.size > clips.length * 2 + 32) {
+      this.pruneKeyframeCache(clips);
+    }
+
     // Single-pass visual readiness & active clip pre-check
     let hasActiveVisualClip = false;
     let hasActiveTextClip = false;
@@ -601,7 +671,7 @@ export class Compositor {
 
     for (let i = 0; i < clips.length; i++) {
       const clip = clips[i];
-      if (clip.opacity <= 0) continue;
+      if (!hasKeyframes(clip) && clip.opacity <= 0) continue;
       if (time < clip.start || time >= clip.start + clip.duration) continue;
 
       const track = this.trackMap.get(clip.trackId);
@@ -700,7 +770,7 @@ export class Compositor {
         const clip = clips[j];
         if (clip.trackId !== track.id) continue;
         if (time < clip.start || time >= clip.start + clip.duration) continue;
-        if (clip.opacity <= 0) continue;
+        if (!hasKeyframes(clip) && clip.opacity <= 0) continue;
 
         if (clip.type === 'video' || clip.type === 'image') {
           const media = this.mediaMap.get(clip.mediaId);
@@ -765,7 +835,7 @@ export class Compositor {
         const clip = clips[j];
         if (clip.trackId !== track.id) continue;
         if (time < clip.start || time >= clip.start + clip.duration) continue;
-        if (clip.opacity <= 0) continue;
+        if (!hasKeyframes(clip) && clip.opacity <= 0) continue;
 
         if (clip.type === 'text') {
           this.drawTextToCanvas(ctx, clip, width, height, time, this.crossfadeAlphaAt(clip.id, time));
@@ -867,6 +937,12 @@ export class Compositor {
   ): boolean {
     const transition = calculateTransition(clip, time, canvasWidth);
 
+    // F8 · La transformación animada: con keyframes la posición, la escala y
+    // la opacidad vienen de la interpolación en el tiempo local del clip; sin
+    // ellos son los valores estáticos (como hoy). El export renderiza con este
+    // MISMO `Compositor`, así que el MP4 sigue al preview automáticamente.
+    const kf = this.resolveClipTransform(clip, time - clip.start);
+
     ctx.save();
 
     if (transition.wipeWidth !== null) {
@@ -877,7 +953,7 @@ export class Compositor {
 
     // Opacity factoring in transition fade and crossfade (F5: the crossfade
     // multiplies the very same alpha the edge fades use, so both combine).
-    const baseAlpha = Math.max(0, Math.min(1, clip.opacity ?? 1));
+    const baseAlpha = Math.max(0, Math.min(1, kf.opacity));
     ctx.globalAlpha = baseAlpha * transition.alphaMultiplier * crossfadeAlpha;
 
     // Calculate aspect ratio fit
@@ -898,13 +974,13 @@ export class Compositor {
     }
 
     // Apply scale
-    const scale = clip.scale ?? 1;
+    const scale = kf.scale;
     drawWidth *= scale;
     drawHeight *= scale;
 
     // Apply position offset (from center) + transition slide offset
-    const centerX = canvasWidth / 2 + (clip.positionX ?? 0) + transition.offsetX;
-    const centerY = canvasHeight / 2 + (clip.positionY ?? 0);
+    const centerX = canvasWidth / 2 + kf.x + transition.offsetX;
+    const centerY = canvasHeight / 2 + kf.y;
 
     const x = centerX - drawWidth / 2;
     const y = centerY - drawHeight / 2;
@@ -1044,6 +1120,10 @@ export class Compositor {
 
     const transition = calculateTransition(clip, time, canvasWidth);
 
+    // F8 · La transformación animada también vale para el texto (misma
+    // interpolación que el vídeo: el preview y el export la comparten).
+    const kf = this.resolveClipTransform(clip, time - clip.start);
+
     ctx.save();
 
     if (transition.wipeWidth !== null) {
@@ -1064,7 +1144,7 @@ export class Compositor {
     const preset = style.animationPreset || 'none';
 
     // Opacity calculation (including smooth fade-in/out for 'fade-phrase' and transition alpha)
-    let baseOpacity = Math.max(0, Math.min(1, (clip.opacity ?? 1) * transition.alphaMultiplier * crossfadeAlpha));
+    let baseOpacity = Math.max(0, Math.min(1, kf.opacity * transition.alphaMultiplier * crossfadeAlpha));
     if (preset === 'fade-phrase') {
       const fadeInDuration = 0.35;
       const fadeOutDuration = 0.35;
@@ -1091,8 +1171,8 @@ export class Compositor {
     const lineHeight = fontSize * 1.3;
     const totalTextHeight = textLines.length * lineHeight;
 
-    const centerX = canvasWidth / 2 + (clip.positionX ?? 0) + transition.offsetX;
-    const startY = canvasHeight / 2 + (clip.positionY ?? 0) - (totalTextHeight / 2) + (lineHeight / 2);
+    const centerX = canvasWidth / 2 + kf.x + transition.offsetX;
+    const startY = canvasHeight / 2 + kf.y - (totalTextHeight / 2) + (lineHeight / 2);
 
     // Optional background badge/card
     if (style.backgroundColor && style.backgroundColor !== 'transparent') {
@@ -1109,7 +1189,7 @@ export class Compositor {
       let bgX = centerX - bgWidth / 2;
       if (style.textAlign === 'left') bgX = centerX - padding;
       if (style.textAlign === 'right') bgX = centerX - bgWidth + padding;
-      const bgY = canvasHeight / 2 + (clip.positionY ?? 0) - (bgHeight / 2);
+      const bgY = canvasHeight / 2 + kf.y - (bgHeight / 2);
 
       ctx.fillStyle = style.backgroundColor;
       ctx.beginPath();
@@ -1249,7 +1329,7 @@ export class Compositor {
       const overlayWidth = maxLineWidth + padding * 2;
       const overlayHeight = totalTextHeight + padding;
       const overlayX = centerX - overlayWidth / 2;
-      const overlayY = canvasHeight / 2 + (clip.positionY ?? 0) - overlayHeight / 2;
+      const overlayY = canvasHeight / 2 + kf.y - overlayHeight / 2;
 
       ctx.save();
       ctx.globalAlpha = Math.min(1, transition.overlayOpacity * baseOpacity);

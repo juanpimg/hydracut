@@ -43,6 +43,7 @@ import {
   DEFAULT_AUDIO_FADE_CURVE,
   audioFadeFrameDuration,
 } from '../../core/utils/audioFades';
+import { evaluateKeyframes } from '../../core/utils/keyframes';
 
 /**
  * The six sliders of the "Color" section (F9).
@@ -392,6 +393,11 @@ export const ClipInspector: React.FC = () => {
   const overlapPolicy = useProjectStore((s) => s.project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY);
   const setOverlapPolicy = useProjectStore((s) => s.setOverlapPolicy);
   const projectFps = useProjectStore((s) => s.project.fps);
+  const currentTime = useProjectStore((s) => s.currentTime);
+  const addKeyframe = useProjectStore((s) => s.addKeyframe);
+  const removeKeyframe = useProjectStore((s) => s.removeKeyframe);
+  const updateKeyframe = useProjectStore((s) => s.updateKeyframe);
+  const clearKeyframes = useProjectStore((s) => s.clearKeyframes);
   const createCrossfade = useProjectStore((s) => s.createCrossfade);
   const removeCrossfade = useProjectStore((s) => s.removeCrossfade);
   const setCrossfadeDuration = useProjectStore((s) => s.setCrossfadeDuration);
@@ -408,6 +414,20 @@ export const ClipInspector: React.FC = () => {
     setFilterSupport(getCanvasFilterSupport());
   }, []);
   const colorFiltersEnabled = filterSupport === true;
+
+  /**
+   * F8 · Keyframe seleccionado para editar (tiempo relativo al clip).
+   *
+   * Mientras hay uno seleccionado, los deslizadores de transformación editan
+   * ESE keyframe (vía `updateKeyframe`) en vez del valor fijo del clip. Se
+   * limpia al cambiar de clip.
+   */
+  const [selectedKeyframeT, setSelectedKeyframeT] = useState<number | null>(null);
+  useEffect(() => {
+    setSelectedKeyframeT(null);
+    // Solo al cambiar de clip.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clip?.id]);
 
   /**
    * F5 · Disponibilidad del fundido de cruce para el clip seleccionado.
@@ -517,6 +537,29 @@ export const ClipInspector: React.FC = () => {
   const isVideoOrImage = clip.type === 'video' || clip.type === 'image';
   const hasAudio = clip.type === 'video' || clip.type === 'audio';
   const isText = clip.type === 'text';
+
+  /**
+   * F8 · Keyframes del clip y selección actual.
+   *
+   * `selectedKeyframe` es el keyframe que los deslizadores de transformación
+   * están editando (`null` = editan el valor fijo del clip). Si el keyframe
+   * desaparece (p. ej. lo borra un deshacer), la selección deja de apuntar.
+   */
+  const clipKeyframes = clip.keyframes ?? [];
+  const selectedKeyframe =
+    selectedKeyframeT !== null
+      ? clipKeyframes.find((k) => k.t === selectedKeyframeT) ?? null
+      : null;
+  // Valores que muestran los deslizadores: los EFECTIVOS en el keyframe
+  // seleccionado (con herencia de las propiedades ausentes) o los fijos.
+  const keyframeEff = selectedKeyframe ? evaluateKeyframes(clip, selectedKeyframe.t) : null;
+  const effScale = keyframeEff?.scale ?? clip.scale ?? 1;
+  const effOpacity = keyframeEff?.opacity ?? clip.opacity ?? 1;
+  const effX = keyframeEff?.x ?? clip.positionX ?? 0;
+  const effY = keyframeEff?.y ?? clip.positionY ?? 0;
+  // Instante del cabezal relativo al clip (para crear el keyframe).
+  const playheadLocalT = currentTime - clip.start;
+  const playheadInsideClip = playheadLocalT >= 0 && playheadLocalT <= clip.duration;
 
   // F9: the preset that matches the current filters (`null` = a custom
   // combination of the sliders).
@@ -799,20 +842,38 @@ export const ClipInspector: React.FC = () => {
             <span>Transformación & Visibilidad</span>
           </div>
 
+          {/* F8 · Cuando hay un keyframe seleccionado, estos controles lo
+              editan a él (no el valor fijo): el aviso es obligatorio para no
+              confundir ambas ediciones. */}
+          {selectedKeyframe && (
+            <p
+              role="status"
+              data-testid="keyframe-editing-notice"
+              className="text-[11px] leading-snug text-cyan-200 bg-cyan-950/50 border border-cyan-700/60 rounded p-2"
+            >
+              Editando el keyframe de {selectedKeyframe.t.toFixed(2)} s: los controles de
+              abajo cambian este keyframe, no el valor fijo del clip.
+            </p>
+          )}
+
           {/* Scale */}
           <div>
             <div className="flex justify-between text-xs text-slate-400 mb-1">
               <span>Escala:</span>
-              <span className="font-mono text-slate-200">{Math.round((clip.scale ?? 1) * 100)}%</span>
+              <span className="font-mono text-slate-200">{Math.round(effScale * 100)}%</span>
             </div>
             <input
               type="range"
               min="0.2"
               max="2.5"
               step="0.05"
-              value={clip.scale ?? 1}
-              aria-label="Escala del clip"
-              onChange={(e) => updateClip(clip.id, { scale: parseFloat(e.target.value) })}
+              value={effScale}
+              aria-label={selectedKeyframe ? `Escala del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Escala del clip'}
+              onChange={(e) =>
+                selectedKeyframe
+                  ? updateKeyframe(clip.id, selectedKeyframe.t, { scale: parseFloat(e.target.value) })
+                  : updateClip(clip.id, { scale: parseFloat(e.target.value) })
+              }
               className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             />
           </div>
@@ -821,16 +882,20 @@ export const ClipInspector: React.FC = () => {
           <div>
             <div className="flex justify-between text-xs text-slate-400 mb-1">
               <span>Opacidad:</span>
-              <span className="font-mono text-slate-200">{Math.round((clip.opacity ?? 1) * 100)}%</span>
+              <span className="font-mono text-slate-200">{Math.round(effOpacity * 100)}%</span>
             </div>
             <input
               type="range"
               min="0"
               max="1"
               step="0.05"
-              value={clip.opacity ?? 1}
-              aria-label="Opacidad del clip"
-              onChange={(e) => updateClip(clip.id, { opacity: parseFloat(e.target.value) })}
+              value={effOpacity}
+              aria-label={selectedKeyframe ? `Opacidad del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Opacidad del clip'}
+              onChange={(e) =>
+                selectedKeyframe
+                  ? updateKeyframe(clip.id, selectedKeyframe.t, { opacity: parseFloat(e.target.value) })
+                  : updateClip(clip.id, { opacity: parseFloat(e.target.value) })
+              }
               className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
             />
           </div>
@@ -840,32 +905,40 @@ export const ClipInspector: React.FC = () => {
             <div>
               <div className="flex justify-between text-[11px] text-slate-400 mb-1">
                 <span>Posición X:</span>
-                <span className="font-mono">{clip.positionX || 0}px</span>
+                <span className="font-mono">{Math.round(effX)}px</span>
               </div>
               <input
                 type="range"
                 min="-500"
                 max="500"
                 step="5"
-                value={clip.positionX || 0}
-                aria-label="Posición horizontal X"
-                onChange={(e) => updateClip(clip.id, { positionX: parseInt(e.target.value) })}
+                value={effX}
+                aria-label={selectedKeyframe ? `Posición horizontal X del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Posición horizontal X'}
+                onChange={(e) =>
+                  selectedKeyframe
+                    ? updateKeyframe(clip.id, selectedKeyframe.t, { x: parseInt(e.target.value) })
+                    : updateClip(clip.id, { positionX: parseInt(e.target.value) })
+                }
                 className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
               />
             </div>
             <div>
               <div className="flex justify-between text-[11px] text-slate-400 mb-1">
                 <span>Posición Y:</span>
-                <span className="font-mono">{clip.positionY || 0}px</span>
+                <span className="font-mono">{Math.round(effY)}px</span>
               </div>
               <input
                 type="range"
                 min="-500"
                 max="500"
                 step="5"
-                value={clip.positionY || 0}
-                aria-label="Posición vertical Y"
-                onChange={(e) => updateClip(clip.id, { positionY: parseInt(e.target.value) })}
+                value={effY}
+                aria-label={selectedKeyframe ? `Posición vertical Y del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Posición vertical Y'}
+                onChange={(e) =>
+                  selectedKeyframe
+                    ? updateKeyframe(clip.id, selectedKeyframe.t, { y: parseInt(e.target.value) })
+                    : updateClip(clip.id, { positionY: parseInt(e.target.value) })
+                }
                 className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
               />
             </div>
@@ -878,6 +951,153 @@ export const ClipInspector: React.FC = () => {
           >
             Restablecer Transformación
           </button>
+        </div>
+      )}
+
+      {/* F8 · KEYFRAMES DE ANIMACIÓN */}
+      {(isVideoOrImage || isText) && (
+        <div className="space-y-3 mb-4" data-testid="keyframe-section">
+          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Maximize2 size={13} className="text-cyan-400" />
+            <span>Keyframes de animación</span>
+          </div>
+
+          <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+            <p className="text-[10px] leading-snug text-slate-500">
+              Anima la posición, la escala y la opacidad a lo largo del clip con
+              interpolación lineal entre keyframes.
+            </p>
+
+            <button
+              onClick={() => {
+                if (addKeyframe(clip.id, playheadLocalT)) {
+                  // Selecciona el keyframe más cercano al cabezal (el recién
+                  // creado): el store lo cuantiza y lo recorta al clip.
+                  const updated = useProjectStore
+                    .getState()
+                    .project.clips.find((c) => c.id === clip.id);
+                  const kfs = updated?.keyframes ?? [];
+                  let best: number | null = null;
+                  let bestDist = Number.POSITIVE_INFINITY;
+                  for (const k of kfs) {
+                    const dist = Math.abs(k.t - playheadLocalT);
+                    if (dist < bestDist) {
+                      bestDist = dist;
+                      best = k.t;
+                    }
+                  }
+                  setSelectedKeyframeT(best);
+                }
+              }}
+              data-testid="keyframe-add"
+              aria-label="Añadir keyframe en el cabezal de reproducción"
+              className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-cyan-700 hover:bg-cyan-600 rounded border border-cyan-600 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            >
+              Añadir keyframe en el cabezal
+            </button>
+            {!playheadInsideClip && (
+              <p
+                role="status"
+                data-testid="keyframe-playhead-outside"
+                className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+              >
+                El cabezal está fuera de este clip: el keyframe se colocará en el
+                borde más cercano.
+              </p>
+            )}
+
+            {clipKeyframes.length > 0 ? (
+              <>
+                <div className="text-[11px] font-semibold text-slate-300 pt-1">
+                  Keyframes ({clipKeyframes.length})
+                </div>
+                <ul data-testid="keyframe-list" className="space-y-1.5">
+                  {clipKeyframes.map((kf) => {
+                    const isSelected = selectedKeyframe?.t === kf.t;
+                    // Resumen con herencia: lo ausente muestra el valor efectivo
+                    // en ese instante (no un cero).
+                    const rowEff = evaluateKeyframes(clip, kf.t);
+                    const defined: string[] = [];
+                    if (kf.x !== undefined || kf.y !== undefined) {
+                      defined.push(`pos ${Math.round(kf.x ?? rowEff.x)}, ${Math.round(kf.y ?? rowEff.y)}`);
+                    }
+                    if (kf.scale !== undefined) defined.push(`esc ${Math.round(kf.scale * 100)}%`);
+                    if (kf.opacity !== undefined) defined.push(`op ${Math.round(kf.opacity * 100)}%`);
+                    return (
+                      <li
+                        key={kf.t}
+                        data-testid={`keyframe-item-${kf.t}`}
+                        className={`flex items-center gap-1.5 rounded border p-1.5 ${
+                          isSelected
+                            ? 'bg-cyan-950/60 border-cyan-700/70'
+                            : 'bg-dark-900 border-dark-750'
+                        }`}
+                      >
+                        <button
+                          onClick={() => setSelectedKeyframeT(isSelected ? null : kf.t)}
+                          aria-label={
+                            isSelected
+                              ? `Dejar de editar el keyframe de ${kf.t.toFixed(2)} segundos`
+                              : `Seleccionar keyframe de ${kf.t.toFixed(2)} segundos para editarlo`
+                          }
+                          aria-pressed={isSelected}
+                          className={`flex-1 text-left text-[11px] rounded px-1 py-0.5 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
+                            isSelected ? 'text-cyan-100 font-semibold' : 'text-slate-300 hover:text-white'
+                          }`}
+                        >
+                          <span className="font-mono">{kf.t.toFixed(2)} s</span>
+                          <span className="text-slate-500"> · {defined.join(' · ') || 'vacío'}</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (selectedKeyframe?.t === kf.t) setSelectedKeyframeT(null);
+                            removeKeyframe(clip.id, kf.t);
+                          }}
+                          data-testid="keyframe-remove"
+                          aria-label={`Eliminar keyframe de ${kf.t.toFixed(2)} segundos`}
+                          className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:outline-none"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {selectedKeyframe && (
+                  <button
+                    onClick={() => setSelectedKeyframeT(null)}
+                    data-testid="keyframe-deselect"
+                    aria-label="Volver a editar los valores fijos del clip"
+                    className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                  >
+                    Volver a los valores fijos
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    if (confirm('¿Borrar todos los keyframes de este clip? Puedes deshacerlo con Ctrl+Z.')) {
+                      setSelectedKeyframeT(null);
+                      clearKeyframes(clip.id);
+                    }
+                  }}
+                  data-testid="keyframe-clear"
+                  aria-label="Borrar todos los keyframes del clip"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                >
+                  Borrar keyframes
+                </button>
+              </>
+            ) : (
+              <p
+                role="status"
+                data-testid="keyframe-empty"
+                className="text-[11px] leading-snug text-slate-500"
+              >
+                Sin keyframes: el clip usa su transformación fija. Añade uno para
+                animarlo.
+              </p>
+            )}
+          </div>
         </div>
       )}
 

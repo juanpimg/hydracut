@@ -12,6 +12,7 @@ import {
   TrashEntry,
 } from '../../types/project';
 import * as opfsStorage from './opfsStorage';
+import { normalizeKeyframesForWrite } from '../utils/keyframes';
 
 export const AUTOSAVE_KEY = 'web_video_editor_autosave_project';
 export const PROJECTS_INDEX_KEY = 'hydra_projects_index';
@@ -1888,6 +1889,10 @@ export function sanitizeImportedProject(
     throw new Error('Archivo de proyecto no válido: no contiene ninguna pista válida.');
   }
 
+  // The project fps is resolved before the clips: keyframes are quantised
+  // to it (missing/invalid → 30, the same default as the project shell).
+  const fps = clampNumber(candidate.fps, MIN_FPS, MAX_FPS, 30);
+
   /* ------------------------------- clips ------------------------------ */
   const rawClips = Array.isArray(candidate.clips) ? candidate.clips : [];
   const clips: Clip[] = [];
@@ -1930,6 +1935,11 @@ export function sanitizeImportedProject(
     // F9: the colour filters of the clip travel with it (they change how it
     // is drawn in the preview AND in the export).
     const filters = sanitizeClipFilters(c.filters);
+    // F8: the keyframes of the clip travel with it (they animate position,
+    // scale and opacity in the preview AND in the export). They go through
+    // the production normaliser: sorted, de-duplicated, clamped and
+    // quantised to the project fps.
+    const keyframes = normalizeKeyframesForWrite(c.keyframes, fps, duration);
     clips.push({
       id: c.id,
       trackId: c.trackId,
@@ -1955,6 +1965,7 @@ export function sanitizeImportedProject(
       // silently reverted to the default behaviour.
       preservePitch: typeof c.preservePitch === 'boolean' ? c.preservePitch : undefined,
       ...(filters ? { filters } : {}),
+      ...(keyframes ? { keyframes } : {}),
       text: typeof c.text === 'string' ? c.text : undefined,
       textStyle: c.textStyle,
       words: Array.isArray(c.words) ? c.words : undefined,
@@ -2073,7 +2084,6 @@ export function sanitizeImportedProject(
     );
   }
 
-  const fps = clampNumber(candidate.fps, MIN_FPS, MAX_FPS, 30);
   const maxClipEnd = clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
   const declaredDuration = Number(candidate.duration);
   const duration = Math.max(

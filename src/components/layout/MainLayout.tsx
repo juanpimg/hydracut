@@ -4,8 +4,6 @@ import { Sidebar } from './Sidebar';
 import { PreviewPlayer } from '../player/PreviewPlayer';
 import { PlayerControls } from '../player/PlayerControls';
 import { Timeline } from '../timeline/Timeline';
-import { ShortcutsModal } from '../modals/ShortcutsModal';
-import { ProjectsModal } from '../modals/ProjectsModal';
 import { WelcomeModal } from '../modals/WelcomeModal';
 import { MobileCapCutLayout } from '../mobile/MobileCapCutLayout';
 import { useIsMobile } from '../../hooks/useIsMobile';
@@ -25,6 +23,17 @@ import { useLiveAnnouncement, announce } from './liveRegion';
  * modal is opened for the first time.
  */
 const ExportModal = lazy(() => import('../export/ExportModal'));
+
+/**
+ * Bundle audit: `ProjectsModal` (~31 KB of sources) and `ShortcutsModal`
+ * are only needed when the user opens them, so they live in their own
+ * chunks. Both return `null` while closed and render as fixed overlays, so
+ * a `null` fallback can never shift the layout. `WelcomeModal` stays eager:
+ * it is open on the first boot and the boot sequence dismisses it as soon
+ * as it is present.
+ */
+const ProjectsModal = lazy(() => import('../modals/ProjectsModal'));
+const ShortcutsModal = lazy(() => import('../modals/ShortcutsModal'));
 
 /**
  * F7: the clipboard shortcut of a keyboard event.
@@ -159,6 +168,8 @@ export const MainLayout: React.FC = () => {
    * does not re-render on every UI store change.
    */
   const isExportModalOpen = useUIStore((s) => s.isExportModalOpen);
+  const isProjectsModalOpen = useUIStore((s) => s.isProjectsModalOpen);
+  const isShortcutsModalOpen = useUIStore((s) => s.isShortcutsModalOpen);
 
   // Load autosaved project on startup
   useEffect(() => {
@@ -371,8 +382,16 @@ export const MainLayout: React.FC = () => {
           <ExportModal />
         </Suspense>
       )}
-      <ShortcutsModal />
-      <ProjectsModal />
+      {isShortcutsModalOpen && (
+        <Suspense fallback={null}>
+          <ShortcutsModal />
+        </Suspense>
+      )}
+      {isProjectsModalOpen && (
+        <Suspense fallback={null}>
+          <ProjectsModal />
+        </Suspense>
+      )}
       <WelcomeModal />
 
       {/* F7: the refusals of the store (locked track, illegal overlap…) are
