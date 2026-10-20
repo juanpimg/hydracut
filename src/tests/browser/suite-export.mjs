@@ -34,6 +34,7 @@ import {
   readFileHead,
   evaluateWithRetry,
   safeEvaluate,
+  waitForNetworkQuiescence,
   navCount,
   delay,
 } from './browser-harness.mjs';
@@ -75,7 +76,11 @@ export async function run({ browser, report, baseUrl }) {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitForAppReady(page);
     await dismissWelcome(page);
-    await delay(500);
+    // The "lazy exporter chunk" check reads the request log of the whole
+    // session: evaluate it at network quiescence, not after a fixed sleep
+    // (a sleep can fire before the boot has finished and miss the very
+    // request the check is looking for).
+    await waitForNetworkQuiescence(() => requested.length, { quietMs: 1000, timeoutMs: 15_000 });
 
     const appOrigin = new URL(baseUrl).origin;
     const isForeign = (url) => {

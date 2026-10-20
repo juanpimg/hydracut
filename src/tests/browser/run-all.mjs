@@ -25,6 +25,7 @@ import * as suiteExport from './suite-export.mjs';
 import * as suiteKnownIssues from './suite-known-issues.mjs';
 import * as suiteFeatures from './suite-features.mjs';
 import * as suiteRecent from './suite-recent.mjs';
+import * as suiteFirefox from './suite-firefox.mjs';
 
 const SUITES = [
   { key: 'layout', mod: suiteLayout },
@@ -33,6 +34,7 @@ const SUITES = [
   { key: 'known-issues', mod: suiteKnownIssues },
   { key: 'features', mod: suiteFeatures },
   { key: 'recent', mod: suiteRecent },
+  { key: 'firefox', mod: suiteFirefox },
 ];
 
 /** Hard limit per suite: a hung suite must never hang the whole run. */
@@ -135,14 +137,23 @@ async function main() {
       })${C.reset}`
     );
 
-    browser = await launchBrowser({ headless: !flags.headed });
-    console.log(`${C.dim}Chrome lanzado. Timeout por defecto: ${DEFAULT_TIMEOUT} ms${C.reset}`);
+    // Suites that bring their own browser (Firefox) never need Chrome: when
+    // ONLY those are selected, Chrome is not launched at all (so
+    // `run-all.mjs firefox` works on machines without Chrome, and the full
+    // run never breaks on machines without Firefox — that suite skips
+    // itself with a clear message instead of failing).
+    const needsChrome = selected.some((s) => !s.mod.requiresOwnBrowser);
+    if (needsChrome) {
+      browser = await launchBrowser({ headless: !flags.headed });
+      console.log(`${C.dim}Chrome lanzado. Timeout por defecto: ${DEFAULT_TIMEOUT} ms${C.reset}`);
 
-    // Absorb the Vite dependency re-optimisation / first HMR reload so that the
-    // real suites never see a surprise navigation.
-    await warmUp(browser, { baseUrl: server.url });
-    console.log(`${C.dim}Calentamiento del navegador completado.${C.reset}`);
-
+      // Absorb the Vite dependency re-optimisation / first HMR reload so that the
+      // real suites never see a surprise navigation.
+      await warmUp(browser, { baseUrl: server.url });
+      console.log(`${C.dim}Calentamiento del navegador completado.${C.reset}`);
+    } else {
+      console.log(`${C.dim}Sin suites de Chrome: no se lanza Chrome.${C.reset}`);
+    }
     for (const suite of selected) {
       const report = createReporter(suite.key);
       const suiteStarted = Date.now();
@@ -224,9 +235,10 @@ async function main() {
   console.log(`${C.bold} RESUMEN / SUMMARY${C.reset}`);
   for (const s of suiteSummaries) {
     const status = s.failed > 0 ? `${C.red}${s.failed} FAIL${C.reset}` : `${C.green}0 FAIL${C.reset}`;
+    const skipped = s.total === 0 ? ` ${C.yellow}(omitida)${C.reset}` : '';
     const info = s.notReproduced > 0 ? ` ${C.yellow}${s.notReproduced} no reproducidos${C.reset}` : '';
     console.log(
-      `  ${s.key.padEnd(14)} ${String(s.total).padStart(3)} checks  ${status}${info}  ${C.dim}${s.elapsed}s${C.reset}`
+      `  ${s.key.padEnd(14)} ${String(s.total).padStart(3)} checks  ${status}${skipped}${info}  ${C.dim}${s.elapsed}s${C.reset}`
     );
   }
   console.log(`${C.dim}${'─'.repeat(64)}${C.reset}`);

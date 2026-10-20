@@ -258,7 +258,24 @@ async function ki04FocusTrap({ browser, report, baseUrl }) {
       await delay(150);
     }
     if (!modalReady) throw new Error('El modal de Proyectos no se abrió');
-    await delay(500);
+    // The modal moves the focus inside itself asynchronously: poll until the
+    // focus lands instead of reading once after a fixed sleep (on a loaded
+    // machine a single read can catch the focus mid-flight and report a
+    // trap escape that never happened).
+    {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const inside = await safeEvaluate(
+          page,
+          () => {
+            const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
+            return dialogs.some((d) => d.contains(document.activeElement));
+          }
+        );
+        if (inside) break;
+        await delay(100);
+      }
+    }
 
     const state = await evaluateWithRetry(page, () => {
       const dialogs = Array.from(document.querySelectorAll('div[role="dialog"]'));
@@ -356,18 +373,37 @@ async function ki05UndoMedia({ browser, report, baseUrl }) {
       del.click();
       return true;
     });
-    await delay(600);
-
-    const mediaAfterDelete = await readMediaPoolCount(page);
+    if (!deleted) throw new Error('No se encontró el botón de papelera de la tarjeta de medios');
+    // The deletion flows through React + the store: poll until the pool
+    // really shrinks instead of reading once after a fixed sleep.
+    let mediaAfterDelete = null;
+    {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        mediaAfterDelete = await readMediaPoolCount(page);
+        if (mediaAfterDelete !== null && mediaAfterDelete === mediaBefore - 1) break;
+        await delay(150);
+      }
+      mediaAfterDelete = await readMediaPoolCount(page);
+    }
     const clipsAfterDelete = await readClipCount(page);
 
     // Undo.
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyZ');
     await page.keyboard.up('Control');
-    await delay(600);
-
-    const mediaAfterUndo = await readMediaPoolCount(page);
+    // Same race in the other direction: the undo commit may land after the
+    // sleep on a loaded machine, so wait for the pool to grow back.
+    let mediaAfterUndo = null;
+    {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        mediaAfterUndo = await readMediaPoolCount(page);
+        if (mediaAfterUndo !== null && mediaAfterUndo === mediaBefore) break;
+        await delay(150);
+      }
+      mediaAfterUndo = await readMediaPoolCount(page);
+    }
     const clipsAfterUndo = await readClipCount(page);
 
     report.check(

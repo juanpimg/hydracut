@@ -1036,15 +1036,19 @@ async function caseSupport({ report, baseUrl, live }) {
     await dismissWelcome(page2);
     await delay(800);
 
-    if (audioClipId) {
-      try {
-        await clickClip(page2, audioClipId);
-      } catch {
-        /* the clip may need a moment to mount */
-      }
-    }
+    // The clip may need a moment to mount after the reload: keep trying to
+    // select it while the pan control is still absent (a single click can
+    // land before the timeline rehydrates and the check would then fail
+    // vacuously).
     let state = null;
     for (let i = 0; i < 40; i++) {
+      if (audioClipId && i % 5 === 0) {
+        try {
+          await clickClip(page2, audioClipId);
+        } catch {
+          /* not mounted yet: the loop retries */
+        }
+      }
       state = await safeEvaluate(page2, () => {
         const pan = document.querySelector('[data-testid="clip-audio-pan"]');
         const reason = document.querySelector('[data-testid="clip-audio-pan-unsupported"]');
@@ -1323,7 +1327,28 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
         const btn = document.querySelector('[data-testid="storage-panel-toggle"]');
         if (btn) btn.click();
       });
-      await delay(300);
+      // The storage panel renders asynchronously: wait for the backup button
+      // instead of clicking once after a fixed sleep.
+      let backupReady = false;
+      {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          backupReady = await safeEvaluate(page, () =>
+            Boolean(document.querySelector('[data-testid="storage-backup"]'))
+          );
+          if (backupReady) break;
+          await delay(150);
+        }
+      }
+      if (!backupReady) {
+        decide(
+          'STORAGE-ROUNDTRIP-WITH-MEDIA',
+          'La copia con medios se reimporta y los medios vuelven a reproducirse',
+          false,
+          'El panel de almacenamiento no mostró el botón de copia en 10 s.'
+        );
+        return { reloaded: navCount(page) !== navBefore, checks };
+      }
       await safeEvaluate(page, () => {
         const btn = document.querySelector('[data-testid="storage-backup"]');
         if (btn) btn.click();
@@ -1401,7 +1426,22 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
         });
         let importOk = false;
         let after = null;
-        const input = await page.$('[data-testid="projects-modal"] input[type="file"]');
+        // The Projects modal mounts asynchronously: poll for its file input
+        // instead of querying it once (a single `$` after the click can miss
+        // it on a loaded machine and fail the round-trip vacuously).
+        let input = null;
+        {
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline) {
+            try {
+              input = await page.$('[data-testid="projects-modal"] input[type="file"]');
+            } catch {
+              input = null;
+            }
+            if (input) break;
+            await delay(200);
+          }
+        }
         if (input) {
           await input.uploadFile(hydra.filePath);
           const deadline = Date.now() + 20_000;

@@ -62,10 +62,10 @@ import {
   safeEvaluate,
   blurActiveElement,
   readMediaPoolCount,
+  waitForClipCount,
   waitForPersistedProject,
   reloadWithRetry,
-  readMp4VideoTrackSize,
-  readMp4MovieDuration,
+  readMp4VideoTrackSize,  readMp4MovieDuration,
   navCount,
   delay,
 } from './browser-harness.mjs';
@@ -897,7 +897,15 @@ async function caseSpeed({ browser, report, baseUrl }) {
       await reloadWithRetry(page);
       await waitForAppReady(page);
       await dismissWelcome(page);
-      await delay(1200);
+      // Same rehydration race as PLAYBACK-PERSISTENCE: the clips come back
+      // from IndexedDB asynchronously, so wait for them by condition instead
+      // of reading once after a fixed sleep.
+      try {
+        await waitForClipCount(page, 1, 20_000);
+      } catch {
+        // Fall through to the honest read below: with no clips the check
+        // reports the empty timeline instead of crashing the suite.
+      }
 
       const persisted = await safeEvaluate(page, () => {
         const store = window.__projectStore;

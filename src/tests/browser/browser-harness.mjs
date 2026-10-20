@@ -99,6 +99,52 @@ export function resolveChromePath() {
 
 export const CHROME_PATH = resolveChromePath();
 
+/**
+ * Resolves the Firefox binary used by `launchFirefox()`.
+ *
+ * Fallback chain (first hit wins):
+ *   1. `HYDRA_FIREFOX_PATH` (documented override);
+ *   2. the usual Linux locations (`/usr/bin/firefox`, …);
+ *   3. a `PATH` lookup of the usual binary names;
+ *   4. the hardcoded default as a last resort, so the error thrown by
+ *      `launchFirefox()` still mentions a concrete path.
+ */
+const DEFAULT_FIREFOX_PATH = '/usr/bin/firefox';
+
+const FIREFOX_FILE_CANDIDATES = [
+  process.env.HYDRA_FIREFOX_PATH,
+  DEFAULT_FIREFOX_PATH,
+  '/usr/bin/firefox-esr',
+  '/opt/firefox/firefox',
+  '/snap/bin/firefox',
+];
+
+const FIREFOX_PATH_NAMES = ['firefox', 'firefox-esr'];
+
+export function resolveFirefoxPath() {
+  // An explicit override always wins (even if it points nowhere): in that
+  // case `launchFirefox()` throws an error that mentions this exact path.
+  if (process.env.HYDRA_FIREFOX_PATH) return process.env.HYDRA_FIREFOX_PATH;
+  for (const candidate of FIREFOX_FILE_CANDIDATES) {
+    if (candidate && isExecutableFile(candidate)) return candidate;
+  }
+  const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const name of FIREFOX_PATH_NAMES) {
+    for (const dir of pathDirs) {
+      const full = path.join(dir, name);
+      if (isExecutableFile(full)) return full;
+    }
+  }
+  return process.env.HYDRA_FIREFOX_PATH || DEFAULT_FIREFOX_PATH;
+}
+
+export const FIREFOX_PATH = resolveFirefoxPath();
+
+/** True when a Firefox binary is available on this machine. */
+export function isFirefoxAvailable() {
+  return isExecutableFile(resolveFirefoxPath());
+}
+
 /** Default timeout applied to every wait helper (30 s). */
 export const DEFAULT_TIMEOUT = 30_000;
 
@@ -266,6 +312,31 @@ export async function launchBrowser({ headless = true } = {}) {
     headless,
     args: CHROME_ARGS,
     defaultViewport: null,
+    protocolTimeout: 180_000,
+  });
+}
+
+/**
+ * Launches the system Firefox via puppeteer-core (WebDriver BiDi).
+ *
+ * Used ONLY by the Firefox export suite: the regression it guards (the
+ * MediaRecorder fallback picking an unusable MIME when the timeline carries
+ * audio) does not reproduce in Chrome. Throws when no Firefox binary is
+ * available — callers that must degrade to a skip check
+ * `isFirefoxAvailable()` first.
+ */
+export async function launchFirefox({ headless = true } = {}) {
+  const executablePath = resolveFirefoxPath();
+  if (!isExecutableFile(executablePath)) {
+    throw new Error(
+      `No se encontró el binario de Firefox en "${executablePath}". ` +
+        `Instala Firefox o define HYDRA_FIREFOX_PATH con la ruta del binario.`
+    );
+  }
+  return puppeteer.launch({
+    browser: 'firefox',
+    executablePath,
+    headless,
     protocolTimeout: 180_000,
   });
 }
@@ -774,6 +845,63 @@ export async function waitForMediaPool(page, min = 1, timeoutMs = 120_000) {
   throw new Error(
     `El panel de medios no alcanzó ${min} elemento(s) en ${timeoutMs} ms (último valor: ${last})`
   );
+}
+
+/**
+ * Waits until the timeline holds at least `min` clips (read straight from
+ * the zustand store, so no re-render race: the value is the state itself).
+ *
+ * Used after a page reload, where a single read can observe the app BEFORE
+ * the autosaved project has been rehydrated (PLAYBACK-PERSISTENCE read
+ * "Medios: 3 -> null" exactly that way under load).
+ */
+export async function waitForClipCount(page, min = 1, timeoutMs = 20_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    const count = await readClipCount(page);
+    if (count !== null) {
+      last = count;
+      if (count >= min) return count;
+    }
+    await delay(200);
+  }
+  throw new Error(
+    `El timeline no alcanzó ${min} clip(s) en ${timeoutMs} ms (último valor: ${last})`
+  );
+}
+
+/**
+ * Waits until `getCount()` stops growing for `quietMs` (network quiescence),
+ * capped at `timeoutMs`. Returns the last count.
+ *
+ * Used after a full page reload before asserting "nothing outside the origin
+ * was requested": a fixed sleep can evaluate the request log BEFORE the boot
+ * has finished (missing a late foreign request = a check that passes
+ * vacuously) or too late on a loaded machine. Quiescence adapts both ways.
+ */
+export async function waitForNetworkQuiescence(
+  getCount,
+  { quietMs = 1200, timeoutMs = 15_000 } = {}
+) {
+  const deadline = Date.now() + timeoutMs;
+  let last = -1;
+  let lastChange = Date.now();
+  while (Date.now() < deadline) {
+    let current = last;
+    try {
+      current = getCount();
+    } catch {
+      /* keep the previous count */
+    }
+    if (current !== last) {
+      last = current;
+      lastChange = Date.now();
+    }
+    if (Date.now() - lastChange >= quietMs) return last;
+    await delay(200);
+  }
+  return last;
 }
 
 /**

@@ -43,6 +43,7 @@ import {
   safeEvaluate,
   generateSampleMedia,
   addFirstMediaToTimeline,
+  waitForNetworkQuiescence,
   delay,
 } from './browser-harness.mjs';
 
@@ -547,16 +548,31 @@ async function runMobileSplit({ browser, report, baseUrl }) {
     await evaluateWithRetry(page, (t) => {
       if (window.__masterClock) window.__masterClock.seek(t);
     }, target);
-    await delay(600);
-
-    const inside = await evaluateWithRetry(page, () => {
-      const button = document.querySelector('button[aria-label="Dividir clip en el cabezal"]');
-      return {
-        found: Boolean(button),
-        disabled: button ? button.disabled : null,
-        time: window.__masterClock ? window.__masterClock.getTime() : null,
-      };
-    });
+    // The mobile shell re-renders after the resize AND the seek lands
+    // asynchronously: a single read after a fixed sleep can observe the
+    // button (or the clock) before they settle. Poll until the clock reports
+    // the target time and the button is present.
+    let inside = null;
+    {
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        inside = await evaluateWithRetry(page, () => {
+          const button = document.querySelector('button[aria-label="Dividir clip en el cabezal"]');
+          return {
+            found: Boolean(button),
+            disabled: button ? button.disabled : null,
+            time: window.__masterClock ? window.__masterClock.getTime() : null,
+          };
+        });
+        if (
+          inside && inside.found && typeof inside.time === 'number' &&
+          Math.abs(inside.time - target) < 0.2
+        ) {
+          break;
+        }
+        await delay(150);
+      }
+    }
 
     report.check(
       'LAYOUT-MOBILE-SPLIT',
@@ -601,9 +617,13 @@ async function runBundle({ browser, report, baseUrl }) {
 
     // A full page load with the cache disabled: every resource is really
     // fetched, so a foreign request cannot hide behind the HTTP cache.
+    // The request log is evaluated at network quiescence, not after a fixed
+    // sleep: a sleep can fire before the boot has finished (missing a late
+    // foreign request = a check that passes vacuously) or too early on a
+    // loaded machine.
     await page.setCacheEnabled(false);
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await delay(3000);
+    await waitForNetworkQuiescence(() => requested.length, { quietMs: 1500, timeoutMs: 20_000 });
 
     const appOrigin = new URL(baseUrl).origin;
     const isForeign = (url) => {

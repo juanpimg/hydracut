@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:browser": "node scripts/browser-test.mjs",
+    "test:browser:firefox": "node scripts/browser-test.mjs firefox",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
