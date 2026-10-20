@@ -465,7 +465,8 @@ describe('F7 — copiar, pegar y duplicar clips', () => {
     expect(useProjectStore.getState().lastError).toBeNull();
   });
 
-  it('duplicateClips NUNCA crea un solape ilegal (ninguna política)', () => {    for (const policy of ['block', 'overwrite', 'ripple'] as const) {
+  it('duplicateClips NUNCA crea un solape ilegal (ninguna política)', () => {
+    for (const policy of ['block', 'overwrite', 'ripple'] as const) {
       useProjectStore.getState().resetProject();
       useProjectStore.getState().setOverlapPolicy(policy);
 
