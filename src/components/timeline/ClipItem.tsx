@@ -246,6 +246,12 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   // Minimum 28px so both trim handles (14px each) never overlap on tiny clips
   const widthPx = Math.max(28, clip.duration * zoom);
   const showHandles = isSelected || widthPx < 40 || zoom > 80;
+  /**
+   * F7: the visible Spanish labels of the clipboard actions need room.
+   * In a short clip only the icons are shown (the `title` / `aria-label`
+   * keep the Spanish name in every case).
+   */
+  const showClipboardLabels = widthPx >= 150;
 
   const media = mediaPool.find((m) => m.id === clip.mediaId);
 
@@ -591,7 +597,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         left: `${leftPx}px`,
         width: `${widthPx}px`,
       }}
-      className={`absolute top-1 bottom-1 rounded-md border ${themeBorder} ${theme.bg} flex items-center justify-between overflow-hidden cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none`}
+      className={`absolute top-1 bottom-1 rounded-md border ${themeBorder} ${theme.bg} flex items-center justify-between ${isSelected ? 'overflow-visible' : 'overflow-hidden'} cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none`}
     >
       {/* Background Filmstrip for Video clips */}
       {clip.type === 'video' && media?.thumbnails && media.thumbnails.length > 0 && (() => {
@@ -758,7 +764,14 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         </span>
       </div>
 
-      {/* F7: clipboard actions of the selected clip (copy / paste / duplicate). */}
+      {/* F7: clipboard actions of the selected clip (copy / paste / duplicate).
+
+          They are a real ACTION ROW (not a right-click menu): they are
+          visible as soon as the clip is selected, they work with a finger
+          (the mobile layout uses the very same timeline) and they carry
+          their Spanish label. The row is NOT clipped by the clip box
+          (`overflow-visible` while the clip is selected) so it stays
+          reachable even in a very short clip. */}
       {isSelected && (
         <div
           data-testid="clip-clipboard-actions"
@@ -772,29 +785,35 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
             type="button"
             title="Copiar"
             aria-label={`Copiar ${clip.name}`}
+            data-testid="clip-copy-button"
             onClick={() => copyClips([clip.id])}
-            className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
-            <Copy size={11} />
+            <Copy size={12} className="shrink-0" />
+            {showClipboardLabels && <span className="text-[9px] font-semibold">Copiar</span>}
           </button>
           <button
             type="button"
             title="Pegar"
             aria-label={`Pegar en ${clip.name}`}
+            data-testid="clip-paste-button"
             disabled={!hasClipboard}
             onClick={() => pasteClips(clip.trackId)}
-            className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-dark-700 disabled:opacity-30 disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 disabled:opacity-30 disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
-            <ClipboardPaste size={11} />
+            <ClipboardPaste size={12} className="shrink-0" />
+            {showClipboardLabels && <span className="text-[9px] font-semibold">Pegar</span>}
           </button>
           <button
             type="button"
             title="Duplicar"
             aria-label={`Duplicar ${clip.name}`}
+            data-testid="clip-duplicate-button"
             onClick={() => duplicateClips([clip.id])}
-            className="p-0.5 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
-            <CopyPlus size={11} />
+            <CopyPlus size={12} className="shrink-0" />
+            {showClipboardLabels && <span className="text-[9px] font-semibold">Duplicar</span>}
           </button>
         </div>
       )}

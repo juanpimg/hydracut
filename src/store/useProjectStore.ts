@@ -1449,7 +1449,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       offset: source.start - anchor,
     }));
 
-    set({ clipboard: entries });
+    set({ clipboard: entries, lastError: null });
     return entries.length;
   },
 
@@ -1539,7 +1539,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       // right so the whole group has room.
       working = applyRippleInsert(working, track.id, anchor, span).clips;
     } else {
-      const conflicts = findOverlappingClips(working, track.id, anchor, span);
+      // F7: the conflicts are checked CLIP BY CLIP, not against the bounding
+      // box of the group. A group copied from two different tracks can be
+      // very sparse (a clip at 0 s and another one at 100 s): the bounding
+      // box would collide with everything in between and the paste would be
+      // refused even though the clips themselves fit perfectly.
+      const conflicts = newClips.flatMap((clip) =>
+        findOverlappingClips(working, track.id, clip.start, clip.duration)
+      );
       if (conflicts.length > 0) {
         const conflict = conflicts[0];
         const message =
@@ -1580,7 +1587,17 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (sources.length === 0) return [];
 
     const policy: OverlapPolicy = project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
-    let working = project.clips;
+    /**
+     * F7: `working` holds EVERY clip of the project: the originals AND the
+     * copies that were already placed.
+     *
+     * The copies live in the working set because they must be resolved
+     * against EACH OTHER: with the old code the copies were appended at the
+     * end, so the `overwrite` / `ripple` insertions never saw them and two
+     * copies of the same track could end up on top of each other (an illegal
+     * overlap the timeline can never show).
+     */
+    let working: Clip[] = [...project.clips];
     const newClips: Clip[] = [];
     const removed: Clip[] = [];
 
@@ -1612,23 +1629,21 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         // (the timeline never ends up with two clips on top of each other).
         let guard = 0;
         while (guard++ < 1000) {
-          const conflicts = findOverlappingClips(
-            [...working, ...newClips],
-            track.id,
-            start,
-            source.duration
-          );
+          const conflicts = findOverlappingClips(working, track.id, start, source.duration);
           if (conflicts.length === 0) break;
           start = Math.max(...conflicts.map((conflict) => clipEnd(conflict)));
         }
       }
 
-      newClips.push({
+      const copy: Clip = {
         ...deepCopyClip(source),
         id: createClipId(),
         trackId: track.id,
         start,
-      });
+      };
+      newClips.push(copy);
+      // The copy joins the working set: the next copy is resolved against it.
+      working = [...working, copy];
     }
 
     if (newClips.length === 0) return [];
@@ -1637,7 +1652,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set((state) => {
       const updated: Project = {
         ...state.project,
-        clips: [...working, ...newClips],
+        // `working` already contains the copies (see the comment above).
+        clips: working,
         updatedAt: Date.now(),
       };
       persistProject(updated);

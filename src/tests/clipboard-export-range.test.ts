@@ -283,7 +283,6 @@ describe('F7 — copiar, pegar y duplicar clips', () => {
   });
 
   it('duplicateClips crea una copia justo detrás del original con un id nuevo', () => {
-    const store = useProjectStore.getState();
     const clipId = addClip(makeClip({ id: 'clip_a', start: 0, duration: 10 }));
 
     const duplicated = useProjectStore.getState().duplicateClips([clipId]);
@@ -310,7 +309,6 @@ describe('F7 — copiar, pegar y duplicar clips', () => {
   });
 
   it('duplicateClips es deshacible', () => {
-    const store = useProjectStore.getState();
     const clipId = addClip(makeClip({ id: 'clip_a' }));
     useProjectStore.getState().duplicateClips([clipId]);
     expect(useProjectStore.getState().project.clips).toHaveLength(2);
@@ -345,6 +343,155 @@ describe('F7 — copiar, pegar y duplicar clips', () => {
     expect(pasted).toEqual([]);
     expect(useProjectStore.getState().project.clips).toHaveLength(2);
     expect(useProjectStore.getState().lastError).toMatch(/solapan entre sí/i);
+  });
+
+  it('pegar en una pista BLOQUEADA se rechaza y no crea ningún clip', () => {
+    const store = useProjectStore.getState();
+    store.toggleTrackLock(VIDEO_TRACK);
+    const clipId = addClip(makeClip({ id: 'clip_a' }));
+    useProjectStore.getState().copyClips([clipId]);
+
+    const pasted = useProjectStore.getState().pasteClips(VIDEO_TRACK, 30);
+
+    expect(pasted).toEqual([]);
+    expect(useProjectStore.getState().project.clips).toHaveLength(1);
+    // The refusal explains WHY (in Spanish).
+    expect(useProjectStore.getState().lastError).toMatch(/bloqueada/i);
+  });
+
+  it('duplicar en una pista BLOQUEADA se rechaza y no crea ningún clip', () => {
+    const store = useProjectStore.getState();
+    store.toggleTrackLock(VIDEO_TRACK);
+    const clipId = addClip(makeClip({ id: 'clip_a' }));
+
+    const duplicated = useProjectStore.getState().duplicateClips([clipId]);
+
+    expect(duplicated).toEqual([]);
+    expect(useProjectStore.getState().project.clips).toHaveLength(1);
+    expect(useProjectStore.getState().lastError).toMatch(/bloqueada/i);
+  });
+
+  it('el rechazo del pegado nombra el clip en conflicto y su rango de tiempo', () => {
+    const store = useProjectStore.getState();
+    const clipId = addClip(
+      makeClip({ id: 'clip_a', name: 'Intro.mp4', start: 0, duration: 10 })
+    );
+    store.copyClips([clipId]);
+
+    // The paste lands exactly on top of the original.
+    expect(useProjectStore.getState().pasteClips(VIDEO_TRACK, 0)).toEqual([]);
+
+    const error = useProjectStore.getState().lastError!;
+    expect(error).toMatch(/no se puede pegar/i);
+    // The conflicting clip is named…
+    expect(error).toContain('Intro.mp4');
+    // …and so is its time range (00:00–00:10).
+    expect(error).toMatch(/00:00\s*[–-]\s*00:10/);
+  });
+
+  it('el pegado es deshacible Y el rehacer lo restaura', () => {
+    const store = useProjectStore.getState();
+    const clipId = addClip(makeClip({ id: 'clip_a' }));
+    store.copyClips([clipId]);
+    const pasted = useProjectStore.getState().pasteClips(VIDEO_TRACK, 20);
+    expect(pasted).toHaveLength(1);
+
+    // One undo removes the pasted clip.
+    useProjectStore.getState().undo();
+    expect(useProjectStore.getState().project.clips).toHaveLength(1);
+    expect(
+      useProjectStore.getState().project.clips.find((c) => c.id === pasted[0])
+    ).toBeUndefined();
+
+    // One redo brings it back.
+    useProjectStore.getState().redo();
+    const clips = useProjectStore.getState().project.clips;
+    expect(clips).toHaveLength(2);
+    expect(clips.find((c) => c.id === pasted[0])).toBeDefined();
+  });
+
+  it('pegar NO modifica el portapapeles', () => {
+    const store = useProjectStore.getState();
+    const clipId = addClip(makeClip({ id: 'clip_a' }));
+    store.copyClips([clipId]);
+    const before = useProjectStore.getState().clipboard;
+
+    useProjectStore.getState().pasteClips(VIDEO_TRACK, 30);
+
+    expect(useProjectStore.getState().clipboard).toBe(before);
+    expect(useProjectStore.getState().clipboard).toHaveLength(1);
+  });
+
+  it('el portapapeles no comparte los objetos anidados con el clip vivo', () => {
+    const store = useProjectStore.getState();
+    const clipId = addClip(
+      makeClip({
+        id: 'clip_a',
+        type: 'text',
+        text: 'Hola',
+        textStyle: { fontSize: 48, color: '#ffffff' } as never,
+      })
+    );
+    store.copyClips([clipId]);
+
+    const entry = useProjectStore.getState().clipboard[0];
+    const live = useProjectStore.getState().project.clips[0];
+
+    // The nested object is a COPY: mutating it cannot break the timeline.
+    expect(entry.clip.textStyle).not.toBe(live.textStyle);
+    (entry.clip.textStyle as { fontSize: number }).fontSize = 999;
+    expect((live.textStyle as { fontSize: number }).fontSize).toBe(48);
+  });
+
+  it('un grupo disperso se pega SIN falsos rechazos (el solape se mira clip a clip)', () => {
+    const store = useProjectStore.getState();
+    // A group copied from two tracks that are far apart: the bounding box of
+    // the group is huge, but the clips themselves fit in the free space.
+    const first = addClip(makeClip({ id: 'clip_a', trackId: VIDEO_TRACK, start: 0, duration: 5 }));
+    const second = addClip(makeClip({ id: 'clip_b', trackId: VIDEO_TRACK_2, start: 100, duration: 5 }));
+    // A clip that lives INSIDE the bounding box of the group (but outside
+    // the two copied clips).
+    addClip(makeClip({ id: 'clip_mid', trackId: VIDEO_TRACK, start: 250, duration: 5 }));
+    store.copyClips([first, second]);
+
+    const pasted = useProjectStore.getState().pasteClips(VIDEO_TRACK, 200);
+
+    expect(pasted).toHaveLength(2);
+    const clips = useProjectStore.getState().project.clips;
+    const copyA = clips.find((c) => c.id === pasted[0])!;
+    const copyB = clips.find((c) => c.id === pasted[1])!;
+    expect(copyA.start).toBe(200);
+    expect(copyB.start).toBe(300);
+    expect(useProjectStore.getState().lastError).toBeNull();
+  });
+
+  it('duplicateClips NUNCA crea un solape ilegal (ninguna política)', () => {    for (const policy of ['block', 'overwrite', 'ripple'] as const) {
+      useProjectStore.getState().resetProject();
+      useProjectStore.getState().setOverlapPolicy(policy);
+
+      // A long clip and a SHORT one right after it: the copy of the long
+      // clip lands on top of the short one.
+      const long = addClip(makeClip({ id: 'clip_a', start: 0, duration: 10 }));
+      const short = addClip(makeClip({ id: 'clip_b', start: 12, duration: 1 }));
+
+      const duplicated = useProjectStore.getState().duplicateClips([long, short]);
+      expect(duplicated).toHaveLength(2);
+
+      const clips = useProjectStore.getState().project.clips;
+      const onTrack = clips
+        .filter((c) => c.trackId === VIDEO_TRACK)
+        .sort((a, b) => a.start - b.start);
+      for (let i = 1; i < onTrack.length; i++) {
+        const previous = onTrack[i - 1];
+        const current = onTrack[i];
+        expect(
+          current.start,
+          `solape ilegal con la política "${policy}": ${previous.id} [${previous.start},${
+            previous.start + previous.duration
+          }) y ${current.id} [${current.start},${current.start + current.duration}]`
+        ).toBeGreaterThanOrEqual(previous.start + previous.duration - 1e-6);
+      }
+    }
   });
 });
 
@@ -414,6 +561,32 @@ describe('F7 — los atajos de teclado del portapapeles', () => {
     expect(source).toContain('Copiar');
     expect(source).toContain('Pegar');
     expect(source).toContain('Duplicar');
+  });
+
+  it('las acciones de portapapeles se muestran con su etiqueta (táctiles)', () => {
+    const source = readFileSync(
+      new URL('../components/timeline/ClipItem.tsx', import.meta.url),
+      'utf8'
+    );
+    // The actions are a visible row (not a right-click menu) and they are
+    // rendered as soon as the clip is selected.
+    expect(source).toMatch(/isSelected\s*&&\s*\(/);
+    expect(source).toContain('showClipboardLabels');
+    // A touch target that can really be hit with a finger.
+    expect(source).toMatch(/min-h-\[2\dpx\]/);
+  });
+
+  it('el rechazo del store se MUESTRA al usuario (no es un no-op silencioso)', () => {
+    const source = readFileSync(
+      new URL('../components/layout/MainLayout.tsx', import.meta.url),
+      'utf8'
+    );
+    // The banner renders `lastError` (the refusal of the last action)…
+    expect(source).toContain('store-error-banner');
+    expect(source).toContain('s.lastError');
+    // …and it is mounted in BOTH layouts (desktop and mobile).
+    const bannerUsages = source.split('<StoreErrorBanner />').length - 1;
+    expect(bannerUsages).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -485,14 +658,32 @@ describe('F10 — los preajustes de exportación', () => {
     expect(findActivePreset({ ...settings, aspectRatio: '9:16' })?.id).toBe('vertical-9x16');
   });
 
-  it('el modal muestra los preajustes y aplica el aspect ratio del proyecto', () => {
+  it('el modal muestra los preajustes y aplica el aspect ratio del EXPORTE', () => {
     const source = readFileSync(
       new URL('../components/export/ExportModal.tsx', import.meta.url),
       'utf8'
     );
     expect(source).toContain('export-presets');
     expect(source).toContain('EXPORT_PRESETS');
-    expect(source).toContain('setAspectRatio');
+    // The aspect ratio of the exported file belongs to the modal.
+    expect(source).toContain('exportAspectRatio');
+  });
+
+  it('el preajuste vertical NO reformatea el proyecto (solo el archivo exportado)', () => {
+    const source = readFileSync(
+      new URL('../components/export/ExportModal.tsx', import.meta.url),
+      'utf8'
+    );
+    // The export dialog must NOT rewrite (and persist) the project of the
+    // user: it only changes the shape of the exported file.
+    expect(source).not.toMatch(/setAspectRatio\(/);
+
+    // …but the exported file IS really vertical.
+    const vertical = EXPORT_PRESETS.find((preset) => preset.id === 'vertical-9x16')!;
+    expect(computeExportDimensions(vertical.resolution, vertical.aspectRatio)).toEqual({
+      width: 1080,
+      height: 1920,
+    });
   });
 });
 

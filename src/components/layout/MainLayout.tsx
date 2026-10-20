@@ -75,6 +75,70 @@ export function resolveClipboardShortcut(event: {
   }
 }
 
+/**
+ * F7: the refusals of the store must be VISIBLE.
+ *
+ * The store publishes two failure signals:
+ * - `lastError`: the last action was refused (a locked track, an illegal
+ *   overlap, an incompatible track…). Without a banner the user only sees
+ *   that "nothing happened", which is indistinguishable from a broken app
+ *   (B-08).
+ * - `storageError`: the project could NOT be written to the disk. The work is
+ *   not safe and the user has to know it (S-08).
+ *
+ * The banner is rendered by `MainLayout` in BOTH layouts (desktop and
+ * mobile), so a refusal is never invisible.
+ */
+export const StoreErrorBanner: React.FC = () => {
+  const lastError = useProjectStore((s) => s.lastError);
+  const storageError = useProjectStore((s) => s.storageError);
+  const clearLastError = useProjectStore((s) => s.clearLastError);
+  const clearStorageError = useProjectStore((s) => s.clearStorageError);
+
+  if (!lastError && !storageError) return null;
+
+  return (
+    <div
+      data-testid="store-error-banner"
+      className="fixed top-16 right-3 z-[120] w-[min(26rem,calc(100vw-1.5rem))] space-y-2 select-none pointer-events-none"
+    >
+      {storageError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-lg border border-rose-700/70 bg-rose-950/95 px-3 py-2 text-[11px] leading-tight text-rose-200 shadow-xl"
+        >
+          <span className="flex-1">{storageError.message}</span>
+          <button
+            type="button"
+            onClick={clearStorageError}
+            aria-label="Cerrar aviso de guardado"
+            className="pointer-events-auto shrink-0 rounded px-1 text-rose-300 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {lastError && (
+        <div
+          role="alert"
+          data-testid="store-last-error"
+          className="flex items-start gap-2 rounded-lg border border-amber-600/70 bg-amber-950/95 px-3 py-2 text-[11px] leading-tight text-amber-200 shadow-xl"
+        >
+          <span className="flex-1">{lastError}</span>
+          <button
+            type="button"
+            onClick={clearLastError}
+            aria-label="Cerrar aviso"
+            className="pointer-events-auto shrink-0 rounded px-1 text-amber-300 hover:text-white"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const MainLayout: React.FC = () => {
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
@@ -215,34 +279,41 @@ export const MainLayout: React.FC = () => {
       // F7: Ctrl/Cmd + C / V / D → copy / paste / duplicate the selected clip.
       const clipboardShortcut = resolveClipboardShortcut(e);
       if (clipboardShortcut) {
-        e.preventDefault();
         const state = useProjectStore.getState();
         const selectedIds = state.selectedClipId ? [state.selectedClipId] : [];
+        let acted = false;
+
         if (clipboardShortcut === 'copy') {
           if (selectedIds.length === 0) return;
           const copied = state.copyClips(selectedIds);
           if (copied > 0) {
+            acted = true;
             announce(
               copied === 1
                 ? 'Clip copiado: usa Ctrl+V para pegarlo'
                 : `${copied} clips copiados: usa Ctrl+V para pegarlos`
             );
           }
-          return;
-        }
-        if (clipboardShortcut === 'paste') {
+        } else if (clipboardShortcut === 'paste') {
           const pasted = state.pasteClips();
           if (pasted.length > 0) {
+            acted = true;
             announce(pasted.length === 1 ? 'Clip pegado' : `${pasted.length} clips pegados`);
           }
-          return;
+        } else {
+          const duplicated = state.duplicateClips(selectedIds);
+          if (duplicated.length > 0) {
+            acted = true;
+            announce(
+              duplicated.length === 1 ? 'Clip duplicado' : `${duplicated.length} clips duplicados`
+            );
+          }
         }
-        const duplicated = state.duplicateClips(selectedIds);
-        if (duplicated.length > 0) {
-          announce(
-            duplicated.length === 1 ? 'Clip duplicado' : `${duplicated.length} clips duplicados`
-          );
-        }
+
+        // The default is only prevented when the shortcut really did
+        // something: an empty internal clipboard must NOT hijack the system
+        // clipboard of the browser.
+        if (acted) e.preventDefault();
         return;
       }
     };
@@ -254,7 +325,13 @@ export const MainLayout: React.FC = () => {
   const isMobile = useIsMobile(768);
 
   if (isMobile) {
-    return <MobileCapCutLayout />;
+    return (
+      <>
+        <MobileCapCutLayout />
+        {/* F7: the refusals of the store are visible in the mobile layout too. */}
+        <StoreErrorBanner />
+      </>
+    );
   }
 
   return (
@@ -297,6 +374,10 @@ export const MainLayout: React.FC = () => {
       <ShortcutsModal />
       <ProjectsModal />
       <WelcomeModal />
+
+      {/* F7: the refusals of the store (locked track, illegal overlap…) are
+          shown to the user instead of failing silently. */}
+      <StoreErrorBanner />
 
       {/*
         UI-16: the app had no `aria-live` region at all. This single polite

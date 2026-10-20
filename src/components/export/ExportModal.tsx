@@ -313,7 +313,6 @@ export function formatExportRange(range: ExportRange): string {
 
 export const ExportModal: React.FC = () => {
   const project = useProjectStore((s) => s.project);
-  const setAspectRatio = useProjectStore((s) => s.setAspectRatio);
   const currentTime = useProjectStore((s) => s.currentTime);
   const { isExportModalOpen, setExportModalOpen } = useUIStore();
 
@@ -321,6 +320,14 @@ export const ExportModal: React.FC = () => {
   const [resolutionPreset, setResolutionPreset] = useState<ExportResolution>('1080p');
   const [fps, setFps] = useState<number>(30);
   const [bitrateMbps, setBitrateMbps] = useState<number>(8);
+  /**
+   * F10: the aspect ratio of the EXPORTED FILE.
+   *
+   * It belongs to the modal, NOT to the project: clicking the "Vertical"
+   * preset must not reformat (and persist!) the project the user is
+   * editing. The exported frame is vertical, the timeline keeps its shape.
+   */
+  const [exportAspectRatio, setExportAspectRatio] = useState<AspectRatio>(project.aspectRatio);
   /**
    * F10: the export range owned by the modal. The default (`full`) keeps the
    * previous behaviour: the WHOLE project is exported.
@@ -419,10 +426,10 @@ export const ExportModal: React.FC = () => {
 
   /**
    * F10: the dimensions of the exported file. They follow the resolution AND
-   * the aspect ratio of the project (the vertical preset sets the project to
-   * 9:16, so the exported MP4 is really 1080×1920).
+   * the aspect ratio of the export (the vertical preset exports a really
+   * 1080×1920 file).
    */
-  const dims = computeExportDimensions(resolutionPreset, project.aspectRatio);
+  const dims = computeExportDimensions(resolutionPreset, exportAspectRatio);
 
   /**
    * F10: the preset that matches the current settings. It is derived, so
@@ -432,7 +439,7 @@ export const ExportModal: React.FC = () => {
     resolution: resolutionPreset,
     fps,
     bitrateMbps,
-    aspectRatio: project.aspectRatio,
+    aspectRatio: exportAspectRatio,
   });
 
   /** F10: the range that will be exported (`null` = the whole project). */
@@ -449,14 +456,16 @@ export const ExportModal: React.FC = () => {
   /**
    * F10: applies a preset (one click sets resolution, fps, bitrate and the
    * aspect ratio of the exported file).
+   *
+   * The aspect ratio belongs to the EXPORT: the project is NOT modified (a
+   * dialog that reformats the timeline behind the user's back would be a
+   * nasty surprise, and the change would be persisted).
    */
   const applyPreset = (preset: ExportPreset) => {
     setResolutionPreset(preset.resolution);
     setFps(preset.fps);
     setBitrateMbps(preset.bitrateMbps);
-    if (project.aspectRatio !== preset.aspectRatio) {
-      setAspectRatio(preset.aspectRatio);
-    }
+    setExportAspectRatio(preset.aspectRatio);
   };
 
   /** F10: marks the in point of the export at the current playhead. */
@@ -473,7 +482,7 @@ export const ExportModal: React.FC = () => {
 
   const handleStartExport = async () => {
     const config: ExportConfig = {
-      aspectRatio: project.aspectRatio,
+      aspectRatio: exportAspectRatio,
       width: dims.width,
       height: dims.height,
       fps,
@@ -699,8 +708,19 @@ export const ExportModal: React.FC = () => {
                   ))}
                 </div>
                 <div className="mt-1 text-[11px] text-slate-500 font-mono">
-                  Dimensiones finales: {dims.width} x {dims.height} ({project.aspectRatio})
+                  Dimensiones finales: {dims.width} x {dims.height} ({exportAspectRatio})
                 </div>
+                {exportAspectRatio !== project.aspectRatio && (
+                  <div className="mt-0.5 text-[10px] text-amber-300/90">
+                    El archivo exportado es{' '}
+                    {exportAspectRatio === '9:16'
+                      ? 'vertical'
+                      : exportAspectRatio === '1:1'
+                        ? 'cuadrado'
+                        : 'panorámico'}
+                    ; el proyecto sigue en {project.aspectRatio}.
+                  </div>
+                )}
               </div>
 
               {/* Framerate Selection */}
