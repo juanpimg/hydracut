@@ -41,6 +41,14 @@ export interface HistoryState {
    * a removal brings the media back AND empties the trash, redo re-fills it.
    */
   trash: TrashEntry[];
+  /**
+   * Selection snapshot (F6).
+   *
+   * The selection is part of the undoable state: a clip that is selected when
+   * the snapshot was taken is still selected after the undo (as long as it
+   * exists again).
+   */
+  selectedClipIds?: string[];
 }
 
 /** Maximum number of undo entries kept in the history stack. */
@@ -368,6 +376,199 @@ export function formatTimelineTime(seconds: number): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* F6 — Multi-selección y acciones en lote                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Options of `selectClip` (F6).
+ */
+export interface SelectClipOptions {
+  /**
+   * Ctrl/Cmd + clic: the clip is TOGGLED in/out of the selection instead of
+   * replacing it.
+   */
+  additive?: boolean;
+  /**
+   * Shift + clic: the contiguous range between the PRIMARY selection and the
+   * clicked clip is selected (only on the track of the primary selection).
+   */
+  range?: boolean;
+}
+
+/**
+ * Batch operations that the Inspector can apply to a whole selection (F6).
+ */
+export type BatchOperation = 'volume' | 'opacity' | 'speed' | 'muted';
+
+/**
+ * Availability of a batch operation for a given selection.
+ */
+export interface BatchOperationAvailability {
+  /** True when the operation can be applied to EVERY selected clip. */
+  enabled: boolean;
+  /** Why the operation is not available (Spanish, ready to show). `null` when it is. */
+  reason: string | null;
+}
+
+/** True when the clip carries audio (the volume and the mute make sense). */
+export function clipHasAudio(clip: Clip): boolean {
+  return clip.type === 'video' || clip.type === 'audio';
+}
+
+/** True when the clip is drawn on the canvas (the opacity makes sense). */
+export function clipIsVisual(clip: Clip): boolean {
+  return clip.type === 'video' || clip.type === 'image' || clip.type === 'text';
+}
+
+/** True when the clip has a source media (the speed makes sense). */
+export function clipHasSourceMedia(clip: Clip): boolean {
+  return clip.type !== 'text';
+}
+
+/**
+ * Tells whether a batch operation can be applied to a WHOLE selection (F6).
+ *
+ * A mixed selection must NOT be edited "in part": the operation is either
+ * available for every clip or it is refused WITH A REASON (the Inspector
+ * disables the control and explains why).
+ */
+export function getBatchOperationAvailability(
+  clips: Clip[],
+  operation: BatchOperation
+): BatchOperationAvailability {
+  if (clips.length === 0) {
+    return { enabled: false, reason: 'No hay ningún clip seleccionado.' };
+  }
+
+  if (operation === 'volume' || operation === 'muted') {
+    const bad = clips.find((clip) => !clipHasAudio(clip));
+    if (bad) {
+      const label = operation === 'volume' ? 'El volumen' : 'El silencio';
+      return {
+        enabled: false,
+        reason:
+          `${label} no se puede aplicar a un clip de texto («${bad.name}»): no tiene audio. ` +
+          'Selecciona sólo clips con audio.',
+      };
+    }
+    return { enabled: true, reason: null };
+  }
+
+  if (operation === 'opacity') {
+    const bad = clips.find((clip) => !clipIsVisual(clip));
+    if (bad) {
+      return {
+        enabled: false,
+        reason:
+          `La opacidad no se puede aplicar a un clip de audio («${bad.name}»): no tiene imagen. ` +
+          'Selecciona sólo clips con imagen.',
+      };
+    }
+    return { enabled: true, reason: null };
+  }
+
+  // 'speed'
+  const bad = clips.find((clip) => !clipHasSourceMedia(clip));
+  if (bad) {
+    return {
+      enabled: false,
+      reason:
+        `La velocidad no se puede aplicar a un clip de texto («${bad.name}»): el texto no tiene ` +
+        'material de origen. Selecciona sólo clips con vídeo, imagen o audio.',
+    };
+  }
+  return { enabled: true, reason: null };
+}
+
+/**
+ * Orders the clips the way they appear in the timeline: first by track (the
+ * order of the tracks inside the project) and then by start time.
+ */
+export function orderClipsByTimeline(clips: Clip[], tracks: Track[]): Clip[] {
+  const trackIndex = new Map(tracks.map((track, index) => [track.id, index]));
+  return [...clips].sort((a, b) => {
+    const ai = trackIndex.get(a.trackId) ?? Number.MAX_SAFE_INTEGER;
+    const bi = trackIndex.get(b.trackId) ?? Number.MAX_SAFE_INTEGER;
+    if (ai !== bi) return ai - bi;
+    if (a.start !== b.start) return a.start - b.start;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+/**
+ * Ids of the clips of the track of `anchorId` that lie between the anchor and
+ * `targetId` (both included), in timeline order.
+ *
+ * The range NEVER crosses tracks: a clip of another track is not selected.
+ * When the anchor and the target are not on the same track (or one of them
+ * does not exist) the range is empty.
+ */
+export function selectRangeOnTrack(clips: Clip[], anchorId: string, targetId: string): string[] {
+  const anchor = clips.find((clip) => clip.id === anchorId);
+  const target = clips.find((clip) => clip.id === targetId);
+  if (!anchor || !target) return [];
+  if (anchor.trackId !== target.trackId) return [];
+
+  const trackClips = clips
+    .filter((clip) => clip.trackId === anchor.trackId)
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+  const anchorIndex = trackClips.findIndex((clip) => clip.id === anchorId);
+  const targetIndex = trackClips.findIndex((clip) => clip.id === targetId);
+  if (anchorIndex === -1 || targetIndex === -1) return [];
+
+  const from = Math.min(anchorIndex, targetIndex);
+  const to = Math.max(anchorIndex, targetIndex);
+  return trackClips.slice(from, to + 1).map((clip) => clip.id);
+}
+
+/**
+ * Removes the ids that do not exist any more from a selection (F6).
+ *
+ * A deleted clip must NEVER leave a dangling id inside `selectedClipIds`.
+ */
+export function pruneSelection(clipIds: string[] | undefined, clips: Clip[]): string[] {
+  if (!clipIds || clipIds.length === 0) return [];
+  const alive = new Set(clips.map((clip) => clip.id));
+  return clipIds.filter((id) => alive.has(id));
+}
+
+/**
+ * The patch of a clip when its playback speed changes (S-04).
+ *
+ * The same source window is kept and the timeline duration is rescaled, so the
+ * invariant `sourceStart + duration * speed <= sourceDuration` always holds.
+ */
+export interface SpeedPatch {
+  /** The new speed factor. */
+  speed: number;
+  /** The duration the clip would have with the new speed. */
+  duration: number;
+  /** The maximum duration the source window allows. */
+  maxDuration: number;
+}
+
+/**
+ * Resolves the patch of a clip when its speed changes.
+ *
+ * Returns `null` when the speed is invalid (not a finite positive number) or
+ * when it is already the current one (nothing to change).
+ */
+export function resolveSpeedPatch(clip: Clip, requestedSpeed: number): SpeedPatch | null {
+  if (typeof requestedSpeed !== 'number' || !Number.isFinite(requestedSpeed) || requestedSpeed <= 0) {
+    return null;
+  }
+  const currentSpeed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+  if (requestedSpeed === currentSpeed) return null;
+
+  const sourceWindow = clip.duration * currentSpeed;
+  const available = clip.sourceDuration - clip.sourceStart;
+  const maxDuration = Number.isFinite(available) && available > 0 ? available / requestedSpeed : Infinity;
+  let duration = sourceWindow / requestedSpeed;
+  if (Number.isFinite(maxDuration)) duration = Math.min(duration, maxDuration);
+  return { speed: requestedSpeed, duration: Math.max(0, duration), maxDuration };
+}
+
+/* ------------------------------------------------------------------ */
 /* F7 — Internal clipboard (copy / paste / duplicate)                  */
 /* ------------------------------------------------------------------ */
 
@@ -459,7 +660,22 @@ export interface TrimOptions {
 
 export interface ProjectState {
   project: Project;
+  /**
+   * The PRIMARY clip of the selection (F6).
+   *
+   * It is ALWAYS the first element of `selectedClipIds` (`null` when the
+   * selection is empty). It is kept for the components that only need the
+   * "current" clip (the player, the mobile bar, the shortcuts).
+   */
   selectedClipId: string | null;
+  /**
+   * The selection (F6) — the source of truth.
+   *
+   * The first element is the PRIMARY selection; the rest are the additional
+   * clips selected with Ctrl/Cmd + clic, with Shift + clic or with the rubber
+   * band.
+   */
+  selectedClipIds: string[];
   currentTime: number;
   isPlaying: boolean;
   zoom: number; // Pixels per second
@@ -500,7 +716,64 @@ export interface ProjectState {
   setZoom: (zoom: number) => void;
   toggleSnap: () => void;
   setSnappingGuideTime: (time: number | null) => void;
-  selectClip: (clipId: string | null) => void;
+
+  /* ---------------------------------------------------------------- */
+  /* F6 — multi-selección                                             */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Selects a clip (F6).
+   *
+   * - plain call → the selection is REPLACED by that clip;
+   * - `{ additive: true }` (Ctrl/Cmd + clic) → the clip is toggled in/out of
+   *   the selection;
+   * - `{ range: true }` (Shift + clic) → the contiguous range between the
+   *   PRIMARY selection and the clicked clip is selected (same track only).
+   *
+   * `null` clears the selection.
+   */
+  selectClip: (clipId: string | null, options?: SelectClipOptions) => void;
+
+  /**
+   * Replaces the selection with the given ids (F6).
+   *
+   * The first id becomes the PRIMARY selection. The ids that do not exist are
+   * discarded (a dangling id can never enter the selection).
+   */
+  selectClips: (clipIds: string[]) => void;
+
+  /** Selects EVERY clip of the project (F6). */
+  selectAllClips: () => void;
+
+  /** Clears the selection (F6). */
+  clearSelection: () => void;
+
+  /**
+   * The clips of the current selection, in TIMELINE order (F6).
+   *
+   * It is a FUNCTION (not a derived field): never call it inside a zustand
+   * selector (`useProjectStore((s) => s.getSelectedClips())` would return a
+   * new array on every call and re-render the component forever). Use
+   * `useMemo` over `selectedClipIds` instead.
+   */
+  getSelectedClips: () => Clip[];
+
+  /**
+   * Deletes EVERY selected clip as ONE undoable step (F6).
+   */
+  deleteSelectedClips: () => void;
+
+  /** Sets the volume of EVERY selected clip as ONE undoable step (F6). */
+  setSelectedClipsVolume: (volume: number) => void;
+
+  /** Sets the opacity of EVERY selected clip as ONE undoable step (F6). */
+  setSelectedClipsOpacity: (opacity: number) => void;
+
+  /** Sets the speed of EVERY selected clip as ONE undoable step (F6). */
+  setSelectedClipsSpeed: (speed: number) => void;
+
+  /** Mutes / unmutes EVERY selected clip as ONE undoable step (F6). */
+  setSelectedClipsMuted: (muted: boolean) => void;
 
   // Media
   addMediaItem: (item: MediaItem) => void;
@@ -729,6 +1002,89 @@ function persistProject(project: Project): void {
 }
 
 /**
+ * The `set` of the store, as seen from a module level helper.
+ */
+type SetProjectState = (
+  partial:
+    | ProjectState
+    | Partial<ProjectState>
+    | ((state: ProjectState) => ProjectState | Partial<ProjectState>),
+  replace?: false
+) => void;
+
+/**
+ * F6 · Builds the state patch that replaces the selection.
+ *
+ * The PRIMARY selection is ALWAYS the first element of `selectedClipIds`, so
+ * the two fields can never disagree.
+ */
+export function selectionPatch(clipIds: string[]): {
+  selectedClipId: string | null;
+  selectedClipIds: string[];
+} {
+  return { selectedClipId: clipIds[0] ?? null, selectedClipIds: clipIds };
+}
+
+/**
+ * F6 · Applies a property to EVERY selected clip as ONE undoable step.
+ *
+ * The whole batch shares a SINGLE history entry (not one per clip). The
+ * coalescing window of S-02 applies too: a slider drag over a selection
+ * produces ONE undo step instead of one per tick.
+ *
+ * Returns the number of clips that really changed.
+ */
+function commitBatchEdit(
+  get: () => ProjectState,
+  set: SetProjectState,
+  options: {
+    /** Key of the coalescing group: the property + the selection. */
+    coalesceKey: string;
+    /** The patch of every selected clip. `null` = the clip does not change. */
+    updater: (clip: Clip) => Partial<Clip> | null;
+  }
+): number {
+  const state = get();
+  const selected = new Set(state.selectedClipIds);
+  if (selected.size === 0) return 0;
+
+  let changed = 0;
+  const clips = state.project.clips.map((clip) => {
+    if (!selected.has(clip.id)) return clip;
+    const patch = options.updater(clip);
+    if (!patch) return clip;
+    changed += 1;
+    return { ...clip, ...patch };
+  });
+  if (changed === 0) return 0;
+
+  const now = Date.now();
+  // While a drag/trim gesture is open the gesture owns the history entry.
+  const inGesture = state.historyGesturePending;
+  const canCoalesce =
+    !inGesture &&
+    state.historyCoalesceKey === options.coalesceKey &&
+    now - state.historyCoalesceAt <= UPDATE_COALESCE_WINDOW_MS;
+  if (!inGesture && !canCoalesce) {
+    get().pushHistory();
+  }
+
+  set((s) => {
+    const updated: Project = { ...s.project, clips, updatedAt: Date.now() };
+    persistProject(updated);
+    return {
+      project: updated,
+      historyCoalesceKey: inGesture ? null : options.coalesceKey,
+      historyCoalesceAt: inGesture ? 0 : now,
+      // F6: a successful edit clears the stale refusal of a previous action.
+      lastError: null,
+    };
+  });
+  get().recalculateDuration();
+  return changed;
+}
+
+/**
  * Installs the storage event subscription (F2/F4).
  *
  * It is installed EXACTLY ONCE at module level: it survives every store
@@ -776,6 +1132,8 @@ export function installAutosaveFlushOnUnload(): void {
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: INITIAL_PROJECT,
   selectedClipId: null,
+  // F6: the selection (the first element is the PRIMARY selection).
+  selectedClipIds: [],
   currentTime: 0,
   isPlaying: false,
   zoom: 60, // 60 px per second default
@@ -841,10 +1199,192 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   setZoom: (zoom) => set({ zoom: Math.max(10, Math.min(250, zoom)) }),
   toggleSnap: () => set((state) => ({ snapEnabled: !state.snapEnabled })),
   setSnappingGuideTime: (snappingGuideTime) => set({ snappingGuideTime }),
-  selectClip: (selectedClipId) => set({ selectedClipId }),
+
+  /* ------------------------------------------------------------------ */
+  /* F6 — multi-selección y acciones en lote                            */
+  /* ------------------------------------------------------------------ */
+
+  selectClip: (clipId, options) => {
+    const state = get();
+
+    // `null` clears the selection (click on the empty timeline, Escape…).
+    if (clipId === null) {
+      set(selectionPatch([]));
+      return;
+    }
+
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      // An id that does not exist can never enter the selection.
+      set(selectionPatch([]));
+      return;
+    }
+
+    // Shift + clic: the contiguous range between the PRIMARY selection and
+    // the clicked clip (only on the track of the primary selection).
+    if (options?.range) {
+      const anchorId = state.selectedClipId;
+      const anchor = anchorId
+        ? state.project.clips.find((c) => c.id === anchorId)
+        : undefined;
+      const range = anchor ? selectRangeOnTrack(state.project.clips, anchor.id, clip.id) : [];
+      if (range.length > 0) {
+        // The anchor stays the PRIMARY selection so that a second Shift + clic
+        // extends the very same range.
+        const ordered = [anchor!.id, ...range.filter((id) => id !== anchor!.id)];
+        set(selectionPatch(ordered));
+        return;
+      }
+      // No anchor on the same track: the click selects that clip alone.
+      set(selectionPatch([clip.id]));
+      return;
+    }
+
+    // Ctrl/Cmd + clic: the clip is toggled in/out of the selection.
+    if (options?.additive) {
+      const current = state.selectedClipIds;
+      if (current.includes(clip.id)) {
+        const next = current.filter((id) => id !== clip.id);
+        set(selectionPatch(next));
+        return;
+      }
+      set(selectionPatch(current.length === 0 ? [clip.id] : [...current, clip.id]));
+      return;
+    }
+
+    // Plain click: the selection is replaced by that clip.
+    set(selectionPatch([clip.id]));
+  },
+
+  selectClips: (clipIds) => {
+    const { project } = get();
+    const alive = new Set(project.clips.map((c) => c.id));
+    const ids = Array.from(new Set(clipIds ?? [])).filter((id) => alive.has(id));
+    set(selectionPatch(ids));
+  },
+
+  selectAllClips: () => {
+    const { project } = get();
+    const ids = orderClipsByTimeline(project.clips, project.tracks).map((c) => c.id);
+    set(selectionPatch(ids));
+  },
+
+  clearSelection: () => {
+    set(selectionPatch([]));
+  },
+
+  getSelectedClips: () => {
+    const { project, selectedClipIds } = get();
+    const selected = new Set(selectedClipIds);
+    return orderClipsByTimeline(
+      project.clips.filter((c) => selected.has(c.id)),
+      project.tracks
+    );
+  },
+
+  deleteSelectedClips: () => {
+    const state = get();
+    if (state.selectedClipIds.length === 0) return;
+
+    const selected = new Set(state.selectedClipIds);
+    const doomed = state.project.clips.filter((c) => selected.has(c.id));
+    if (doomed.length === 0) return;
+
+    // S-03: a locked track freezes the removal of its clips. The locked clips
+    // survive and the reason is published (a silent no-op is not acceptable).
+    const locked = doomed.filter((c) =>
+      state.project.tracks.find((t) => t.id === c.trackId)?.isLocked
+    );
+    const lockedIds = new Set(locked.map((c) => c.id));
+    const removable = doomed.filter((c) => !lockedIds.has(c.id));
+
+    if (removable.length === 0) {
+      const trackName = state.project.tracks.find((t) => t.id === locked[0].trackId)?.name ?? '';
+      const message = `La pista "${trackName}" está bloqueada: desbloquéala para poder eliminar ${
+        doomed.length === 1 ? 'el clip' : 'los clips'
+      } seleccionado${doomed.length === 1 ? '' : 's'}.`;
+      console.warn(message);
+      set({ lastError: message });
+      return;
+    }
+
+    // ONE history entry for the whole batch (not one per clip).
+    get().pushHistory();
+    const removableIds = new Set(removable.map((c) => c.id));
+    set((s) => {
+      const updatedClips = s.project.clips.filter((c) => !removableIds.has(c.id));
+      const updated: Project = {
+        ...s.project,
+        clips: updatedClips,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      // The deleted clips leave the selection: a dangling id is never kept.
+      const remaining = s.selectedClipIds.filter((id) => !removableIds.has(id));
+      return {
+        project: updated,
+        ...selectionPatch(remaining),
+        lastError: null,
+      };
+    });
+
+    // The pooled resources of the deleted clips die with them.
+    const survivors = get().project.clips;
+    for (const clip of removable) {
+      releaseClipResources(clip, survivors);
+    }
+    get().recalculateDuration();
+
+    if (locked.length > 0) {
+      const trackName = state.project.tracks.find((t) => t.id === locked[0].trackId)?.name ?? '';
+      const message = `Se han eliminado ${removable.length} clip${
+        removable.length === 1 ? '' : 's'
+      }, pero ${locked.length} clip${locked.length === 1 ? '' : 's'} de la pista bloqueada "${trackName}" no se han eliminado.`;
+      console.warn(message);
+      set({ lastError: message });
+    }
+  },
+
+  setSelectedClipsVolume: (volume) => {
+    const value = Math.max(0, Math.min(2, Number.isFinite(volume) ? volume : 1));
+    const state = get();
+    commitBatchEdit(get, set, {
+      coalesceKey: `batch:volume:${state.selectedClipIds.join(',')}`,
+      updater: () => ({ volume: value }),
+    });
+  },
+
+  setSelectedClipsOpacity: (opacity) => {
+    const value = Math.max(0, Math.min(1, Number.isFinite(opacity) ? opacity : 1));
+    const state = get();
+    commitBatchEdit(get, set, {
+      coalesceKey: `batch:opacity:${state.selectedClipIds.join(',')}`,
+      updater: () => ({ opacity: value }),
+    });
+  },
+
+  setSelectedClipsSpeed: (speed) => {
+    const state = get();
+    commitBatchEdit(get, set, {
+      coalesceKey: `batch:speed:${state.selectedClipIds.join(',')}`,
+      // S-04: the speed rescales the duration of every clip of the batch.
+      updater: (clip) => {
+        const patch = resolveSpeedPatch(clip, speed);
+        return patch ? { speed: patch.speed, duration: patch.duration } : null;
+      },
+    });
+  },
+
+  setSelectedClipsMuted: (muted) => {
+    const state = get();
+    commitBatchEdit(get, set, {
+      coalesceKey: `batch:muted:${state.selectedClipIds.join(',')}`,
+      updater: () => ({ muted: muted === true }),
+    });
+  },
 
   pushHistory: () => {
-    const { project, past } = get();
+    const { project, past, selectedClipIds } = get();
     const currentSnap: HistoryState = {
       tracks: JSON.parse(JSON.stringify(project.tracks)),
       clips: JSON.parse(JSON.stringify(project.clips)),
@@ -852,6 +1392,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       mediaPool: [...project.mediaPool],
       // The trash is undoable state too (F2).
       trash: [...(project.trash ?? [])],
+      // F6: the selection is undoable state (a selected clip that is restored
+      // by the undo stays selected).
+      selectedClipIds: [...selectedClipIds],
     };
     const newPast = [...past, currentSnap];
     if (newPast.length > HISTORY_LIMIT) newPast.shift();
@@ -869,6 +1412,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clips: JSON.parse(JSON.stringify(project.clips)),
       mediaPool: [...project.mediaPool],
       trash: [...(project.trash ?? [])],
+      selectedClipIds: [...get().selectedClipIds],
     };
     const updated: Project = {
       ...project,
@@ -880,11 +1424,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       trash: [...(previous.trash ?? [])],
       updatedAt: Date.now(),
     };
+    // F6: the selection of the restored state is restored too, but a clip that
+    // does not exist any more NEVER stays in the selection (no dangling id).
+    const restoredSelection = pruneSelection(previous.selectedClipIds, updated.clips);
     set({
       project: updated,
       past: newPast,
       future: [currentSnap, ...future],
-      selectedClipId: null,
+      ...selectionPatch(restoredSelection),
       // S-19: the snapping guide belongs to the state that is being undone.
       snappingGuideTime: null,
       historyGesturePending: false,
@@ -907,6 +1454,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clips: JSON.parse(JSON.stringify(project.clips)),
       mediaPool: [...project.mediaPool],
       trash: [...(project.trash ?? [])],
+      selectedClipIds: [...get().selectedClipIds],
     };
     const updated: Project = {
       ...project,
@@ -916,10 +1464,13 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       trash: [...(next.trash ?? [])],
       updatedAt: Date.now(),
     };
+    // F6: same rule as the undo (no dangling id in the selection).
+    const restoredSelection = pruneSelection(next.selectedClipIds, updated.clips);
     set({
       project: updated,
       past: [...past, currentSnap],
       future: newFuture,
+      ...selectionPatch(restoredSelection),
       // S-19: the snapping guide belongs to the state that is being redone.
       snappingGuideTime: null,
       historyGesturePending: false,
@@ -972,12 +1523,14 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         updatedAt: Date.now(),
       };
       persistProject(updated);
-      return { project: updated, lastError: null };
+      // F6: the clips that die with the media leave the selection (no
+      // dangling id can survive).
+      return {
+        project: updated,
+        ...selectionPatch(pruneSelection(s.selectedClipIds, updated.clips)),
+        lastError: null,
+      };
     });
-    get().recalculateDuration();
-    // F2: the pooled elements/frames of that media die with it, but the BYTES
-    // stay in OPFS: the media can be restored from the trash. The physical
-    // deletion happens on purge (and only then).
     runEngineCleanup('mediaSourcePool.release', () => mediaSourcePool.release(mediaId));
     void deleteMediaFiles([removed], 'trash');
   },
@@ -1178,7 +1731,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         updatedAt: Date.now(),
       };
       persistProject(updated);
-      return { project: updated, selectedClipId: null, lastError: null };
+      // F6: the clips of the removed track leave the selection.
+      return {
+        project: updated,
+        ...selectionPatch(pruneSelection(state.selectedClipIds, updated.clips)),
+        lastError: null,
+      };
     });
     get().recalculateDuration();
     const survivors = get().project.clips;
@@ -1309,7 +1867,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const updatedClips = [...state.project.clips, clip];
       const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
       persistProject(updated);
-      return { project: updated, selectedClipId: clip.id, lastError: null };
+      return { project: updated, ...selectionPatch([clip.id]), lastError: null };
     });
     get().recalculateDuration();
   },
@@ -1408,7 +1966,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         updatedAt: Date.now(),
       };
       persistProject(updated);
-      return { project: updated, selectedClipId: newClip.id, lastError: null };
+      return { project: updated, ...selectionPatch([newClip.id]), lastError: null };
     });
     get().recalculateDuration();
     if (refusal) set({ lastError: refusal });
@@ -1569,7 +2127,11 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       };
       persistProject(updated);
       // The pasted clips are selected so the user can move them right away.
-      return { project: updated, selectedClipId: newClips[0].id, lastError: null };
+      return {
+        project: updated,
+        ...selectionPatch(newClips.map((clip) => clip.id)),
+        lastError: null,
+      };
     });
     for (const clip of removed) {
       runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(clip.id));
@@ -1657,7 +2219,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         updatedAt: Date.now(),
       };
       persistProject(updated);
-      return { project: updated, selectedClipId: newClips[0].id, lastError: null };
+      // The copies are selected so the user can move them right away.
+      return {
+        project: updated,
+        ...selectionPatch(newClips.map((clip) => clip.id)),
+        lastError: null,
+      };
     });
     for (const clip of removed) {
       runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(clip.id));
@@ -1731,27 +2298,22 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // S-04: changing the speed rescales the clip duration so the invariant
     // `sourceStart + duration * speed <= sourceDuration` always holds.
     const nextUpdates: Partial<Clip> = { ...updates };
-    const currentSpeed = clip.speed && clip.speed > 0 ? clip.speed : 1;
     if (updates.speed !== undefined) {
       const requestedSpeed = updates.speed;
       if (typeof requestedSpeed !== 'number' || !Number.isFinite(requestedSpeed) || requestedSpeed <= 0) {
         delete nextUpdates.speed;
-      } else if (requestedSpeed !== currentSpeed) {
+      } else {
         // Keep the same source window, rescale the timeline duration.
-        const sourceWindow = clip.duration * currentSpeed;
-        const available = clip.sourceDuration - clip.sourceStart;
-        const maxDuration = Number.isFinite(available) && available > 0 ? available / requestedSpeed : Infinity;
-        let newDuration = sourceWindow / requestedSpeed;
-        if (Number.isFinite(maxDuration)) {
-          newDuration = Math.min(newDuration, maxDuration);
+        const patch = resolveSpeedPatch(clip, requestedSpeed);
+        if (patch) {
+          if (nextUpdates.duration === undefined) {
+            nextUpdates.duration = patch.duration;
+          } else if (Number.isFinite(patch.maxDuration)) {
+            // An explicit duration must respect the same source window.
+            nextUpdates.duration = Math.min(nextUpdates.duration, patch.maxDuration);
+          }
+          nextUpdates.speed = patch.speed;
         }
-        if (nextUpdates.duration === undefined) {
-          nextUpdates.duration = Math.max(0, newDuration);
-        } else if (Number.isFinite(maxDuration)) {
-          // An explicit duration must respect the same source window.
-          nextUpdates.duration = Math.min(nextUpdates.duration, maxDuration);
-        }
-        nextUpdates.speed = requestedSpeed;
       }
     }
 
@@ -1780,7 +2342,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       persistProject(updated);
       return {
         project: updated,
-        selectedClipId: state.selectedClipId === clipId ? null : state.selectedClipId,
+        // F6: the deleted clip leaves the selection (no dangling id).
+        ...selectionPatch(pruneSelection(state.selectedClipIds, updatedClips)),
         // F6: a successful removal clears the stale refusal of a previous action.
         lastError: null,
       };
@@ -2068,7 +2631,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
       persistProject(updated);
       // F6: a successful split clears the stale refusal of a previous action.
-      return { project: updated, selectedClipId: clip2Id, lastError: null };
+      return { project: updated, ...selectionPatch([clip2Id]), lastError: null };
     });
     get().recalculateDuration();
   },
@@ -2097,10 +2660,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   deleteSelectedClip: () => {
-    const { selectedClipId } = get();
-    if (selectedClipId) {
-      get().removeClip(selectedClipId);
-    }
+    // F6: the "delete" affordances (the toolbar button, the Supr key, the
+    // mobile bar) act on the WHOLE selection. With a single selected clip it
+    // is exactly the previous behaviour.
+    get().deleteSelectedClips();
   },
 
   recalculateDuration: () => {
@@ -2134,6 +2697,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         updatedAt: Date.now(),
       },
       selectedClipId: null,
+      // F6: the selection of the previous project is meaningless now.
+      selectedClipIds: [],
       currentTime: 0,
       isPlaying: false,
       past: [],
@@ -2167,6 +2732,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     set({
       project: loadedProject,
       selectedClipId: null,
+      // F6: the selection of the previous project is meaningless now.
+      selectedClipIds: [],
       currentTime: 0,
       isPlaying: false,
       past: [],

@@ -757,9 +757,9 @@ describe('F10 — el rango de exportación', () => {
 
   it('la etiqueta del rango es explícita', () => {
     const range = resolveExportRange({ mode: 'custom', start: 5, end: 12 }, 30)!;
-    expect(formatExportRange(range)).toBe('Exportando 00:00:05 → 00:00:12 (7 s)');
-    expect(formatExportTimecode(0)).toBe('00:00:00');
-    expect(formatExportTimecode(3725)).toBe('01:02:05');
+    expect(formatExportRange(range)).toBe('Exportando 00:00:05:00 → 00:00:12:00 (7 s)');
+    expect(formatExportTimecode(0)).toBe('00:00:00:00');
+    expect(formatExportTimecode(3725)).toBe('01:02:05:00');
   });
 
   it('el modal exporta el rango (duración y clips rebasados) y no el proyecto entero', () => {

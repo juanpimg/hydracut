@@ -12,11 +12,17 @@ import {
   Gauge,
   Layers,
   Palette,
-  AlertTriangle
+  AlertTriangle,
+  CheckSquare
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
-import { ClipColorFilters, OverlapPolicy, TransitionType } from '../../types/project';
-import { DEFAULT_OVERLAP_POLICY, useProjectStore } from '../../store/useProjectStore';
+import { useEffect, useMemo, useState } from 'react';
+import { Clip, ClipColorFilters, OverlapPolicy, TransitionType } from '../../types/project';
+import {
+  DEFAULT_OVERLAP_POLICY,
+  getBatchOperationAvailability,
+  orderClipsByTimeline,
+  useProjectStore,
+} from '../../store/useProjectStore';
 import { formatDuration } from '../../core/utils/time';
 import {
   COLOR_FILTER_PRESETS,
@@ -123,8 +129,252 @@ export const OVERLAP_POLICY_LABELS: Record<OverlapPolicy, { label: string; hint:
   },
 };
 
+/**
+ * F6 · Value shared by EVERY clip of a selection.
+ *
+ * `null` means the selection is MIXED (the clips do not share the value): the
+ * control then shows the value of the primary clip and the "mixto" hint.
+ */
+function commonValue<T>(clips: Clip[], read: (clip: Clip) => T): T | null {
+  if (clips.length === 0) return null;
+  const first = read(clips[0]);
+  return clips.every((clip) => read(clip) === first) ? first : null;
+}
+
+/**
+ * F6 · Panel shown when MORE THAN ONE clip is selected.
+ *
+ * Every edit is applied to the WHOLE selection (one undoable step). The
+ * operations that do not make sense for a mixed selection (the speed of a
+ * text clip, the opacity of an audio clip…) are DISABLED with a reason: they
+ * are never applied "to some of the clips".
+ */
+const MultiSelectionPanel: React.FC<{ clips: Clip[] }> = ({ clips }) => {
+  const setSelectedClipsVolume = useProjectStore((s) => s.setSelectedClipsVolume);
+  const setSelectedClipsOpacity = useProjectStore((s) => s.setSelectedClipsOpacity);
+  const setSelectedClipsSpeed = useProjectStore((s) => s.setSelectedClipsSpeed);
+  const setSelectedClipsMuted = useProjectStore((s) => s.setSelectedClipsMuted);
+  const deleteSelectedClips = useProjectStore((s) => s.deleteSelectedClips);
+
+  const count = clips.length;
+  const trackNames = Array.from(new Set(clips.map((c) => c.trackId)));
+
+  const volumeOp = getBatchOperationAvailability(clips, 'volume');
+  const opacityOp = getBatchOperationAvailability(clips, 'opacity');
+  const speedOp = getBatchOperationAvailability(clips, 'speed');
+  const mutedOp = getBatchOperationAvailability(clips, 'muted');
+
+  const sharedVolume = commonValue(clips, (c) => c.volume ?? 1);
+  const sharedOpacity = commonValue(clips, (c) => c.opacity ?? 1);
+  const sharedSpeed = commonValue(clips, (c) => c.speed ?? 1);
+  const sharedMuted = commonValue(clips, (c) => c.muted === true);
+
+  const primary = clips[0];
+  const volumeValue = sharedVolume ?? primary.volume ?? 1;
+  const opacityValue = sharedOpacity ?? primary.opacity ?? 1;
+  const speedValue = sharedSpeed ?? primary.speed ?? 1;
+  const mutedValue = sharedMuted ?? primary.muted === true;
+
+  return (
+    <div className="space-y-3" data-testid="inspector-multi-selection">
+      {/* Header */}
+      <div className="flex items-center justify-between pb-2 mb-3 border-b border-dark-800">
+        <div className="flex items-center gap-2">
+          <CheckSquare size={16} className="text-cyan-400" />
+          <span className="text-sm font-semibold text-slate-200">Inspector de Clip</span>
+        </div>
+        <button
+          onClick={() => {
+            if (confirm(`¿Eliminar los ${count} clips seleccionados? Puedes deshacerlo con Ctrl+Z.`)) {
+              deleteSelectedClips();
+            }
+          }}
+          className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition"
+          title={`Eliminar ${count} clips (Supr)`}
+          aria-label={`Eliminar los ${count} clips seleccionados`}
+        >
+          <Trash2 size={15} />
+        </button>
+      </div>
+
+      {/* F6 · The count of the selection (the user MUST know it is a batch). */}
+      <div
+        data-testid="inspector-multi-selection-count"
+        className="bg-cyan-950/40 border border-cyan-800/60 rounded-lg p-2.5 text-xs flex items-center gap-2"
+      >
+        <CheckSquare size={14} className="text-cyan-300 shrink-0" />
+        <span className="font-semibold text-cyan-100">
+          {count} clips seleccionados
+        </span>
+      </div>
+
+      {/* Summary */}
+      <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-1 text-xs">
+        <div className="flex justify-between text-slate-400">
+          <span>Clips:</span>
+          <span className="text-slate-200 font-medium">{count}</span>
+        </div>
+        <div className="flex justify-between text-slate-400">
+          <span>Pistas:</span>
+          <span className="text-blue-400 font-medium">{trackNames.length}</span>
+        </div>
+        <p className="text-[10px] leading-snug text-slate-500 pt-1">
+          Las ediciones de este panel se aplican a TODOS los clips seleccionados en un solo paso
+          (se deshacen con una sola vez de Ctrl+Z).
+        </p>
+      </div>
+
+      {/* BATCH · Volume + mute */}
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+          <Volume2 size={13} className="text-emerald-400" />
+          <span>Audio (en lote)</span>
+        </div>
+        <div>
+          <div className="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Volumen:</span>
+            <span className="font-mono text-slate-200">
+              {sharedVolume === null ? 'Mixto' : `${Math.round(sharedVolume * 100)}%`}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="range"
+              min="0"
+              max="2"
+              step="0.05"
+              value={volumeValue}
+              disabled={!volumeOp.enabled}
+              data-testid="batch-volume"
+              aria-label="Volumen de los clips seleccionados"
+              onChange={(e) => setSelectedClipsVolume(parseFloat(e.target.value))}
+              className="flex-1 h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+            />
+            <button
+              onClick={() => setSelectedClipsMuted(!mutedValue)}
+              disabled={!mutedOp.enabled}
+              data-testid="batch-mute"
+              aria-label={mutedValue ? 'Activar sonido de los clips seleccionados' : 'Silenciar los clips seleccionados'}
+              className={`p-1.5 rounded transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 ${
+                mutedValue
+                  ? 'bg-rose-950/40 text-rose-300 border border-rose-800/50'
+                  : 'bg-dark-800 text-slate-300 hover:text-white'
+              }`}
+              title={mutedValue ? 'Clips silenciados' : 'Silenciar los clips seleccionados'}
+            >
+              {mutedValue ? <VolumeX size={14} /> : <Volume2 size={14} />}
+            </button>
+          </div>
+          {(!volumeOp.enabled || !mutedOp.enabled) && (
+            <p
+              role="status"
+              data-testid="batch-audio-disabled-reason"
+              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2 mt-1"
+            >
+              {volumeOp.reason ?? mutedOp.reason}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* BATCH · Opacity */}
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+          <Maximize2 size={13} className="text-blue-400" />
+          <span>Opacidad (en lote)</span>
+        </div>
+        <div>
+          <div className="flex justify-between text-xs text-slate-400 mb-1">
+            <span>Opacidad:</span>
+            <span className="font-mono text-slate-200">
+              {sharedOpacity === null ? 'Mixto' : `${Math.round(sharedOpacity * 100)}%`}
+            </span>
+          </div>
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={opacityValue}
+            disabled={!opacityOp.enabled}
+            data-testid="batch-opacity"
+            aria-label="Opacidad de los clips seleccionados"
+            onChange={(e) => setSelectedClipsOpacity(parseFloat(e.target.value))}
+            className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+          />
+          {!opacityOp.enabled && (
+            <p
+              role="status"
+              data-testid="batch-opacity-disabled-reason"
+              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2 mt-1"
+            >
+              {opacityOp.reason}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* BATCH · Speed */}
+      <div className="space-y-2">
+        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+          <Gauge size={13} className="text-blue-400" />
+          <span>Velocidad (en lote)</span>
+        </div>
+        <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+          <div className="flex justify-between items-center text-xs">
+            <span className="text-slate-400">Factor actual:</span>
+            <span className="font-mono text-blue-400 font-semibold">
+              {sharedSpeed === null ? 'Mixto' : `${sharedSpeed}x`}
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-1.5">
+            {[0.5, 1, 1.5, 2].map((spd) => (
+              <button
+                key={spd}
+                disabled={!speedOp.enabled}
+                onClick={() => setSelectedClipsSpeed(spd)}
+                aria-label={`Aplicar una velocidad de ${spd}x a los clips seleccionados`}
+                className={`py-1 text-xs rounded border transition font-mono disabled:opacity-40 disabled:cursor-not-allowed ${
+                  sharedSpeed === spd
+                    ? 'bg-blue-600 text-white border-blue-500 font-bold shadow-sm'
+                    : 'bg-dark-900 text-slate-300 border-dark-750 hover:bg-dark-850 hover:text-white'
+                }`}
+              >
+                {spd}x
+              </button>
+            ))}
+          </div>
+          <input
+            type="range"
+            min="0.25"
+            max="4"
+            step="0.25"
+            value={speedValue}
+            disabled={!speedOp.enabled}
+            data-testid="batch-speed"
+            aria-label="Velocidad de los clips seleccionados"
+            onChange={(e) => setSelectedClipsSpeed(parseFloat(e.target.value))}
+            className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          />
+          {!speedOp.enabled && (
+            <p
+              role="status"
+              data-testid="batch-speed-disabled-reason"
+              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+            >
+              {speedOp.reason}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const ClipInspector: React.FC = () => {
   const clip = useProjectStore((s) => s.project.clips.find((c) => c.id === s.selectedClipId));
+  const selectedClipIds = useProjectStore((s) => s.selectedClipIds);
+  const project = useProjectStore((s) => s.project);
   const track = useProjectStore((s) => s.project.tracks.find((t) => t.id === clip?.trackId));
   const updateClip = useProjectStore((s) => s.updateClip);
   const removeClip = useProjectStore((s) => s.removeClip);
@@ -144,6 +394,20 @@ export const ClipInspector: React.FC = () => {
     setFilterSupport(getCanvasFilterSupport());
   }, []);
   const colorFiltersEnabled = filterSupport === true;
+
+  /**
+   * F6 · The clips of the current selection, in timeline order.
+   *
+   * It is memoised (the store must NOT be asked for a fresh array on every
+   * render: zustand would see a new reference and re-render forever).
+   */
+  const selectedClips = useMemo(() => {
+    const selected = new Set(selectedClipIds);
+    return orderClipsByTimeline(
+      project.clips.filter((c) => selected.has(c.id)),
+      project.tracks
+    );
+  }, [project.clips, project.tracks, selectedClipIds]);
 
   const policySection = (
     <div className="space-y-2 mt-auto pt-3 mb-1" data-testid="overlap-policy-section">
@@ -173,6 +437,19 @@ export const ClipInspector: React.FC = () => {
     </div>
   );
 
+  /**
+   * F6 · More than one clip: the Inspector works in BATCH mode ("N clips
+   * seleccionados") and every edit is applied to the whole selection.
+   */
+  if (selectedClips.length > 1) {
+    return (
+      <div className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-y-auto select-none">
+        <MultiSelectionPanel clips={selectedClips} />
+        {policySection}
+      </div>
+    );
+  }
+
   if (!clip) {
     return (
       <div className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-y-auto select-none">
@@ -187,7 +464,6 @@ export const ClipInspector: React.FC = () => {
       </div>
     );
   }
-
   const isVideoOrImage = clip.type === 'video' || clip.type === 'image';
   const hasAudio = clip.type === 'video' || clip.type === 'audio';
   const isText = clip.type === 'text';

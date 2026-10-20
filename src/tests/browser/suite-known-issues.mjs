@@ -34,6 +34,7 @@ import {
   readClipCount,
   safeEvaluate,
   evaluateWithRetry,
+  navCount,
   delay,
 } from './browser-harness.mjs';
 
@@ -489,33 +490,66 @@ async function ki07StreamTrack({ browser, report, baseUrl }) {
     // The check has to exercise the APP, not a replica of the old recipe:
     // `HTMLCanvasElement.prototype.captureStream` is intercepted and the
     // state of the tracks is read AFTER the app generated the samples.
-    await evaluateWithRetry(page, () => {
-      window.__capturedStreams = [];
-      if (window.__captureStreamPatched) return true;
-      window.__captureStreamPatched = true;
-      const original = HTMLCanvasElement.prototype.captureStream;
-      HTMLCanvasElement.prototype.captureStream = function (...args) {
-        const stream = original.apply(this, args);
-        try {
-          window.__capturedStreams.push(stream);
-        } catch {
-          /* ignore */
-        }
-        return stream;
-      };
-      return true;
-    });
+    //
+    // The Vite dev server reloads the page whenever a source file changes
+    // (or when it re-optimises its dependencies): the reload wipes the patch
+    // (and the in-memory state of the app). The scenario is therefore
+    // repeated when a navigation is detected in the middle of it.
+    const installPatch = () =>
+      evaluateWithRetry(page, () => {
+        window.__capturedStreams = [];
+        const original = HTMLCanvasElement.prototype.captureStream;
+        HTMLCanvasElement.prototype.captureStream = function (...args) {
+          const stream = original.apply(this, args);
+          try {
+            window.__capturedStreams.push(stream);
+          } catch {
+            /* ignore */
+          }
+          return stream;
+        };
+        return true;
+      });
 
-    await generateSampleMedia(page);
-    await delay(500);
+    let result = null;
+    let navs = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const navBefore = navCount(page);
+      await installPatch();
 
-    const result = await evaluateWithRetry(page, () => {
-      const streams = window.__capturedStreams || [];
-      return {
-        count: streams.length,
-        states: streams.map((s) => s.getTracks().map((t) => t.readyState)),
-      };
-    });
+      const poolBefore = (await readMediaPoolCount(page)) ?? 0;
+      await evaluateWithRetry(page, () => {
+        const btn = Array.from(document.querySelectorAll('button')).find((b) =>
+          (b.textContent || '').includes('Generar Clips de Prueba')
+        );
+        if (btn) btn.click();
+        return Boolean(btn);
+      });
+
+      // The samples are really generated when the pool GROWS (after a reload
+      // the pool is restored from the autosave, so "> 0" is not enough).
+      const deadline = Date.now() + 120_000;
+      while (Date.now() < deadline) {
+        const count = await readMediaPoolCount(page);
+        if (count !== null && count > poolBefore) break;
+        await delay(200);
+      }
+
+      result = await evaluateWithRetry(page, () => {
+        const streams = window.__capturedStreams || [];
+        return {
+          count: streams.length,
+          states: streams.map((s) => s.getTracks().map((t) => t.readyState)),
+        };
+      });
+      navs = navCount(page) - navBefore;
+      if (result && result.count > 0) break;
+      if (navs === 0) break; // a real failure, not a reload
+      // The page was reloaded in the middle of the scenario: patch again and
+      // generate the samples once more.
+      await waitForAppReady(page).catch(() => {});
+      await dismissWelcome(page).catch(() => {});
+    }
 
     const allTracks = (result?.states || []).flat();
     const stillLive = allTracks.filter((s) => s === 'live');
@@ -528,8 +562,10 @@ async function ki07StreamTrack({ browser, report, baseUrl }) {
       result && result.count > 0
         ? `${result.count} flujo(s) capturado(s) por la app, readyState de las pistas: ${JSON.stringify(
             result.states
-          )} | ${stillLive.length === 0 ? 'ninguna sigue "live"' : `${stillLive.length} siguen "live"`}`
-        : `la app no usó captureStream() en absoluto (el generador cayó en las tarjetas de color): no hay nada que comprobar`,
+          )} | ${stillLive.length === 0 ? 'ninguna sigue "live"' : `${stillLive.length} siguen "live"`}` +
+          (navs ? ` | recargas HMR durante el escenario: ${navs}` : '')
+        : `la app no usó captureStream() en absoluto (el generador cayó en las tarjetas de color): no hay nada que comprobar` +
+          (navs ? ` | recargas HMR durante el escenario: ${navs}` : ''),
       { details: result }
     );
 

@@ -23,12 +23,14 @@ import * as suiteLayout from './suite-layout.mjs';
 import * as suitePlayback from './suite-playback.mjs';
 import * as suiteExport from './suite-export.mjs';
 import * as suiteKnownIssues from './suite-known-issues.mjs';
+import * as suiteFeatures from './suite-features.mjs';
 
 const SUITES = [
   { key: 'layout', mod: suiteLayout },
   { key: 'playback', mod: suitePlayback },
   { key: 'export', mod: suiteExport },
   { key: 'known-issues', mod: suiteKnownIssues },
+  { key: 'features', mod: suiteFeatures },
 ];
 
 /** Hard limit per suite: a hung suite must never hang the whole run. */

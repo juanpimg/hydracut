@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
+import { formatTimecode } from '../../core/utils/time';
 import { AspectRatio, Clip, ExportConfig, ExportProgress } from '../../types/project';
 import { announce } from '../layout/liveRegion';
 
@@ -279,16 +280,20 @@ export function buildRangeExportClips(
 }
 
 /**
- * Formats a time as `HH:MM:SS` (the timecode shown next to the range).
+ * Formats a time as `HH:MM:SS:FF` (the timecode shown next to the range).
+ *
+ * It delegates to the shared `formatTimecode` helper used by the player
+ * controls (`PlayerControls.tsx`), so the modal shows exactly the same
+ * frame-accurate format as the rest of the app. `fps` must be the PROJECT
+ * frame rate: the range markers are timeline times, and the timeline is
+ * frame-based (30 fps → frames of 1/30 s). The previous `Math.floor`
+ * version truncated the fraction, so a 0,9 s → 1,1 s range displayed
+ * «00:00:00 → 00:00:01 (0.2 s)»: times contradicting the duration.
  */
-export function formatExportTimecode(seconds: number): string {
+export function formatExportTimecode(seconds: number, fps: number = 30): string {
   const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
-  const total = Math.floor(safe);
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
-  const s = total % 60;
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  return `${pad(h)}:${pad(m)}:${pad(s)}`;
+  const safeFps = Number.isFinite(fps) && fps > 0 ? fps : 30;
+  return formatTimecode(safe, safeFps);
 }
 
 /**
@@ -302,11 +307,13 @@ export function formatSeconds(value: number): string {
 }
 
 /**
- * Label of the exported range: "Exportando 00:00:05 → 00:00:12 (7 s)".
+ * Label of the exported range: "Exportando 00:00:05:00 → 00:00:12:00 (7 s)".
+ *
+ * `fps` must be the PROJECT frame rate (see `formatExportTimecode`).
  */
-export function formatExportRange(range: ExportRange): string {
+export function formatExportRange(range: ExportRange, fps: number = 30): string {
   return (
-    `Exportando ${formatExportTimecode(range.start)} → ${formatExportTimecode(range.end)} ` +
+    `Exportando ${formatExportTimecode(range.start, fps)} → ${formatExportTimecode(range.end, fps)} ` +
     `(${formatSeconds(range.duration)} s)`
   );
 }
@@ -818,7 +825,7 @@ export const ExportModal: React.FC = () => {
                       </button>
                     </div>
                     <div className="text-[11px] text-slate-500 font-mono">
-                      Cabezal de reproducción: {formatExportTimecode(currentTime)}
+                      Cabezal de reproducción: {formatExportTimecode(currentTime, project.fps)}
                     </div>
                     {rangeIncomplete && (
                       <div role="alert" className="p-2 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-[11px]">
@@ -832,7 +839,7 @@ export const ExportModal: React.FC = () => {
                   data-testid="export-range-summary"
                   className="mt-2 text-[11px] font-mono text-cyan-300"
                 >
-                  {range ? formatExportRange(range) : 'Exportando el proyecto completo'}
+                  {range ? formatExportRange(range, project.fps) : 'Exportando el proyecto completo'}
                 </div>
               </div>
 
@@ -854,7 +861,7 @@ export const ExportModal: React.FC = () => {
                   <div className="flex justify-between">
                     <span>Rango de exportación:</span>
                     <span className="font-mono text-slate-200">
-                      {formatExportTimecode(range.start)} → {formatExportTimecode(range.end)}
+                      {formatExportTimecode(range.start, project.fps)} → {formatExportTimecode(range.end, project.fps)}
                     </span>
                   </div>
                 )}

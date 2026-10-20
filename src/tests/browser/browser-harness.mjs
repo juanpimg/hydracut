@@ -276,6 +276,76 @@ export async function evaluateWithRetry(page, fn, ...args) {
   throw lastError;
 }
 
+/* ------------------------------------------------------------------ *
+ * Navigation with a bounded retry
+ * ------------------------------------------------------------------ */
+
+/** Number of attempts of the initial navigation (1 = no retry). */
+export const NAVIGATION_ATTEMPTS = 3;
+/** Base backoff (ms) between two navigation attempts (multiplied by the attempt). */
+export const NAVIGATION_BACKOFF_MS = 1500;
+
+/**
+ * Navigates the page to `url` with a BOUNDED retry.
+ *
+ * The Vite dev server re-optimises its dependencies right after a build: the
+ * very first request of the page can then hang until the navigation timeout
+ * ("Navigation timeout of 30000 ms exceeded") even though the server is
+ * perfectly healthy. One slow server start must never fail a whole suite, so
+ * the navigation is retried a couple of times with a short backoff.
+ *
+ * The retry is BOUNDED (3 attempts) and the backoff is SHORT (1,5 s, 3 s):
+ * a server that is really down still fails fast instead of hanging the run.
+ */
+export async function navigateWithRetry(
+  page,
+  url,
+  options = {},
+  { attempts = NAVIGATION_ATTEMPTS, backoffMs = NAVIGATION_BACKOFF_MS } = {}
+) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await page.goto(url, { timeout: DEFAULT_TIMEOUT, ...options });
+      return { attempts: attempt };
+    } catch (err) {
+      lastError = err;
+      if (attempt >= attempts) break;
+      await delay(backoffMs * attempt);
+    }
+  }
+  const detail = lastError && lastError.message ? lastError.message : String(lastError);
+  throw new Error(
+    `No se pudo navegar a ${url} tras ${attempts} intento(s) con reintentos acotados: ${detail}`
+  );
+}
+
+/**
+ * Reloads the page with the same bounded retry (the dev server may still be
+ * re-optimising the dependencies when a suite reloads the app).
+ */
+export async function reloadWithRetry(
+  page,
+  options = {},
+  { attempts = NAVIGATION_ATTEMPTS, backoffMs = NAVIGATION_BACKOFF_MS } = {}
+) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await page.reload({ timeout: DEFAULT_TIMEOUT, waitUntil: 'domcontentloaded', ...options });
+      return { attempts: attempt };
+    } catch (err) {
+      lastError = err;
+      if (attempt >= attempts) break;
+      await delay(backoffMs * attempt);
+    }
+  }
+  const detail = lastError && lastError.message ? lastError.message : String(lastError);
+  throw new Error(
+    `No se pudo recargar la página tras ${attempts} intento(s) con reintentos acotados: ${detail}`
+  );
+}
+
 /**
  * Creates a fresh incognito context + page with the requested viewport.
  * Every suite/case uses its own context, so state never leaks between cases.
@@ -294,7 +364,7 @@ export async function openAppPage(browser, {
   page.setDefaultNavigationTimeout(DEFAULT_TIMEOUT);
   const diagnostics = attachDiagnostics(page);
   navCounter(page);
-  await page.goto(baseUrl, { waitUntil, timeout: DEFAULT_TIMEOUT });
+  await navigateWithRetry(page, baseUrl, { waitUntil });
   return { context, page, diagnostics };
 }
 
@@ -821,6 +891,115 @@ export function readFileHead(filePath, bytes = 64) {
   } finally {
     fs.closeSync(fd);
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * MP4 (ISO-BMFF) introspection
+ * ------------------------------------------------------------------ */
+
+/** Boxes whose payload is a list of child boxes. */
+const MP4_CONTAINER_BOXES = new Set([
+  'moov',
+  'trak',
+  'mdia',
+  'minf',
+  'stbl',
+  'edts',
+  'udta',
+  'mvex',
+  'moof',
+  'traf',
+]);
+
+/**
+ * Parses the ISO-BMFF box tree of an MP4 buffer.
+ *
+ * Returns a flat list of `{ type, size, start, bodyStart, bodyEnd }`.
+ * Only the well known container boxes are descended into, so the parser never
+ * mistakes the payload of a leaf box (a `stsd`, a `hdlr`…) for a box list.
+ */
+export function parseMp4Boxes(buffer, start = 0, end = buffer.length) {
+  const boxes = [];
+  let offset = start;
+  while (offset + 8 <= end) {
+    let size = buffer.readUInt32BE(offset);
+    const type = buffer.toString('latin1', offset + 4, offset + 8);
+    let headerSize = 8;
+    if (size === 1) {
+      if (offset + 16 > end) break;
+      size = Number(buffer.readBigUInt64BE(offset + 8));
+      headerSize = 16;
+    } else if (size === 0) {
+      size = end - offset;
+    }
+    if (!Number.isFinite(size) || size < headerSize || offset + size > end) break;
+    const box = {
+      type,
+      size,
+      start: offset,
+      bodyStart: offset + headerSize,
+      bodyEnd: offset + size,
+    };
+    boxes.push(box);
+    if (MP4_CONTAINER_BOXES.has(type)) {
+      boxes.push(...parseMp4Boxes(buffer, box.bodyStart, box.bodyEnd));
+    }
+    offset += size;
+  }
+  return boxes;
+}
+
+/** Reads a 16.16 fixed point number (the size of a video track). */
+function readFixed1616(buffer, offset) {
+  return buffer.readUInt32BE(offset) / 65536;
+}
+
+/**
+ * Reads the size of the VIDEO track of an MP4 (the `tkhd` box).
+ *
+ * The width and the height are the LAST 8 bytes of the `tkhd` box (two 16.16
+ * fixed point numbers), so they do not depend on the version of the box.
+ * The audio track has a size of 0x0 and is ignored.
+ *
+ * Returns `{ width, height }` or `null` when the file has no video track.
+ */
+export function readMp4VideoTrackSize(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const boxes = parseMp4Boxes(buffer);
+  const tracks = boxes
+    .filter((box) => box.type === 'tkhd' && box.bodyEnd - box.bodyStart >= 8)
+    .map((box) => ({
+      width: readFixed1616(buffer, box.bodyEnd - 8),
+      height: readFixed1616(buffer, box.bodyEnd - 4),
+    }))
+    .filter((track) => track.width > 0 && track.height > 0);
+  return tracks.length > 0 ? tracks[0] : null;
+}
+
+/**
+ * Reads the duration of the MOVIE of an MP4 (the `mvhd` box).
+ *
+ * Returns `{ timescale, duration, seconds }` or `null` when the box is
+ * missing. The `mvhd` duration is expressed in the movie timescale (1000 for
+ * `mp4-muxer`), so it is the duration of the WHOLE file.
+ */
+export function readMp4MovieDuration(filePath) {
+  const buffer = fs.readFileSync(filePath);
+  const boxes = parseMp4Boxes(buffer);
+  const mvhd = boxes.find((box) => box.type === 'mvhd');
+  if (!mvhd) return null;
+  const version = buffer[mvhd.bodyStart];
+  let timescale;
+  let duration;
+  if (version === 1) {
+    timescale = buffer.readUInt32BE(mvhd.bodyStart + 20);
+    duration = Number(buffer.readBigUInt64BE(mvhd.bodyStart + 24));
+  } else {
+    timescale = buffer.readUInt32BE(mvhd.bodyStart + 12);
+    duration = buffer.readUInt32BE(mvhd.bodyStart + 16);
+  }
+  if (!timescale) return null;
+  return { timescale, duration, seconds: duration / timescale };
 }
 
 /* ------------------------------------------------------------------ *

@@ -109,6 +109,12 @@ export interface TrimBounds {
 }
 
 /**
+ * F6 · Duration of the long press that toggles a clip on touch (the
+ * equivalent of Ctrl + clic, which does not exist on a phone).
+ */
+export const LONG_PRESS_MS = 500;
+
+/**
  * Range of absolute times the clip start can be moved to.
  */
 export function getTrimStartBounds(clip: Clip): TrimBounds {
@@ -213,6 +219,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const zoom = useProjectStore((s) => s.zoom);
   const fps = useProjectStore((s) => s.project.fps);
   const selectedClipId = useProjectStore((s) => s.selectedClipId);
+  const selectedClipIds = useProjectStore((s) => s.selectedClipIds);
   const selectClip = useProjectStore((s) => s.selectClip);
   const moveClip = useProjectStore((s) => s.moveClip);
   const commitClipChange = useProjectStore((s) => s.commitClipChange);
@@ -236,16 +243,34 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const gestureActiveRef = useRef(false);
   /** Track lane geometry captured at the beginning of a drag. */
   const laneRectsRef = useRef<TrackLaneRect[]>([]);
+  /**
+   * F6 · True when the last gesture was a DRAG: the `click` event that comes
+   * after it must not collapse a multi-selection.
+   */
+  const dragMovedRef = useRef(false);
+  /** F6 · Timer of the long press (the touch equivalent of Ctrl + clic). */
+  const longPressTimerRef = useRef<number | null>(null);
+  /** F6 · True when the long press already fired (the drag is cancelled). */
+  const longPressFiredRef = useRef(false);
+  /** F6 · Pointer type of the last gesture (touch must not open the menu). */
+  const lastPointerTypeRef = useRef<string>('mouse');
 
   const isTrackLocked =
     useProjectStore((s) => s.project.tracks.find((t) => t.id === clip.trackId)?.isLocked) ??
     false;
 
+  /**
+   * F6 · The PRIMARY selection (the first clip of the selection).
+   */
   const isSelected = selectedClipId === clip.id;
+  /**
+   * F6 · The clip belongs to the selection (it may not be the primary one).
+   */
+  const isInSelection = selectedClipIds.includes(clip.id);
   const leftPx = clip.start * zoom;
   // Minimum 28px so both trim handles (14px each) never overlap on tiny clips
   const widthPx = Math.max(28, clip.duration * zoom);
-  const showHandles = isSelected || widthPx < 40 || zoom > 80;
+  const showHandles = isInSelection || widthPx < 40 || zoom > 80;
   /**
    * F7: the visible Spanish labels of the clipboard actions need room.
    * In a short clip only the icons are shown (the `title` / `aria-label`
@@ -268,6 +293,20 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
 
+    // F6: the gesture ended with a DRAG: the click must not collapse the
+    // selection (the user was moving the clip, not selecting it).
+    if (dragMovedRef.current) {
+      dragMovedRef.current = false;
+      return;
+    }
+
+    // F6: the LONG PRESS already toggled the clip: the click that follows it
+    // must not collapse the selection.
+    if (longPressFiredRef.current) {
+      longPressFiredRef.current = false;
+      return;
+    }
+
     // If split tool is active, split here
     if (activeTool === 'split') {
       if (!clipRef.current) return;
@@ -278,8 +317,12 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       return;
     }
 
-    // Otherwise select clip and open inspector
-    selectClip(clip.id);
+    // Otherwise select the clip and open the inspector.
+    // F6: Ctrl/Cmd + clic toggles the clip inside the selection and
+    // Shift + clic selects the range between the primary selection and it.
+    const additive = e.ctrlKey || e.metaKey;
+    const range = e.shiftKey;
+    selectClip(clip.id, { additive, range });
     setActiveTab('inspector');
   };
 
@@ -290,6 +333,10 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     return () => {
       gestureRef.current?.abort();
       gestureRef.current = null;
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
       if (gestureActiveRef.current) {
         gestureActiveRef.current = false;
         commitClipChange();
@@ -321,7 +368,23 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     if (e.button !== 0) return; // Only primary button / touch contact
     e.stopPropagation();
     e.preventDefault();
-    selectClip(clip.id);
+
+    // F6: a modifier click (Ctrl/Cmd/Shift) must NOT change the selection
+    // here: the `click` event is the one that knows the intent (additive /
+    // range). The pointerdown would destroy the multi-selection.
+    const hasModifier = e.ctrlKey || e.metaKey || e.shiftKey;
+    if (!hasModifier) {
+      // The clip is already selected: the selection is kept as it is (a drag
+      // must never collapse a multi-selection).
+      const state = useProjectStore.getState();
+      if (!state.selectedClipIds.includes(clip.id)) {
+        selectClip(clip.id);
+      }
+    }
+    dragMovedRef.current = false;
+    longPressFiredRef.current = false;
+    lastPointerTypeRef.current = e.pointerType;
+
     // Locked track: select only, never start a drag gesture
     if (isTrackLocked) return;
 
@@ -338,7 +401,23 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     const controller = beginGesture();
     const { signal } = controller;
 
+    // F6: on touch there is no Ctrl key: a LONG PRESS is the equivalent of
+    // Ctrl + clic (it toggles the clip in/out of the selection).
+    if (e.pointerType === 'touch' || e.pointerType === 'pen') {
+      longPressTimerRef.current = window.setTimeout(() => {
+        longPressTimerRef.current = null;
+        longPressFiredRef.current = true;
+        // The long press TOGGLES the clip and cancels the drag gesture.
+        endGesture(controller);
+        selectClip(clip.id, { additive: true });
+        setActiveTab('inspector');
+      }, LONG_PRESS_MS);
+    }
+
     const onMove = (moveEvent: PointerEvent) => {
+      // The long press already took the gesture: the clip must not move.
+      if (longPressFiredRef.current) return;
+
       const deltaX = moveEvent.clientX - startX;
       const deltaY = moveEvent.clientY - startY;
 
@@ -349,6 +428,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
 
       if (!hasMoved) {
         hasMoved = true;
+        dragMovedRef.current = true;
         beginClipGesture();
         document.body.style.cursor = 'grabbing';
       }
@@ -373,6 +453,10 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
 
     const onUp = () => {
       document.body.style.cursor = '';
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
       endGesture(controller);
 
       if (hasMoved) {
@@ -392,7 +476,11 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
-    selectClip(clip.id);
+    // F6: a trim must never collapse a multi-selection: the clip is only
+    // selected when it is not part of the selection yet.
+    if (!useProjectStore.getState().selectedClipIds.includes(clip.id)) {
+      selectClip(clip.id);
+    }
     if (isTrackLocked) return;
 
     const startX = e.clientX;
@@ -432,7 +520,10 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
-    selectClip(clip.id);
+    // F6: a trim must never collapse a multi-selection.
+    if (!useProjectStore.getState().selectedClipIds.includes(clip.id)) {
+      selectClip(clip.id);
+    }
     if (isTrackLocked) return;
 
     const startX = e.clientX;
@@ -522,12 +613,26 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     commitClipChange();
   };
 
+  /**
+   * F6 · The border of the clip depends on the selection state:
+   *
+   * - PRIMARY selection → a strong ring (2 px) + the highest z-index;
+   * - selected (not primary) → a thinner ring: the clip is part of the
+   *   selection but it is not the clip the Inspector is editing;
+   * - not selected → the normal border of the clip type.
+   */
+  const getSelectionBorder = (idleBorder: string): string => {
+    if (isSelected) return 'border-cyan-400 ring-2 ring-cyan-400 z-20 shadow-md';
+    if (isInSelection) return 'border-cyan-400/70 ring-1 ring-cyan-400/50 z-20';
+    return idleBorder;
+  };
+
   const getStyleTheme = () => {
     switch (clip.type) {
       case 'video':
         return {
           bg: 'bg-dark-900/95',
-          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-blue-500/40 hover:border-blue-400/80',
+          border: getSelectionBorder('border-blue-500/40 hover:border-blue-400/80'),
           accent: 'text-blue-300',
           badge: 'bg-blue-950/80 text-blue-300 border-blue-700/60',
           icon: <Film size={12} className="text-blue-400 shrink-0" />,
@@ -535,7 +640,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       case 'audio':
         return {
           bg: 'bg-dark-900/95',
-          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-emerald-500/40 hover:border-emerald-400/80',
+          border: getSelectionBorder('border-emerald-500/40 hover:border-emerald-400/80'),
           accent: 'text-emerald-300',
           badge: 'bg-emerald-950/80 text-emerald-300 border-emerald-700/60',
           icon: <Music size={12} className="text-emerald-400 shrink-0" />,
@@ -543,7 +648,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       case 'text':
         return {
           bg: 'bg-dark-900/95',
-          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-amber-500/40 hover:border-amber-400/80',
+          border: getSelectionBorder('border-amber-500/40 hover:border-amber-400/80'),
           accent: 'text-amber-300',
           badge: 'bg-amber-950/80 text-amber-300 border-amber-700/60',
           icon: <Type size={12} className="text-amber-400 shrink-0" />,
@@ -551,7 +656,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       default:
         return {
           bg: 'bg-dark-900/95',
-          border: isSelected ? 'border-cyan-400 ring-1 ring-cyan-400/60 z-20 shadow-md' : 'border-dark-700 hover:border-dark-600',
+          border: getSelectionBorder('border-dark-700 hover:border-dark-600'),
           accent: 'text-slate-300',
           badge: 'bg-dark-800 text-slate-300 border-dark-700',
           icon: <Film size={12} className="shrink-0" />,
@@ -583,21 +688,40 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       ref={clipRef}
       role="button"
       tabIndex={0}
-      aria-label={`Clip ${clip.name}, duración ${formatDuration(clip.duration)}`}
-      aria-selected={isSelected}
+      // F6 · ARIA: the clip is a TOGGLE BUTTON (`aria-pressed`), not a
+      // `role="button"` with `aria-selected` (which is only valid for the
+      // `option` / `row` / `tab` roles). The clips do not live in a single
+      // listbox (they belong to independent track lanes), so the listbox /
+      // option pattern would be a lie.
+      aria-pressed={isInSelection}
+      aria-label={`Clip ${clip.name}, duración ${formatDuration(clip.duration)}${
+        isInSelection ? ', seleccionado' : ''
+      }`}
+      data-clip-id={clip.id}
+      data-selected={isInSelection ? 'true' : 'false'}
+      data-primary={isSelected ? 'true' : 'false'}
       onClick={handleClick}
       onPointerDown={handleBodyMouseDown}
+      onContextMenu={(e) => {
+        // F6: on touch the long press is the multi-selection gesture, NOT the
+        // context menu of the browser.
+        if (lastPointerTypeRef.current === 'touch') e.preventDefault();
+      }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          selectClip(clip.id);
+          // F6: the keyboard honours the same modifiers as the mouse.
+          selectClip(clip.id, {
+            additive: e.ctrlKey || e.metaKey,
+            range: e.shiftKey,
+          });
         }
       }}
       style={{
         left: `${leftPx}px`,
         width: `${widthPx}px`,
       }}
-      className={`absolute top-1 bottom-1 rounded-md border ${themeBorder} ${theme.bg} flex items-center justify-between ${isSelected ? 'overflow-visible' : 'overflow-hidden'} cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none`}
+      className={`absolute top-1 bottom-1 rounded-md border ${themeBorder} ${theme.bg} flex items-center justify-between ${isInSelection ? 'overflow-visible' : 'overflow-hidden'} cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none`}
     >
       {/* Background Filmstrip for Video clips */}
       {clip.type === 'video' && media?.thumbnails && media.thumbnails.length > 0 && (() => {
@@ -712,7 +836,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         }`}
         title="Recortar inicio (Trim In) — usa las flechas del teclado para ajustar"
       >
-        <div className={`w-[2px] h-3.5 rounded-full ${isSelected ? 'bg-dark-900' : 'bg-white/80'}`} />
+        <div className={`w-[2px] h-3.5 rounded-full ${isInSelection ? 'bg-dark-900' : 'bg-white/80'}`} />
       </div>
 
       {/* Clip Content Label & Badges */}
@@ -837,7 +961,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         }`}
         title="Recortar final (Trim Out) — usa las flechas del teclado para ajustar"
       >
-        <div className={`w-[2px] h-3.5 rounded-full ${isSelected ? 'bg-dark-900' : 'bg-white/80'}`} />
+        <div className={`w-[2px] h-3.5 rounded-full ${isInSelection ? 'bg-dark-900' : 'bg-white/80'}`} />
       </div>
     </div>
   );

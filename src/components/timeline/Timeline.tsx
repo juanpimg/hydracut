@@ -1,20 +1,112 @@
 import React, { useRef, useEffect } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
+import { Clip, Track } from '../../types/project';
 import { TimelineToolbar } from './TimelineToolbar';
 import { TimeRuler } from './TimeRuler';
 import { TrackHeader } from './TrackHeader';
 import { TrackLane } from './TrackLane';
 import { Playhead } from './Playhead';
 
+/**
+ * F6 · Height of a track lane in px (must match the `h-14` of `TrackLane`).
+ */
+export const TRACK_LANE_HEIGHT = 56;
+
+/**
+ * F6 · Height of the time ruler in px (must match the `h-7` of the ruler).
+ */
+export const RULER_HEIGHT = 28;
+
+/**
+ * F6 · Minimum movement (px) that turns a click into a rubber band drag.
+ *
+ * Below it the gesture is a plain click on the empty space (which clears the
+ * selection).
+ */
+export const RUBBER_BAND_THRESHOLD_PX = 4;
+
+/**
+ * F6 · Rectangle of the rubber band, in TIMELINE CONTENT pixels (the origin
+ * is the first pixel of the first track lane, after the ruler).
+ */
+export interface RubberBandRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+/**
+ * F6 · Ids of the clips whose box INTERSECTS the rubber band rectangle.
+ *
+ * The band touches a clip when their rectangles overlap (the clip does not
+ * have to be fully inside the band). The result is ordered like the timeline
+ * (track by track, then by start time).
+ */
+export function selectClipIdsInRect(
+  clips: Clip[],
+  tracks: Track[],
+  zoom: number,
+  rect: RubberBandRect
+): string[] {
+  const trackIndex = new Map(tracks.map((track, index) => [track.id, index]));
+  const hits: Array<{ id: string; track: number; start: number }> = [];
+
+  for (const clip of clips) {
+    const index = trackIndex.get(clip.trackId);
+    if (index === undefined) continue;
+    const x0 = clip.start * zoom;
+    const x1 = (clip.start + clip.duration) * zoom;
+    const y0 = index * TRACK_LANE_HEIGHT;
+    const y1 = y0 + TRACK_LANE_HEIGHT;
+    if (x0 < rect.right && x1 > rect.left && y0 < rect.bottom && y1 > rect.top) {
+      hits.push({ id: clip.id, track: index, start: clip.start });
+    }
+  }
+
+  hits.sort((a, b) => (a.track !== b.track ? a.track - b.track : a.start - b.start));
+  return hits.map((hit) => hit.id);
+}
+
+/**
+ * F6 · Merges the ids of a rubber band with the current selection.
+ *
+ * The band REPLACES the selection, but with Ctrl/Cmd the touched clips JOIN
+ * it (the primary selection does not change).
+ */
+export function mergeSelection(current: string[], added: string[]): string[] {
+  return Array.from(new Set([...current, ...added]));
+}
+
 export const Timeline: React.FC = () => {
   const project = useProjectStore((s) => s.project);
   const zoom = useProjectStore((s) => s.zoom);
   const setZoom = useProjectStore((s) => s.setZoom);
   const selectClip = useProjectStore((s) => s.selectClip);
+  const selectClips = useProjectStore((s) => s.selectClips);
+  const selectAllClips = useProjectStore((s) => s.selectAllClips);
   const snappingGuideTime = useProjectStore((s) => s.snappingGuideTime);
 
   const lanesContainerRef = useRef<HTMLDivElement>(null);
   const headersContainerRef = useRef<HTMLDivElement>(null);
+  /** F6 · The rubber band rectangle (updated IMPERATIVELY: no React render). */
+  const rubberBandRef = useRef<HTMLDivElement>(null);
+  /** F6 · The rubber band gesture in progress (if any). */
+  const bandGestureRef = useRef<{
+    controller: AbortController;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+    lastClientX: number;
+    lastClientY: number;
+    frame: number | null;
+  } | null>(null);
+  /**
+   * F6 · True when the last gesture was a rubber band: the `click` event that
+   * follows it must NOT clear the selection it just made.
+   */
+  const bandConsumedClickRef = useRef(false);
 
   /**
    * UI-11: the ruler and the lanes must share **exactly** the same width.
@@ -23,8 +115,8 @@ export const Timeline: React.FC = () => {
    * This value matches the one used by `TimeRuler`.
    */
   const totalWidth = Math.max(1200, project.duration * zoom + 300);
-  const timelineTracksHeight = project.tracks.length * 56; // 56px per track
-  const totalTimelineHeight = timelineTracksHeight + 28; // plus ruler height
+  const timelineTracksHeight = project.tracks.length * TRACK_LANE_HEIGHT; // 56px per track
+  const totalTimelineHeight = timelineTracksHeight + RULER_HEIGHT; // plus ruler height
 
   /**
    * UI-09/UI-10: the track list scrolls vertically and the track headers stay
@@ -49,7 +141,173 @@ export const Timeline: React.FC = () => {
     }
   };
 
-  // Cursor-Anchored Wheel Zoom (Ctrl + Wheel) with non-passive event listener
+  /* ------------------------------------------------------------------ */
+  /* F6 — rubber band selection                                          */
+  /* ------------------------------------------------------------------ */
+
+  /**
+   * Starts the rubber band when the user presses on the EMPTY space of the
+   * timeline.
+   *
+   * It does NOT fight the other gestures:
+   * - the clips own their pointer events (they stop the propagation) so a
+   *   drag of a clip never draws a band;
+   * - the ruler scrubs the playhead (it is excluded explicitly);
+   * - the wheel keeps scrolling / zooming (the band never touches it);
+   * - on touch the gesture is a scroll: the multi-selection is reached with
+   *   the long press of a clip (the equivalent of Ctrl + clic).
+   */
+  const handleLanesPointerDown = (e: React.PointerEvent) => {
+    // A new gesture starts: the flag of the previous one is stale.
+    bandConsumedClickRef.current = false;
+
+    if (e.pointerType !== 'mouse') return;
+    if (e.button !== 0) return;
+
+    const target = e.target as HTMLElement | null;
+    if (target && typeof target.closest === 'function') {
+      if (target.closest('[data-clip-id]')) return;
+      if (target.closest('[data-testid="time-ruler"]')) return;
+    }
+
+    const container = lanesContainerRef.current;
+    if (!container) return;
+
+    // F6: Ctrl/Cmd + drag ADDS the touched clips to the current selection.
+    const additive = e.ctrlKey || e.metaKey;
+
+    // The geometry of the scrollport is captured ONCE: the band is painted
+    // from the cached rectangle instead of forcing a layout on every move.
+    const containerRect = container.getBoundingClientRect();
+    const startX = e.clientX - containerRect.left + container.scrollLeft;
+    const startY = e.clientY - containerRect.top + container.scrollTop - RULER_HEIGHT;
+
+    // The band must not start a text selection nor a native drag.
+    e.preventDefault();
+
+    bandGestureRef.current?.controller.abort();
+    const controller = new AbortController();
+    const { signal } = controller;
+    const gesture = {
+      controller,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startX,
+      startY,
+      lastClientX: e.clientX,
+      lastClientY: e.clientY,
+      frame: null as number | null,
+    };
+    bandGestureRef.current = gesture;
+
+    const paintBand = () => {
+      gesture.frame = null;
+      const band = rubberBandRef.current;
+      const current = lanesContainerRef.current;
+      if (!band || !current) return;
+      const currentX = gesture.lastClientX - containerRect.left + current.scrollLeft;
+      const currentY = gesture.lastClientY - containerRect.top + current.scrollTop - RULER_HEIGHT;
+      const left = Math.min(gesture.startX, currentX);
+      const top = Math.min(gesture.startY, currentY);
+      band.style.display = 'block';
+      band.style.transform = `translate(${left}px, ${top}px)`;
+      band.style.width = `${Math.abs(currentX - gesture.startX)}px`;
+      band.style.height = `${Math.abs(currentY - gesture.startY)}px`;
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      gesture.lastClientX = moveEvent.clientX;
+      gesture.lastClientY = moveEvent.clientY;
+      // ONE paint per frame: the timeline must stay at 60 FPS (the overlay
+      // never re-renders the React tree).
+      if (gesture.frame !== null) return;
+      if (typeof requestAnimationFrame !== 'function') {
+        paintBand();
+        return;
+      }
+      gesture.frame = requestAnimationFrame(paintBand);
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      controller.abort();
+      if (bandGestureRef.current === gesture) bandGestureRef.current = null;
+      if (gesture.frame !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(gesture.frame);
+      }
+      gesture.frame = null;
+      const band = rubberBandRef.current;
+      if (band) band.style.display = 'none';
+
+      const dx = Math.abs(upEvent.clientX - gesture.startClientX);
+      const dy = Math.abs(upEvent.clientY - gesture.startClientY);
+
+      // The click event that follows the pointerup must not clear the
+      // selection the band just made.
+      bandConsumedClickRef.current = true;
+
+      if (dx < RUBBER_BAND_THRESHOLD_PX && dy < RUBBER_BAND_THRESHOLD_PX) {
+        // A click on the empty space: the selection is cleared.
+        selectClip(null);
+        return;
+      }
+
+      const currentX = upEvent.clientX - containerRect.left + container.scrollLeft;
+      const currentY = upEvent.clientY - containerRect.top + container.scrollTop - RULER_HEIGHT;
+      const rect: RubberBandRect = {
+        left: Math.min(gesture.startX, currentX),
+        top: Math.min(gesture.startY, currentY),
+        right: Math.max(gesture.startX, currentX),
+        bottom: Math.max(gesture.startY, currentY),
+      };
+      const ids = selectClipIdsInRect(project.clips, project.tracks, zoom, rect);
+      if (additive) {
+        // Ctrl/Cmd + drag: the touched clips JOIN the current selection.
+        const current = useProjectStore.getState().selectedClipIds;
+        selectClips(mergeSelection(current, ids));
+        return;
+      }
+      // The band REPLACES the selection (an empty band clears it).
+      selectClips(ids);
+    };
+
+    window.addEventListener('pointermove', onMove, { signal });
+    window.addEventListener('pointerup', onUp, { signal });
+    window.addEventListener('pointercancel', onUp, { signal });
+  };
+
+  // Unmount safety net: a band in progress must not leave window listeners
+  // behind.
+  useEffect(() => {
+    return () => {
+      bandGestureRef.current?.controller.abort();
+      bandGestureRef.current = null;
+    };
+  }, []);
+
+  /* ------------------------------------------------------------------ */
+  /* F6 — Ctrl + A selects every clip                                    */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'a' && e.key !== 'A') return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      if (e.altKey) return;
+      // The system shortcut must keep working inside a text field.
+      const active = typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
+      if (active) {
+        const tag = typeof active.tagName === 'string' ? active.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        if (active.isContentEditable === true) return;
+      }
+      e.preventDefault();
+      selectAllClips();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectAllClips]);
+
+  // Cursor-anchored Wheel Zoom (Ctrl + Wheel) with non-passive event listener
   useEffect(() => {
     const container = lanesContainerRef.current;
     if (!container) return;
@@ -179,13 +437,37 @@ export const Timeline: React.FC = () => {
               <TrackHeader key={track.id} track={track} index={idx} />
             ))}
           </div>
+
+          {/* F6 · Select every clip (also reachable with Ctrl + A). */}
+          <div className="shrink-0 border-t border-dark-800 p-1.5">
+            <button
+              type="button"
+              data-testid="select-all-clips"
+              aria-label="Seleccionar todos los clips"
+              title="Seleccionar todo (Ctrl+A)"
+              onClick={selectAllClips}
+              disabled={project.clips.length === 0}
+              className="w-full min-h-[32px] px-1.5 py-1 rounded text-[10px] font-semibold text-slate-300 bg-dark-850 hover:text-white hover:bg-dark-800 border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Seleccionar todo
+            </button>
+          </div>
         </div>
 
         {/* Right Area: Scrollable Tracks & Ruler */}
         <div
           ref={lanesContainerRef}
           onScroll={handleLanesScroll}
-          onClick={() => selectClip(null)}
+          onPointerDown={handleLanesPointerDown}
+          onClick={() => {
+            // F6: the click that follows a rubber band must not clear the
+            // selection the band just made.
+            if (bandConsumedClickRef.current) {
+              bandConsumedClickRef.current = false;
+              return;
+            }
+            selectClip(null);
+          }}
           className="flex-1 overflow-auto relative bg-dark-950/80 min-w-0"
         >
           {/*
@@ -207,6 +489,16 @@ export const Timeline: React.FC = () => {
             {project.tracks.map((track) => (
               <TrackLane key={track.id} track={track} width={totalWidth} />
             ))}
+
+            {/* F6 · Rubber band. It is painted IMPERATIVELY (one style write
+                per frame): the timeline never re-renders while the band is
+                being dragged. */}
+            <div
+              ref={rubberBandRef}
+              data-testid="rubber-band"
+              aria-hidden="true"
+              className="absolute hidden pointer-events-none border border-cyan-300/90 bg-cyan-400/10 rounded-sm z-40"
+            />
           </div>
 
           {/* Draggable Playhead */}
