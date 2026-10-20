@@ -11,6 +11,7 @@ import {
 import { ProjectMetadata } from '../../types/project';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { markWelcomeSeen } from '../../core/utils/appFlags';
+import { Button } from '../ui/Button';
 
 function formatDate(timestamp: number): string {
   if (!timestamp) return 'Fecha desconocida';
@@ -109,99 +110,103 @@ export const WelcomeModal: React.FC = () => {
       aria-label="Bienvenido a HydraCut"
       data-testid="welcome-modal"
       tabIndex={-1}
-      className="fixed inset-0 bg-black/80 backdrop-blur-md z-[70] flex items-center justify-center p-4 select-none animate-fadeIn focus:outline-none"
+      className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4 select-none focus:outline-none"
     >
-      <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden animate-scaleUp">
-        {/* Header */}
-        <div className="px-5 pt-5 pb-3 text-center relative">
+      <div className="bg-raised border border-border rounded-lg w-full max-w-md shadow-overlay overflow-hidden">
+        {/* Cabecera: qué es la app + promesa de privacidad como hecho */}
+        <div className="px-4 pt-4 pb-2 relative">
           <button
             onClick={() => setWelcomeOpen(false)}
-            className="absolute top-3 right-3 text-slate-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-dark-800 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="absolute top-2 right-2 inline-flex min-w-[44px] min-h-[44px] items-center justify-center rounded text-text-2 transition hover:bg-overlay hover:text-text-1"
             title="Continuar (Esc)"
             aria-label="Cerrar y continuar"
           >
-            <X size={17} />
+            <X size={16} aria-hidden="true" />
           </button>
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-white font-black text-xl shadow-lg shadow-cyan-500/20 mb-2">
-            H
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded bg-panel border border-border-subtle text-accent flex items-center justify-center shrink-0">
+              <Clapperboard size={16} aria-hidden="true" />
+            </div>
+            <h2 className="text-title text-text-1">HydraCut Studio</h2>
           </div>
-          <h2 className="text-lg font-bold text-white">HydraCut Studio</h2>
-          <p className="text-xs text-slate-400 mt-0.5">¿Qué quieres hacer hoy?</p>
+          <p className="mt-1 text-body-sm text-text-2">Edita y exporta vídeo en el navegador.</p>
+          <p className="text-body-sm text-text-2">Elige cómo empezar.</p>
+          <p className="mt-0.5 text-body-sm text-text-3">Tus vídeos no salen de este navegador.</p>
         </div>
 
-        {/* Current project summary */}
-        <div className="mx-4 mb-3 p-3 rounded-xl bg-dark-950 border border-dark-800 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-cyan-500/15 text-cyan-400 flex items-center justify-center shrink-0">
-            <Clapperboard size={18} />
-          </div>
+        {/* Proyecto actual */}
+        <div className="mx-4 mb-2 p-2 rounded-md bg-panel border border-border-subtle flex items-center gap-2">
           <div className="min-w-0 flex-1">
-            <p className="text-[11px] text-slate-500 font-medium">Último proyecto</p>
-            <p className="text-sm font-bold text-white truncate" title={project.name}>
+            <p className="text-caption uppercase tracking-wider text-text-3">Último proyecto</p>
+            <p className="truncate text-body font-medium text-text-1" title={project.name}>
               {project.name}
             </p>
-            <p className="text-[11px] text-slate-400 font-mono flex items-center gap-2">
+            <p className="tabular flex items-center gap-2 font-mono text-timecode text-text-2">
               <span className="inline-flex items-center gap-1">
-                <Layers size={10} /> {project.tracks.length}
+                <Layers size={10} aria-hidden="true" /> {project.tracks.length}
               </span>
               <span className="inline-flex items-center gap-1">
-                <Film size={10} /> {project.clips.length}
+                <Film size={10} aria-hidden="true" /> {project.clips.length}
               </span>
               <span className="inline-flex items-center gap-1">
-                <Clock size={10} /> {formatDate(project.updatedAt)}
+                <Clock size={10} aria-hidden="true" /> {formatDate(project.updatedAt)}
               </span>
             </p>
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="px-4 pb-2 space-y-2">
-          <button
+        {/* Acciones */}
+        <div className="px-4 pb-2 flex flex-col gap-1.5">
+          <Button
+            variant="primary"
             onClick={() => setWelcomeOpen(false)}
             disabled={busy}
             data-testid="welcome-continue"
-            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-bold text-sm shadow-md shadow-cyan-500/20 active:scale-[0.99] transition text-left focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:outline-none"
+            icon={<FolderOpen size={16} className="shrink-0" aria-hidden="true" />}
+            className="w-full justify-start min-h-[52px] !px-4 text-left"
           >
-            <FolderOpen size={18} className="shrink-0" />
             <span>
               <span className="block">Seguir editando</span>
-              <span className="block text-[11px] font-medium opacity-80">Continúa donde lo dejaste</span>
+              <span className="block text-body-sm font-normal opacity-80">Continúa donde lo dejaste</span>
             </span>
-          </button>
+          </Button>
 
-          <button
+          <Button
+            variant="secondary"
             onClick={handleNewBlank}
             disabled={busy}
             data-testid="welcome-new"
-            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/40 text-slate-200 hover:text-white font-semibold text-sm active:scale-[0.99] transition text-left focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            icon={<FilePlus2 size={16} className="shrink-0" aria-hidden="true" />}
+            className="w-full justify-start min-h-[52px] !px-4 text-left"
           >
-            <FilePlus2 size={18} className="text-cyan-400 shrink-0" />
             <span>
               <span className="block">Nuevo proyecto en blanco</span>
-              <span className="block text-[11px] font-medium text-slate-400">El actual queda guardado</span>
+              <span className="block text-body-sm font-normal text-text-2">El actual queda guardado</span>
             </span>
-          </button>
+          </Button>
 
-          <button
+          <Button
+            variant="secondary"
             onClick={handleOpenGallery}
             disabled={busy}
             data-testid="welcome-open"
-            className="w-full flex items-center gap-3 px-4 min-h-[52px] rounded-xl bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/40 text-slate-200 hover:text-white font-semibold text-sm active:scale-[0.99] transition text-left focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            icon={<FolderOpen size={16} className="shrink-0" aria-hidden="true" />}
+            className="w-full justify-start min-h-[52px] !px-4 text-left"
           >
-            <FolderOpen size={18} className="text-emerald-400 shrink-0" />
             <span>
               <span className="block">Abrir o importar…</span>
-              <span className="block text-[11px] font-medium text-slate-400">Galería y archivos .hydra / .json</span>
+              <span className="block text-body-sm font-normal text-text-2">Galería y archivos .hydra / .json</span>
             </span>
-          </button>
+          </Button>
         </div>
 
-        {/* Recent projects quick-load */}
+        {/* Recientes */}
         {recent.length > 1 && (
-          <div className="px-4 pb-4 pt-1">
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
+          <div className="px-4 pb-3 pt-1">
+            <p className="text-caption uppercase tracking-wider text-text-3 mb-1">
               Recientes
             </p>
-            <div className="space-y-1">
+            <div className="flex flex-col gap-0.5">
               {recent
                 .filter((p) => p.id !== project.id)
                 .slice(0, 2)
@@ -211,12 +216,12 @@ export const WelcomeModal: React.FC = () => {
                     onClick={() => handleLoadRecent(p.id)}
                     disabled={busy}
                     data-testid={`welcome-recent-${p.id}`}
-                    className="w-full flex items-center justify-between gap-2 px-3 min-h-[44px] rounded-lg hover:bg-dark-850 text-left transition group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                    className="w-full flex items-center justify-between gap-2 px-2 min-h-[44px] rounded text-left transition text-text-2 hover:bg-panel hover:text-text-1"
                   >
-                    <span className="text-xs font-medium text-slate-300 group-hover:text-white truncate">
+                    <span className="truncate text-body-sm">
                       {p.name}
                     </span>
-                    <span className="text-[10px] font-mono text-slate-500 shrink-0">
+                    <span className="tabular shrink-0 font-mono text-timecode text-text-3">
                       {formatDate(p.updatedAt)}
                     </span>
                   </button>

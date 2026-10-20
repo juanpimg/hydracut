@@ -73,16 +73,15 @@ export const TrackLane: React.FC<TrackLaneProps> = ({ track, width }) => {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       style={{ width: `${width}px` }}
-      className={`relative h-14 border-b border-dark-800 transition ${
+      className={`relative h-14 border-b transition select-none ${
         isDragOver
-          ? 'bg-blue-950/30'
+          ? 'border-accent bg-accent-soft'
           : track.isLocked
-          ? 'bg-dark-950/60 opacity-60'
-          : 'bg-dark-900/60 hover:bg-dark-900/90'
-      } select-none`}
+          ? 'border-border-subtle bg-app opacity-60'
+          : 'border-border-subtle bg-panel/60 hover:bg-panel'
+      }`}
     >
-      {/* Background guide lines */}
-      <div className="absolute inset-0 pointer-events-none bg-[linear-gradient(to_right,#1f2229_1px,transparent_1px)] bg-[size:100px_100%]" />
+      {/* Sin rejilla decorativa: el carril es una superficie plana. */}
 
       {/* Track clips */}
       {clips.map((clip) => (
@@ -94,7 +93,7 @@ export const TrackLane: React.FC<TrackLaneProps> = ({ track, width }) => {
         <div
           data-testid="track-lane-refusal"
           role="alert"
-          className="absolute left-2 top-1 z-30 max-w-[70%] text-[10px] leading-tight text-rose-200 bg-rose-950/90 border border-rose-700/60 rounded px-1.5 py-1 shadow-lg pointer-events-none"
+          className="absolute left-2 top-1 z-30 max-w-[70%] text-[10px] leading-tight text-danger bg-danger/15 border border-danger/50 rounded px-1.5 py-1 pointer-events-none"
         >
           {refusal}
         </div>

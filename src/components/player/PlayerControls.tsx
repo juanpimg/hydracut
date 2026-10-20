@@ -1,18 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  Play, 
-  Pause, 
-  SkipBack, 
-  Volume2, 
-  VolumeX 
+import {
+  Play,
+  Pause,
+  SkipBack,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { formatTimecode } from '../../core/utils/time';
 import { audioEngine } from '../../core/engine/AudioEngine';
 import { readMasterVolume, subscribeMasterVolume, writeMasterVolume } from '../../core/utils/masterVolume';
+import { IconButton } from '../ui/IconButton';
+import { Slider } from '../ui/Slider';
 
-const TimecodeCurrentDisplay: React.FC<{ fps: number }> = ({ fps }) => {
+/**
+ * Timecode actual sin re-render por fotograma: escribe el texto en el DOM
+ * directamente desde el `masterClock` (el transporte nunca bloquea el hilo).
+ */
+const TimecodeActual: React.FC<{ fps: number }> = ({ fps }) => {
   const spanRef = useRef<HTMLDivElement>(null);
   const fpsRef = useRef(fps);
   fpsRef.current = fps;
@@ -32,7 +38,7 @@ const TimecodeCurrentDisplay: React.FC<{ fps: number }> = ({ fps }) => {
   return (
     <div
       ref={spanRef}
-      className="font-mono text-sm font-semibold tracking-wider bg-dark-950 px-2.5 py-1 rounded border border-dark-800 text-cyan-400"
+      className="font-mono text-timecode tabular text-text-1 whitespace-nowrap"
     >
       {formatTimecode(masterClock.getTime(), fps)}
     </div>
@@ -80,8 +86,10 @@ export const PlayerControls: React.FC = () => {
     masterClock.seek(0);
   };
 
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const next = writeMasterVolume(parseFloat(e.target.value));
+  /** El deslizador muestra porcentaje (0–100 %); el motor usa 0–1. */
+  const volumenPorcentaje = Math.round((isMuted ? 0 : volume) * 100);
+  const handleVolumeChange = (porcentaje: number) => {
+    const next = writeMasterVolume(porcentaje / 100);
     setVolume(next);
     if (next === 0) setIsMuted(true);
     else setIsMuted(false);
@@ -99,81 +107,76 @@ export const PlayerControls: React.FC = () => {
   };
 
   return (
-    <div className="h-11 bg-dark-900 border-t border-b border-dark-800 px-4 flex items-center justify-between select-none">
-      {/* Left: Timecode Display */}
-      <div className="flex items-center gap-2">
-        <TimecodeCurrentDisplay fps={fps} />
-        <span className="text-slate-500 text-xs">/</span>
-        <div className="font-mono text-xs text-slate-400">
+    <div className="h-9 shrink-0 bg-panel border-t border-border-subtle px-3 flex items-center gap-2 justify-between select-none">
+      {/* Izquierda: timecode actual / duración total (mono, tabular, text-1). */}
+      <div className="flex items-center gap-1.5 min-w-0">
+        <TimecodeActual fps={fps} />
+        <span aria-hidden="true" className="text-body-sm text-text-3">/</span>
+        <span className="font-mono text-timecode tabular text-text-2 whitespace-nowrap">
           {formatTimecode(duration, fps)}
-        </div>
+        </span>
       </div>
 
-      {/* Center: Playback Buttons */}
-      <div className="flex items-center gap-1 sm:gap-2">
-        <button
+      {/* Centro: inicio · −1 fotograma · reproducir/pausar · +1 fotograma. */}
+      <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Transporte">
+        <IconButton
+          aria-label="Ir al inicio"
+          title="Ir al inicio"
           onClick={handleToStart}
-          className="min-w-[32px] min-h-[32px] p-1.5 text-slate-300 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Ir al inicio (Home)"
-          aria-label="Ir al inicio de la línea de tiempo"
         >
           <SkipBack size={15} />
-        </button>
+        </IconButton>
 
-        <button
-          onClick={handleStepBack}
-          className="min-w-[32px] min-h-[32px] p-1.5 text-slate-300 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Retroceder 1 cuadro (←)"
+        <IconButton
           aria-label="Retroceder 1 fotograma"
+          title="Retroceder 1 fotograma"
+          onClick={handleStepBack}
         >
-          <span className="text-xs font-mono font-bold">-1f</span>
-        </button>
+          <span className="font-mono text-[11px] font-bold">-1f</span>
+        </IconButton>
 
-        <button
-          onClick={handleTogglePlay}
-          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full transition shadow-md active:scale-95 flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
-            isPlaying
-              ? 'bg-amber-500 hover:bg-amber-400 text-dark-950'
-              : 'bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-bold'
-          }`}
+        <IconButton
+          aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
           title={isPlaying ? 'Pausar (Espacio)' : 'Reproducir (Espacio)'}
-          aria-label={isPlaying ? 'Pausar reproducción' : 'Iniciar reproducción'}
           aria-pressed={isPlaying}
+          onClick={handleTogglePlay}
         >
-          {isPlaying ? <Pause size={17} className="fill-current" /> : <Play size={17} className="fill-current translate-x-0.5" />}
-        </button>
+          {/* El acento vive solo en el icono, nunca en un relleno. */}
+          <span className="text-accent flex items-center justify-center">
+            {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+          </span>
+        </IconButton>
 
-        <button
-          onClick={handleStepForward}
-          className="min-w-[32px] min-h-[32px] p-1.5 text-slate-300 hover:text-white hover:bg-dark-800 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Avanzar 1 cuadro (→)"
+        <IconButton
           aria-label="Avanzar 1 fotograma"
+          title="Avanzar 1 fotograma"
+          onClick={handleStepForward}
         >
-          <span className="text-xs font-mono font-bold">+1f</span>
-        </button>
+          <span className="font-mono text-[11px] font-bold">+1f</span>
+        </IconButton>
       </div>
 
-      {/* Right: Master Volume */}
-      <div className="flex items-center gap-2">
-        <button
-          onClick={handleToggleMute}
-          className="min-w-[32px] min-h-[32px] text-slate-300 hover:text-white p-1.5 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+      {/* Derecha: silencio + volumen general (compartido con el móvil). */}
+      <div className="flex items-center gap-1 min-w-0 w-40 lg:w-[336px]">
+        <IconButton
+          aria-label={isMuted ? 'Activar sonido general' : 'Silenciar sonido general'}
           title={isMuted ? 'Activar sonido' : 'Silenciar'}
-          aria-label={isMuted ? 'Activar sonido maestro' : 'Silenciar sonido maestro'}
+          onClick={handleToggleMute}
+          className="shrink-0"
         >
           {isMuted || volume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
-        </button>
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={isMuted ? 0 : volume}
-          onChange={handleVolumeChange}
-          aria-label="Volumen maestro"
-          className="w-16 sm:w-20 h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Volumen general"
-        />
+        </IconButton>
+        <div className="min-w-0 flex-1">
+          <Slider
+            label="Volumen general"
+            value={volumenPorcentaje}
+            min={0}
+            max={100}
+            step={1}
+            unit="%"
+            onChange={handleVolumeChange}
+          />
+        </div>
       </div>
     </div>
   );

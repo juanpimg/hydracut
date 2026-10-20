@@ -1,52 +1,54 @@
 import React, { Suspense, lazy, useRef } from 'react';
-import { Film, Type, Sliders, Plus } from 'lucide-react';
+import { Film, Type, Plus } from 'lucide-react';
 import { useUIStore, SidebarTab } from '../../store/useUIStore';
 import { useProjectStore } from '../../store/useProjectStore';
-import { ClipInspector } from '../inspector/ClipInspector';
+import { Button } from '../ui/Button';
 
 /**
- * Bundle audit: the media bin (~32 KB of sources plus its exclusive
- * `sampleMedia` dependency) is only mounted while the "media" tab is
- * active. It lives in its own chunk; the fallback keeps the exact panel
- * box (same flex/sizing classes, pulsing placeholders, no text) so the
- * chunk loading never shifts the layout.
+ * Ranura de carga del bin: misma caja del panel (sin texto) para que la
+ * carga del chunk nunca desplace el layout.
  */
 const MediaBin = lazy(() => import('../media/MediaBin'));
 
 const MediaBinFallback: React.FC = () => (
   <div
     aria-hidden="true"
-    className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-hidden select-none"
+    className="flex h-full flex-col overflow-hidden bg-panel p-3 select-none"
   >
-    <div className="h-5 w-32 rounded bg-dark-800 animate-pulse mb-3" />
-    <div className="h-9 w-full rounded-lg bg-dark-850 animate-pulse mb-3" />
-    <div className="flex-1 rounded-lg border border-dashed border-dark-750 bg-dark-950/50 p-2">
+    <div className="mb-3 h-5 w-32 animate-pulse rounded bg-raised" />
+    <div className="mb-3 h-9 w-full animate-pulse rounded bg-raised" />
+    <div className="flex-1 rounded border border-dashed border-border-subtle bg-app p-2">
       <div className="grid grid-cols-2 gap-2">
-        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
-        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
-        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
-        <div className="aspect-video rounded bg-dark-850 animate-pulse" />
+        <div className="aspect-video animate-pulse rounded bg-raised" />
+        <div className="aspect-video animate-pulse rounded bg-raised" />
+        <div className="aspect-video animate-pulse rounded bg-raised" />
+        <div className="aspect-video animate-pulse rounded bg-raised" />
       </div>
     </div>
   </div>
 );
 
+/** Pestañas del rail: solo lo que aporta medios (el Inspector vive a la derecha). */
+type RailTab = Extract<SidebarTab, 'media' | 'text'>;
+
+/**
+ * Columna izquierda: rail de 48 px + panel de 264 px (bin o texto).
+ * Superficies planas con hairlines de 1 px, sin gradientes ni brillos.
+ */
 export const Sidebar: React.FC = () => {
-  // UI-29: subscribe to the individual fields instead of the whole store.
+  // UI-29: suscripción a los campos individuales, no a todo el store.
   const activeTab = useUIStore((s) => s.activeTab);
   const setActiveTab = useUIStore((s) => s.setActiveTab);
-  const selectedClipId = useProjectStore((s) => s.selectedClipId);
   const addTextClip = useProjectStore((s) => s.addTextClip);
 
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
-  const tabs: { id: SidebarTab; label: string; icon: React.ReactNode }[] = [
-    { id: 'media', label: 'Medios', icon: <Film size={18} /> },
-    { id: 'text', label: 'Texto', icon: <Type size={18} /> },
-    { id: 'inspector', label: 'Inspector', icon: <Sliders size={18} /> },
+  const tabs: { id: RailTab; label: string; icon: React.ReactNode }[] = [
+    { id: 'media', label: 'Medios', icon: <Film size={18} aria-hidden="true" /> },
+    { id: 'text', label: 'Texto', icon: <Type size={18} aria-hidden="true" /> },
   ];
 
-  /** UI-14: the tablist had no arrow-key navigation and no roving tabindex. */
+  /** UI-14: la tablist tenía navegación por teclado con roving tabindex. */
   const handleTabKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
     const count = tabs.length;
     let next = -1;
@@ -61,25 +63,29 @@ export const Sidebar: React.FC = () => {
     tabRefs.current[next]?.focus();
   };
 
-  const activeTabId = `sidebar-tab-${activeTab}`;
+  // `activeTab` nunca es 'inspector' (esa llamada es un no-op): el panel
+  // muestra el bin salvo que la pestaña activa sea texto.
+  const showingText = activeTab === 'text';
+  const activeTabId = `sidebar-tab-${showingText ? 'text' : 'media'}`;
 
   return (
-    <aside className="w-80 h-full flex bg-dark-900 border-r border-dark-800 select-none z-20">
-      {/* Mini Icon Strip on the far left */}
+    <aside className="flex h-full min-h-0 select-none">
+      {/* Rail de 48 px */}
       <div
         role="tablist"
         aria-orientation="vertical"
         aria-label="Panel lateral"
-        className="w-14 bg-dark-950 border-r border-dark-800 flex flex-col items-center py-3 gap-3"
+        className="flex w-12 shrink-0 flex-col items-center gap-2 border-r border-border-subtle bg-panel py-3"
       >
         {tabs.map((tab, index) => {
-          const isActive = activeTab === tab.id;
+          const isActive = (showingText ? 'text' : 'media') === tab.id;
           return (
-            <button
+            <Button
               key={tab.id}
               ref={(el) => {
                 tabRefs.current[index] = el;
               }}
+              variant="ghost"
               role="tab"
               id={`sidebar-tab-${tab.id}`}
               aria-selected={isActive}
@@ -87,78 +93,78 @@ export const Sidebar: React.FC = () => {
               tabIndex={isActive ? 0 : -1}
               onClick={() => setActiveTab(tab.id)}
               onKeyDown={(e) => handleTabKeyDown(e, index)}
-              className={`relative p-2.5 rounded-xl transition flex flex-col items-center gap-1 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
-                isActive
-                  ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-dark-850'
-              }`}
               title={tab.label}
+              className={`flex !h-12 !w-11 !flex-col items-center justify-center !gap-0.5 !px-1 ${
+                isActive ? 'bg-accent-soft text-accent' : ''
+              }`}
             >
               {tab.icon}
-              <span className="text-[10px] font-medium">{tab.label}</span>
-              {tab.id === 'inspector' && selectedClipId && (
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-              )}
-            </button>
+              <span className="text-[10px] leading-tight font-medium">{tab.label}</span>
+            </Button>
           );
         })}
       </div>
 
-      {/* Main Subpanel */}
+      {/* Panel de 264 px */}
       <div
         role="tabpanel"
-        id={`sidebar-panel-${activeTab}`}
+        id={showingText ? 'sidebar-panel-text' : 'sidebar-panel-media'}
         aria-labelledby={activeTabId}
         tabIndex={0}
-        className="flex-1 h-full overflow-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-400"
+        className="h-full min-h-0 w-[264px] shrink-0 overflow-hidden border-r border-border-subtle bg-panel"
       >
-        {activeTab === 'media' && (
+        {!showingText && (
           <Suspense fallback={<MediaBinFallback />}>
             <MediaBin />
           </Suspense>
         )}
-        {activeTab === 'inspector' && <ClipInspector />}
-        {activeTab === 'text' && (
-          <div className="flex flex-col h-full bg-dark-900 p-4 select-none">
-            <div className="flex items-center justify-between pb-3 mb-4 border-b border-dark-800">
-              <div className="flex items-center gap-2 text-slate-200 font-semibold text-sm">
-                <Type size={16} className="text-blue-400" />
-                <span>Capas de Texto</span>
-              </div>
+        {showingText && (
+          <div className="flex h-full flex-col bg-panel p-3 select-none">
+            <div className="mb-3 flex items-center gap-2 border-b border-border-subtle pb-3">
+              <Type size={16} className="text-text-2" aria-hidden="true" />
+              <h2 className="text-caption font-medium tracking-wider text-text-2 uppercase select-none">
+                Texto
+              </h2>
             </div>
 
-            <p className="text-xs text-slate-400 mb-4">
-              Agrega títulos, subtítulos o rótulos superpuestos sobre tu video.
+            <p className="mb-3 text-body-sm text-text-2">
+              Títulos y rótulos sobre el vídeo.
             </p>
 
-            <div className="space-y-3">
-              <button
+            <div className="space-y-2">
+              <Button
+                variant="secondary"
                 onClick={() => {
-                  addTextClip('Título Principal');
-                  setActiveTab('inspector');
+                  addTextClip('Título');
                 }}
-                className="w-full p-3 bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-blue-500/50 rounded-lg flex items-center justify-between text-left transition group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                aria-label="Añadir título a la línea de tiempo"
+                className="!h-auto w-full !justify-between !p-3 text-left"
               >
-                <div>
-                  <h4 className="text-sm font-bold text-white group-hover:text-blue-400">Título Grande</h4>
-                  <p className="text-[11px] text-slate-400">Texto llamativo en negrito para aperturas</p>
-                </div>
-                <Plus size={16} className="text-slate-500 group-hover:text-blue-400" />
-              </button>
+                <span>
+                  <span className="block text-body font-bold text-text-1">Título</span>
+                  <span className="block text-body-sm text-text-2">
+                    Texto grande en negrita para aperturas
+                  </span>
+                </span>
+                <Plus size={16} className="shrink-0 text-text-3" aria-hidden="true" />
+              </Button>
 
-              <button
+              <Button
+                variant="secondary"
                 onClick={() => {
-                  addTextClip('Subtítulo o descripción');
-                  setActiveTab('inspector');
+                  addTextClip('Subtítulo');
                 }}
-                className="w-full p-3 bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-blue-500/50 rounded-lg flex items-center justify-between text-left transition group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                aria-label="Añadir subtítulo a la línea de tiempo"
+                className="!h-auto w-full !justify-between !p-3 text-left"
               >
-                <div>
-                  <h4 className="text-sm font-medium text-white group-hover:text-blue-400">Subtítulo / Rótulo</h4>
-                  <p className="text-[11px] text-slate-400">Texto mediano para explicaciones o créditos</p>
-                </div>
-                <Plus size={16} className="text-slate-500 group-hover:text-blue-400" />
-              </button>
+                <span>
+                  <span className="block text-body font-medium text-text-1">Subtítulo</span>
+                  <span className="block text-body-sm text-text-2">
+                    Explicaciones o créditos
+                  </span>
+                </span>
+                <Plus size={16} className="shrink-0 text-text-3" aria-hidden="true" />
+              </Button>
             </div>
           </div>
         )}

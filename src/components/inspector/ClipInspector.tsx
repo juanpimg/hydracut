@@ -1,21 +1,17 @@
 import {
-  Sliders,
   Trash2,
   Volume2,
   VolumeX,
-  Type,
-  Maximize2,
   AlignLeft,
   AlignCenter,
   AlignRight,
-  Sparkles,
-  Gauge,
-  Layers,
-  Palette,
+  Sliders,
+  CheckSquare,
   AlertTriangle,
-  CheckSquare
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
+import { Section } from '../ui/Section';
+import { Badge } from '../ui/Badge';
 import { Clip, AudioFadeCurve, ClipColorFilters, LyricAnimationPreset, OverlapPolicy, TrackRole, TransitionType } from '../../types/project';
 import {
   DEFAULT_OVERLAP_POLICY,
@@ -181,7 +177,7 @@ export const OVERLAP_POLICY_LABELS: Record<OverlapPolicy, { label: string; hint:
     hint: 'El clip nuevo recorta la parte solapada del clip existente.',
   },
   ripple: {
-    label: 'Ripple',
+    label: 'Desplazar',
     hint: 'Los clips posteriores de la pista se desplazan para hacer sitio.',
   },
 };
@@ -244,12 +240,12 @@ function formatPanValue(pan: number): string {
   const mutedValue = sharedMuted ?? primary.muted === true;
 
   return (
-    <div className="space-y-3" data-testid="inspector-multi-selection">
+    <div data-testid="inspector-multi-selection">
       {/* Header */}
-      <div className="flex items-center justify-between pb-2 mb-3 border-b border-dark-800">
+      <div className="flex items-center justify-between border-b border-border-subtle px-3 pt-3 pb-2">
         <div className="flex items-center gap-2">
-          <CheckSquare size={16} className="text-cyan-400" />
-          <span className="text-sm font-semibold text-slate-200">Inspector de Clip</span>
+          <CheckSquare size={16} className="text-text-2" />
+          <span className="text-sm font-semibold text-text-1">Inspector</span>
         </div>
         <button
           onClick={() => {
@@ -257,7 +253,7 @@ function formatPanValue(pan: number): string {
               deleteSelectedClips();
             }
           }}
-          className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition"
+          className="p-1.5 text-danger hover:text-danger hover:bg-danger/10 rounded transition"
           title={`Eliminar ${count} clips (Supr)`}
           aria-label={`Eliminar los ${count} clips seleccionados`}
         >
@@ -268,40 +264,43 @@ function formatPanValue(pan: number): string {
       {/* F6 · The count of the selection (the user MUST know it is a batch). */}
       <div
         data-testid="inspector-multi-selection-count"
-        className="bg-cyan-950/40 border border-cyan-800/60 rounded-lg p-2.5 text-xs flex items-center gap-2"
+        className="mx-3 mt-3 flex items-center gap-2 rounded border border-border-subtle bg-raised p-2.5 text-xs"
       >
-        <CheckSquare size={14} className="text-cyan-300 shrink-0" />
-        <span className="font-semibold text-cyan-100">
+        <CheckSquare size={14} className="shrink-0 text-accent" />
+        <span className="font-semibold text-text-1">
           {count} clips seleccionados
         </span>
       </div>
 
       {/* Summary */}
-      <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-1 text-xs">
-        <div className="flex justify-between text-slate-400">
+      <div className="mx-3 space-y-1 rounded border border-border-subtle bg-raised p-2.5 text-xs">
+        <div className="flex justify-between text-text-2">
           <span>Clips:</span>
-          <span className="text-slate-200 font-medium">{count}</span>
+          <span className="font-medium text-text-1">{count}</span>
         </div>
-        <div className="flex justify-between text-slate-400">
+        <div className="flex justify-between text-text-2">
           <span>Pistas:</span>
-          <span className="text-blue-400 font-medium">{trackNames.length}</span>
+          <span className="font-medium text-accent">{trackNames.length}</span>
         </div>
-        <p className="text-[10px] leading-snug text-slate-500 pt-1">
+        <p className="pt-1 text-[10px] leading-snug text-text-3">
           Las ediciones de este panel se aplican a TODOS los clips seleccionados en un solo paso
           (se deshacen con una sola vez de Ctrl+Z).
         </p>
       </div>
 
       {/* BATCH · Volume + mute */}
-      <div className="space-y-2">
-        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-          <Volume2 size={13} className="text-emerald-400" />
-          <span>Audio (en lote)</span>
-        </div>
+      <Section
+        titulo="Audio"
+        alRestablecer={() => {
+          setSelectedClipsVolume(1);
+          setSelectedClipsMuted(false);
+        }}
+        etiquetaRestablecer="Restablecer el audio de los clips seleccionados"
+      >
         <div>
-          <div className="flex justify-between text-xs text-slate-400 mb-1">
+          <div className="mb-1 flex justify-between text-xs text-text-2">
             <span>Volumen:</span>
-            <span className="font-mono text-slate-200">
+            <span className="font-mono text-text-1">
               {sharedVolume === null ? 'Mixto' : `${Math.round(sharedVolume * 100)}%`}
             </span>
           </div>
@@ -316,19 +315,19 @@ function formatPanValue(pan: number): string {
               data-testid="batch-volume"
               aria-label="Volumen de los clips seleccionados"
               onChange={(e) => setSelectedClipsVolume(parseFloat(e.target.value))}
-              className="flex-1 h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+              className="h-1.5 flex-1 cursor-pointer rounded bg-overlay accent-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
             />
             <button
               onClick={() => setSelectedClipsMuted(!mutedValue)}
               disabled={!mutedOp.enabled}
               data-testid="batch-mute"
               aria-label={mutedValue ? 'Activar sonido de los clips seleccionados' : 'Silenciar los clips seleccionados'}
-              className={`p-1.5 rounded transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 ${
+              className={`rounded p-1.5 transition focus-visible:outline-none disabled:opacity-40 ${
                 mutedValue
-                  ? 'bg-rose-950/40 text-rose-300 border border-rose-800/50'
-                  : 'bg-dark-800 text-slate-300 hover:text-white'
+                  ? 'border border-danger/50 bg-danger/15 text-danger'
+                  : 'bg-raised text-text-2 hover:text-text-1'
               }`}
-              title={mutedValue ? 'Clips silenciados' : 'Silenciar los clips seleccionados'}
+              title={mutedValue ? 'Activar sonido' : 'Silenciar los clips seleccionados'}
             >
               {mutedValue ? <VolumeX size={14} /> : <Volume2 size={14} />}
             </button>
@@ -337,24 +336,24 @@ function formatPanValue(pan: number): string {
             <p
               role="status"
               data-testid="batch-audio-disabled-reason"
-              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2 mt-1"
+              className="mt-1 rounded border border-warning/40 bg-warning/10 p-2 text-[10px] leading-snug text-warning"
             >
               {volumeOp.reason ?? mutedOp.reason}
             </p>
           )}
         </div>
-      </div>
+      </Section>
 
       {/* BATCH · Opacity */}
-      <div className="space-y-2">
-        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-          <Maximize2 size={13} className="text-blue-400" />
-          <span>Opacidad (en lote)</span>
-        </div>
+      <Section
+        titulo="Opacidad"
+        alRestablecer={() => setSelectedClipsOpacity(1)}
+        etiquetaRestablecer="Restablecer la opacidad de los clips seleccionados"
+      >
         <div>
-          <div className="flex justify-between text-xs text-slate-400 mb-1">
+          <div className="mb-1 flex justify-between text-xs text-text-2">
             <span>Opacidad:</span>
-            <span className="font-mono text-slate-200">
+            <span className="font-mono text-text-1">
               {sharedOpacity === null ? 'Mixto' : `${Math.round(sharedOpacity * 100)}%`}
             </span>
           </div>
@@ -368,30 +367,30 @@ function formatPanValue(pan: number): string {
             data-testid="batch-opacity"
             aria-label="Opacidad de los clips seleccionados"
             onChange={(e) => setSelectedClipsOpacity(parseFloat(e.target.value))}
-            className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+            className="h-1.5 w-full cursor-pointer rounded bg-overlay accent-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
           />
           {!opacityOp.enabled && (
             <p
               role="status"
               data-testid="batch-opacity-disabled-reason"
-              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2 mt-1"
+              className="mt-1 rounded border border-warning/40 bg-warning/10 p-2 text-[10px] leading-snug text-warning"
             >
               {opacityOp.reason}
             </p>
           )}
         </div>
-      </div>
+      </Section>
 
       {/* BATCH · Speed */}
-      <div className="space-y-2">
-        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-          <Gauge size={13} className="text-blue-400" />
-          <span>Velocidad (en lote)</span>
-        </div>
-        <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
-          <div className="flex justify-between items-center text-xs">
-            <span className="text-slate-400">Factor actual:</span>
-            <span className="font-mono text-blue-400 font-semibold">
+      <Section
+        titulo="Velocidad"
+        alRestablecer={() => setSelectedClipsSpeed(1)}
+        etiquetaRestablecer="Restablecer la velocidad de los clips seleccionados"
+      >
+        <div className="space-y-2 rounded border border-border-subtle bg-raised p-2.5">
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-text-2">Velocidad:</span>
+            <span className="font-mono font-semibold text-accent">
               {sharedSpeed === null ? 'Mixto' : `${sharedSpeed}x`}
             </span>
           </div>
@@ -402,10 +401,10 @@ function formatPanValue(pan: number): string {
                 disabled={!speedOp.enabled}
                 onClick={() => setSelectedClipsSpeed(spd)}
                 aria-label={`Aplicar una velocidad de ${spd}x a los clips seleccionados`}
-                className={`py-1 text-xs rounded border transition font-mono disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`rounded border py-1 font-mono text-xs transition disabled:cursor-not-allowed disabled:opacity-40 ${
                   sharedSpeed === spd
-                    ? 'bg-blue-600 text-white border-blue-500 font-bold shadow-sm'
-                    : 'bg-dark-900 text-slate-300 border-dark-750 hover:bg-dark-850 hover:text-white'
+                    ? 'border-accent-fill bg-accent-fill font-bold text-white'
+                    : 'border-border bg-panel text-text-2 hover:bg-raised hover:text-text-1'
                 }`}
               >
                 {spd}x
@@ -422,19 +421,19 @@ function formatPanValue(pan: number): string {
             data-testid="batch-speed"
             aria-label="Velocidad de los clips seleccionados"
             onChange={(e) => setSelectedClipsSpeed(parseFloat(e.target.value))}
-            className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            className="h-1.5 w-full cursor-pointer rounded bg-overlay accent-accent disabled:cursor-not-allowed disabled:opacity-40"
           />
           {!speedOp.enabled && (
             <p
               role="status"
               data-testid="batch-speed-disabled-reason"
-              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+              className="rounded border border-warning/40 bg-warning/10 p-2 text-[10px] leading-snug text-warning"
             >
               {speedOp.reason}
             </p>
           )}
         </div>
-      </div>
+      </Section>
     </div>
   );
 };
@@ -554,13 +553,12 @@ export const ClipInspector: React.FC = () => {
   }, [project.clips, project.tracks, selectedClipIds]);
 
   const policySection = (
-    <div className="space-y-2 mt-auto pt-3 mb-1" data-testid="overlap-policy-section">
-      <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-        <Layers size={13} className="text-blue-400" />
-        <span>Política de Solapamiento</span>
+    <div className="mt-auto space-y-2 px-3 pt-3 pb-3" data-testid="overlap-policy-section">
+      <div className="text-caption font-medium tracking-wider text-text-2 uppercase">
+        <span>Política de solapamiento</span>
       </div>
-      <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
-        <label htmlFor="overlap-policy-select" className="text-[11px] text-slate-400 block">
+      <div className="space-y-2 rounded border border-border-subtle bg-raised p-2.5">
+        <label htmlFor="overlap-policy-select" className="block text-[11px] text-text-2">
           Qué pasa al insertar un clip donde ya hay contenido:
         </label>
         <select
@@ -568,13 +566,13 @@ export const ClipInspector: React.FC = () => {
           data-testid="overlap-policy-select"
           value={overlapPolicy}
           onChange={(e) => setOverlapPolicy(e.target.value as OverlapPolicy)}
-          className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          className="w-full rounded border border-border bg-panel p-1.5 text-xs text-text-1 outline-none"
         >
           <option value="block">Bloquear (recomendado)</option>
           <option value="overwrite">Sobrescribir</option>
-          <option value="ripple">Ripple (desplazar)</option>
+          <option value="ripple">Desplazar</option>
         </select>
-        <p className="text-[10px] leading-snug text-slate-500" data-testid="overlap-policy-hint">
+        <p className="text-[10px] leading-snug text-text-3" data-testid="overlap-policy-hint">
           {OVERLAP_POLICY_LABELS[overlapPolicy]?.hint ?? ''}
         </p>
       </div>
@@ -587,7 +585,7 @@ export const ClipInspector: React.FC = () => {
    */
   if (selectedClips.length > 1) {
     return (
-      <div className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-y-auto select-none">
+      <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-panel select-none">
         <MultiSelectionPanel clips={selectedClips} />
         {policySection}
       </div>
@@ -596,12 +594,12 @@ export const ClipInspector: React.FC = () => {
 
   if (!clip) {
     return (
-      <div className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-y-auto select-none">
-        <div className="flex flex-col items-center justify-center flex-1 p-6 text-center text-slate-400 select-none">
-          <Sliders size={32} className="mb-2 text-slate-500 stroke-1" />
-          <p className="text-xs font-semibold text-slate-200">Ningún clip seleccionado</p>
-          <p className="text-[11px] text-slate-400 mt-1">
-            Haz clic sobre un clip en el timeline para ajustar volumen, opacidad, tamaño o texto.
+      <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-panel select-none">
+        <div className="flex flex-1 flex-col items-center justify-center p-6 text-center select-none">
+          <Sliders size={32} className="mb-2 text-text-3" strokeWidth={1} />
+          <p className="text-xs font-semibold text-text-1">Ningún clip seleccionado</p>
+          <p className="mt-1 text-[11px] text-text-2">
+            Selecciona un clip de la línea de tiempo para editarlo.
           </p>
         </div>
         {policySection}
@@ -654,12 +652,12 @@ export const ClipInspector: React.FC = () => {
   ];
 
   return (
-    <div className="flex flex-col h-full bg-dark-900 border-r border-dark-800 p-3 overflow-y-auto select-none">
+    <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-panel select-none">
       {/* Header */}
-      <div className="flex items-center justify-between pb-2 mb-3 border-b border-dark-800">
+      <div className="mb-0 flex items-center justify-between border-b border-border-subtle px-3 pt-3 pb-2">
         <div className="flex items-center gap-2">
-          <Sliders size={16} className="text-blue-400" />
-          <span className="text-sm font-semibold text-slate-200">Inspector de Clip</span>
+          <Sliders size={16} className="text-text-2" />
+          <span className="text-sm font-semibold text-text-1">Inspector</span>
         </div>
         <button
           onClick={() => {
@@ -667,7 +665,7 @@ export const ClipInspector: React.FC = () => {
               removeClip(clip.id);
             }
           }}
-          className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition"
+          className="rounded p-1.5 text-danger transition hover:bg-danger/10"
           title="Eliminar clip (Supr)"
           aria-label={`Eliminar clip ${clip.name}`}
         >
@@ -676,18 +674,18 @@ export const ClipInspector: React.FC = () => {
       </div>
 
       {/* Clip Summary Card */}
-      <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 mb-3 space-y-1 text-xs">
-        <div className="flex justify-between text-slate-400">
+      <div className="mx-3 mt-3 mb-0 space-y-1 rounded border border-border-subtle bg-raised p-2.5 text-xs">
+        <div className="flex justify-between text-text-2">
           <span>Nombre:</span>
-          <span className="text-slate-200 font-medium truncate max-w-[160px]">{clip.name}</span>
+          <span className="max-w-[160px] truncate font-medium text-text-1">{clip.name}</span>
         </div>
-        <div className="flex justify-between text-slate-400">
+        <div className="flex justify-between text-text-2">
           <span>Pista:</span>
-          <span className="text-blue-400 font-medium">{track?.name || 'Desconocida'}</span>
+          <span className="font-medium text-accent">{track?.name || 'Desconocida'}</span>
         </div>
-        <div className="flex justify-between text-slate-400">
+        <div className="flex justify-between text-text-2">
           <span>Duración:</span>
-          <span className="font-mono text-slate-300">{formatDuration(clip.duration)}</span>
+          <span className="font-mono text-text-1">{formatDuration(clip.duration)}</span>
         </div>
       </div>
 
@@ -696,40 +694,36 @@ export const ClipInspector: React.FC = () => {
         <div
           data-testid="inspector-missing-media"
           role="alert"
-          className="mb-3 p-2 bg-rose-950/40 border border-rose-700/60 rounded text-rose-200 text-[11px] flex items-start gap-2"
+          className="mx-3 mt-3 flex items-start gap-2 rounded border border-danger/50 bg-danger/10 p-2 text-[11px] text-text-1"
         >
-          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-danger" />
           <span>
             {mediaUnavailable
-              ? 'El archivo de este medio no está disponible: el clip se ve negro y sin sonido. Revínculalo desde el panel de medios.'
-              : 'El archivo de este medio no se puede decodificar. Revínculalo desde el panel de medios.'}
+              ? 'Este medio no está disponible: el clip se ve negro y sin sonido. Revínculalo desde Medios.'
+              : 'Este medio no se puede decodificar. Revínculalo desde Medios.'}
           </span>
         </div>
       )}
 
       {/* TEXT PROPERTIES */}
       {isText && (
-        <div className="space-y-3 mb-4">
-          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Type size={13} className="text-blue-400" />
-            <span>Contenido y Estilo de Texto</span>
-          </div>
+        <Section titulo="Texto">
 
           <div>
-            <label htmlFor={`clip-text-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">Texto:</label>
+            <label htmlFor={`clip-text-${clip.id}`} className="mb-1 block text-[11px] text-text-2">Texto:</label>
             <textarea
               id={`clip-text-${clip.id}`}
               value={clip.text || ''}
               onChange={(e) => updateClip(clip.id, { text: e.target.value, name: e.target.value.slice(0, 20) || 'Texto' })}
               rows={3}
-              className="w-full bg-dark-950 border border-dark-750 focus:border-blue-500 text-slate-100 rounded p-2 text-xs outline-none resize-none font-medium focus-visible:ring-2 focus-visible:ring-blue-500"
+              className="w-full resize-none rounded border border-border bg-raised p-2 text-xs font-medium text-text-1 outline-none"
             />
           </div>
 
           {/* Font Family & Size */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label htmlFor={`clip-font-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">Tipografía:</label>
+              <label htmlFor={`clip-font-${clip.id}`} className="mb-1 block text-[11px] text-text-2">Tipografía:</label>
               <select
                 id={`clip-font-${clip.id}`}
                 value={clip.textStyle?.fontFamily || 'Inter, sans-serif'}
@@ -738,7 +732,7 @@ export const ClipInspector: React.FC = () => {
                     textStyle: { ...(clip.textStyle || { fontSize: 48, color: '#ffffff', backgroundColor: 'transparent', fontFamily: 'Inter, sans-serif', textAlign: 'center', fontWeight: 'bold' }), fontFamily: e.target.value },
                   })
                 }
-                className="w-full bg-dark-950 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none"
+                className="w-full rounded border border-border bg-raised p-1.5 text-xs text-text-1 outline-none"
               >
                 {fontOptions.map((f) => (
                   <option key={f.value} value={f.value}>
@@ -749,8 +743,8 @@ export const ClipInspector: React.FC = () => {
             </div>
 
             <div>
-              <label className="text-[11px] text-slate-400 block mb-1">
-                Tamaño: {clip.textStyle?.fontSize || 48}px
+              <label className="text-[11px] text-text-2 block mb-1">
+                Tamaño: {clip.textStyle?.fontSize || 48} px
               </label>
               <input
                 type="range"
@@ -762,7 +756,7 @@ export const ClipInspector: React.FC = () => {
                     textStyle: { ...(clip.textStyle || { fontSize: 48, color: '#ffffff', backgroundColor: 'transparent', fontFamily: 'Inter, sans-serif', textAlign: 'center', fontWeight: 'bold' }), fontSize: parseInt(e.target.value) },
                   })
                 }
-                className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer mt-2"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer mt-2"
               />
             </div>
           </div>
@@ -770,7 +764,7 @@ export const ClipInspector: React.FC = () => {
           {/* Text Color & Background */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[11px] text-slate-400 block mb-1">Color de Texto:</label>
+              <label className="mb-1 block text-[11px] text-text-2">Color del texto:</label>
               <div className="flex items-center gap-2">
                 <input
                   type="color"
@@ -780,14 +774,14 @@ export const ClipInspector: React.FC = () => {
                       textStyle: { ...(clip.textStyle || { fontSize: 48, color: '#ffffff', backgroundColor: 'transparent', fontFamily: 'Inter, sans-serif', textAlign: 'center', fontWeight: 'bold' }), color: e.target.value },
                     })
                   }
-                  className="w-7 h-7 rounded border border-dark-700 bg-transparent cursor-pointer"
+                  className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent"
                 />
-                <span className="text-xs font-mono text-slate-400">{clip.textStyle?.color || '#ffffff'}</span>
+                <span className="font-mono text-xs text-text-2">{clip.textStyle?.color || '#ffffff'}</span>
               </div>
             </div>
 
             <div>
-              <label className="text-[11px] text-slate-400 block mb-1">Fondo de Texto:</label>
+              <label className="mb-1 block text-[11px] text-text-2">Fondo:</label>
               <div className="flex items-center gap-2">
                 <input
                   type="color"
@@ -797,7 +791,7 @@ export const ClipInspector: React.FC = () => {
                       textStyle: { ...(clip.textStyle || { fontSize: 48, color: '#ffffff', backgroundColor: 'transparent', fontFamily: 'Inter, sans-serif', textAlign: 'center', fontWeight: 'bold' }), backgroundColor: e.target.value },
                     })
                   }
-                  className="w-7 h-7 rounded border border-dark-700 bg-transparent cursor-pointer"
+                  className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent"
                 />
                 <button
                   onClick={() =>
@@ -805,9 +799,9 @@ export const ClipInspector: React.FC = () => {
                       textStyle: { ...(clip.textStyle || { fontSize: 48, color: '#ffffff', backgroundColor: 'transparent', fontFamily: 'Inter, sans-serif', textAlign: 'center', fontWeight: 'bold' }), backgroundColor: 'transparent' },
                     })
                   }
-                  className="text-[10px] text-slate-400 hover:text-white underline"
+                  className="text-[10px] text-text-2 hover:text-white underline"
                 >
-                  Sin fondo
+                  Quitar fondo
                 </button>
               </div>
             </div>
@@ -815,8 +809,8 @@ export const ClipInspector: React.FC = () => {
 
           {/* Alignment */}
           <div>
-            <label className="text-[11px] text-slate-400 block mb-1">Alineación:</label>
-            <div className="flex bg-dark-950 p-1 rounded border border-dark-800 gap-1 w-fit">
+            <label className="mb-1 block text-[11px] text-text-2">Alineación:</label>
+            <div className="flex w-fit gap-1 rounded border border-border-subtle bg-raised p-1">
               {(['left', 'center', 'right'] as const).map((align) => (
                 <button
                   key={align}
@@ -826,7 +820,7 @@ export const ClipInspector: React.FC = () => {
                     })
                   }
                   className={`p-1.5 rounded transition ${
-                    clip.textStyle?.textAlign === align ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                    clip.textStyle?.textAlign === align ? 'bg-accent-fill text-white' : 'text-text-2 hover:text-text-1'
                   }`}
                 >
                   {align === 'left' && <AlignLeft size={14} />}
@@ -842,8 +836,8 @@ export const ClipInspector: React.FC = () => {
               Cada vista previa se pinta con el estilo REAL de la plantilla
               (familia, peso, colores y caja), no con un nombre. */}
           <div>
-            <span id={`text-preset-label-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
-              Plantillas:
+            <span id={`text-preset-label-${clip.id}`} className="mb-1 block text-[11px] text-text-2">
+              Preajustes:
             </span>
             <div
               role="group"
@@ -858,7 +852,7 @@ export const ClipInspector: React.FC = () => {
                     key={preset.id}
                     type="button"
                     data-testid={`text-preset-${preset.id}`}
-                    aria-label={`Aplicar plantilla ${preset.label}`}
+                    aria-label={`Aplicar preajuste ${preset.label}`}
                     aria-pressed={isActive}
                     title={`${preset.label} — ${preset.hint}`}
                     onClick={() => applyTextPreset(clip.id, preset.id)}
@@ -868,10 +862,10 @@ export const ClipInspector: React.FC = () => {
                         applyTextPreset(clip.id, preset.id);
                       }
                     }}
-                    className={`rounded-lg border p-1.5 text-left transition focus-visible:ring-2 focus-visible:ring-blue-400 focus-visible:outline-none ${
+                    className={`rounded border p-1.5 text-left transition focus-visible:outline-none ${
                       isActive
-                        ? 'border-blue-500 bg-blue-950/40 shadow-sm'
-                        : 'border-dark-750 bg-dark-950 hover:border-slate-500'
+                        ? 'border-accent bg-accent-soft'
+                        : 'border-border bg-raised hover:border-text-3'
                     }`}
                   >
                     <span
@@ -891,26 +885,24 @@ export const ClipInspector: React.FC = () => {
                     >
                       Ag
                     </span>
-                    <span className="mt-1 block truncate text-center text-[10px] font-medium text-slate-300">
+                    <span className="mt-1 block truncate text-center text-[10px] font-medium text-text-2">
                       {preset.label}
                     </span>
                   </button>
                 );
               })}
             </div>
-            <p className="mt-1 text-[10px] leading-snug text-slate-500">
-              Aplicar una plantilla no borra tu texto y se puede deshacer con Ctrl+Z.
+            <p className="mt-1 text-[10px] leading-snug text-text-3">
+              Aplicar un preajuste no borra el texto. Se deshace con Ctrl+Z.
             </p>
           </div>
 
           {/* Animación & Sincronización de Letras */}
-          <div className="pt-2 border-t border-dark-800 space-y-2">
+          <div className="space-y-2 border-t border-border-subtle pt-2">
             <div className="flex items-center justify-between">
-              <label className="text-[11px] font-semibold text-slate-300">Efecto de Animación:</label>
+              <label className="text-[11px] font-semibold text-text-1">Animación:</label>
               {clip.words && clip.words.length > 0 && (
-                <span className="text-[10px] bg-blue-900/60 text-blue-300 px-1.5 py-0.5 rounded border border-blue-700/50">
-                  {clip.words.length} palabras sincronizadas
-                </span>
+                <Badge variant="neutral">{clip.words.length} palabras sincronizadas</Badge>
               )}
             </div>
             <select
@@ -923,18 +915,18 @@ export const ClipInspector: React.FC = () => {
                   },
                 })
               }
-              className="w-full bg-dark-950 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none"
+              className="w-full rounded border border-border bg-raised p-1.5 text-xs text-text-1 outline-none"
             >
-              <option value="none">Estático (Sin animación)</option>
-              <option value="karaoke-fill">Karaoke Progresivo (Apple Music)</option>
-              <option value="word-bounce">Rebote / Pop de Palabra (TikTok / Reels)</option>
-              <option value="fade-phrase">Desvanecimiento Suave (Fade In / Out)</option>
+              <option value="none">Sin animación</option>
+              <option value="karaoke-fill">Karaoke</option>
+              <option value="word-bounce">Rebote</option>
+              <option value="fade-phrase">Fundido</option>
             </select>
 
-            {/* Color de Resaltado (Highlight) si es Karaoke o Bounce */}
+            {/* Color de resaltado si es Karaoke o Rebote */}
             {(clip.textStyle?.animationPreset === 'karaoke-fill' || clip.textStyle?.animationPreset === 'word-bounce') && (
               <div>
-                <label className="text-[11px] text-slate-400 block mb-1">Color de Palabra Activa:</label>
+                <label className="mb-1 block text-[11px] text-text-2">Palabra activa:</label>
                 <div className="flex items-center gap-2">
                   <input
                     type="color"
@@ -947,7 +939,7 @@ export const ClipInspector: React.FC = () => {
                         },
                       })
                     }
-                    className="w-7 h-7 rounded border border-dark-700 bg-transparent cursor-pointer"
+                    className="h-7 w-7 cursor-pointer rounded border border-border bg-transparent"
                   />
                   <div className="flex gap-1.5">
                     {['#FACC15', '#38BDF8', '#F43F5E', '#4ADE80', '#A855F7'].map((c) => (
@@ -961,7 +953,7 @@ export const ClipInspector: React.FC = () => {
                             },
                           })
                         }
-                        className="w-5 h-5 rounded-full border border-dark-700 hover:scale-110 transition"
+                        className="h-5 w-5 rounded border border-border transition"
                         style={{ backgroundColor: c }}
                         title={c}
                       />
@@ -971,16 +963,16 @@ export const ClipInspector: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
+        </Section>
       )}
 
       {/* TRANSFORM & VISUALS */}
       {(isVideoOrImage || isText) && (
-        <div className="space-y-3 mb-4">
-          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Maximize2 size={13} className="text-blue-400" />
-            <span>Transformación & Visibilidad</span>
-          </div>
+        <Section
+          titulo="Transformación"
+          alRestablecer={() => updateClip(clip.id, { scale: 1, opacity: 1, positionX: 0, positionY: 0 })}
+          etiquetaRestablecer="Restablecer transformación"
+        >
 
           {/* F8 · Cuando hay un keyframe seleccionado, estos controles lo
               editan a él (no el valor fijo): el aviso es obligatorio para no
@@ -989,7 +981,7 @@ export const ClipInspector: React.FC = () => {
             <p
               role="status"
               data-testid="keyframe-editing-notice"
-              className="text-[11px] leading-snug text-cyan-200 bg-cyan-950/50 border border-cyan-700/60 rounded p-2"
+              className="rounded border border-accent bg-accent-soft p-2 text-[11px] leading-snug text-text-1"
             >
               Editando el keyframe de {selectedKeyframe.t.toFixed(2)} s: los controles de
               abajo cambian este keyframe, no el valor fijo del clip.
@@ -998,9 +990,9 @@ export const ClipInspector: React.FC = () => {
 
           {/* Scale */}
           <div>
-            <div className="flex justify-between text-xs text-slate-400 mb-1">
+            <div className="flex justify-between text-xs text-text-2 mb-1">
               <span>Escala:</span>
-              <span className="font-mono text-slate-200">{Math.round(effScale * 100)}%</span>
+              <span className="font-mono text-text-1">{Math.round(effScale * 100)}%</span>
             </div>
             <input
               type="range"
@@ -1014,15 +1006,15 @@ export const ClipInspector: React.FC = () => {
                   ? updateKeyframe(clip.id, selectedKeyframe.t, { scale: parseFloat(e.target.value) })
                   : updateClip(clip.id, { scale: parseFloat(e.target.value) })
               }
-              className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
             />
           </div>
 
           {/* Opacity */}
           <div>
-            <div className="flex justify-between text-xs text-slate-400 mb-1">
+            <div className="flex justify-between text-xs text-text-2 mb-1">
               <span>Opacidad:</span>
-              <span className="font-mono text-slate-200">{Math.round(effOpacity * 100)}%</span>
+              <span className="font-mono text-text-1">{Math.round(effOpacity * 100)}%</span>
             </div>
             <input
               type="range"
@@ -1036,16 +1028,16 @@ export const ClipInspector: React.FC = () => {
                   ? updateKeyframe(clip.id, selectedKeyframe.t, { opacity: parseFloat(e.target.value) })
                   : updateClip(clip.id, { opacity: parseFloat(e.target.value) })
               }
-              className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
             />
           </div>
 
           {/* Position X / Y */}
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+              <div className="flex justify-between text-[11px] text-text-2 mb-1">
                 <span>Posición X:</span>
-                <span className="font-mono">{Math.round(effX)}px</span>
+                <span className="font-mono">{Math.round(effX)} px</span>
               </div>
               <input
                 type="range"
@@ -1059,13 +1051,13 @@ export const ClipInspector: React.FC = () => {
                     ? updateKeyframe(clip.id, selectedKeyframe.t, { x: parseInt(e.target.value) })
                     : updateClip(clip.id, { positionX: parseInt(e.target.value) })
                 }
-                className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
               />
             </div>
             <div>
-              <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+              <div className="flex justify-between text-[11px] text-text-2 mb-1">
                 <span>Posición Y:</span>
-                <span className="font-mono">{Math.round(effY)}px</span>
+                <span className="font-mono">{Math.round(effY)} px</span>
               </div>
               <input
                 type="range"
@@ -1079,31 +1071,19 @@ export const ClipInspector: React.FC = () => {
                     ? updateKeyframe(clip.id, selectedKeyframe.t, { y: parseInt(e.target.value) })
                     : updateClip(clip.id, { positionY: parseInt(e.target.value) })
                 }
-                className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
               />
             </div>
           </div>
 
-          {/* Reset Transform Button */}
-          <button
-            onClick={() => updateClip(clip.id, { scale: 1, opacity: 1, positionX: 0, positionY: 0 })}
-            className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          >
-            Restablecer Transformación
-          </button>
-        </div>
+        </Section>
       )}
 
       {/* F8 · KEYFRAMES DE ANIMACIÓN */}
       {(isVideoOrImage || isText) && (
-        <div className="space-y-3 mb-4" data-testid="keyframe-section">
-          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Maximize2 size={13} className="text-cyan-400" />
-            <span>Keyframes de animación</span>
-          </div>
-
-          <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
-            <p className="text-[10px] leading-snug text-slate-500">
+        <Section titulo="Keyframes de animación">
+          <div data-testid="keyframe-section" className="space-y-2 rounded border border-border-subtle bg-raised p-2.5">
+            <p className="text-[10px] leading-snug text-text-3">
               Anima la posición, la escala y la opacidad a lo largo del clip con
               interpolación lineal entre keyframes.
             </p>
@@ -1131,15 +1111,15 @@ export const ClipInspector: React.FC = () => {
               }}
               data-testid="keyframe-add"
               aria-label="Añadir keyframe en el cabezal de reproducción"
-              className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-cyan-700 hover:bg-cyan-600 rounded border border-cyan-600 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition focus-visible:outline-none"
             >
-              Añadir keyframe en el cabezal
+              Añadir keyframe
             </button>
             {!playheadInsideClip && (
               <p
                 role="status"
                 data-testid="keyframe-playhead-outside"
-                className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                className="text-[10px] leading-snug text-warning bg-warning/10 border border-warning/40 rounded p-2"
               >
                 El cabezal está fuera de este clip: el keyframe se colocará en el
                 borde más cercano.
@@ -1148,7 +1128,7 @@ export const ClipInspector: React.FC = () => {
 
             {clipKeyframes.length > 0 ? (
               <>
-                <div className="text-[11px] font-semibold text-slate-300 pt-1">
+                <div className="text-[11px] font-semibold text-text-2 pt-1">
                   Keyframes ({clipKeyframes.length})
                 </div>
                 <ul data-testid="keyframe-list" className="space-y-1.5">
@@ -1169,8 +1149,8 @@ export const ClipInspector: React.FC = () => {
                         data-testid={`keyframe-item-${kf.t}`}
                         className={`flex items-center gap-1.5 rounded border p-1.5 ${
                           isSelected
-                            ? 'bg-cyan-950/60 border-cyan-700/70'
-                            : 'bg-dark-900 border-dark-750'
+                            ? 'bg-accent-soft border-accent'
+                            : 'bg-panel border-border'
                         }`}
                       >
                         <button
@@ -1181,12 +1161,12 @@ export const ClipInspector: React.FC = () => {
                               : `Seleccionar keyframe de ${kf.t.toFixed(2)} segundos para editarlo`
                           }
                           aria-pressed={isSelected}
-                          className={`flex-1 text-left text-[11px] rounded px-1 py-0.5 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
-                            isSelected ? 'text-cyan-100 font-semibold' : 'text-slate-300 hover:text-white'
+                          className={`flex-1 text-left text-[11px] rounded px-1 py-0.5 focus-visible:outline-none ${
+                            isSelected ? 'text-accent font-semibold' : 'text-text-2 hover:text-white'
                           }`}
                         >
                           <span className="font-mono">{kf.t.toFixed(2)} s</span>
-                          <span className="text-slate-500"> · {defined.join(' · ') || 'vacío'}</span>
+                          <span className="text-text-3"> · {defined.join(' · ') || 'vacío'}</span>
                         </button>
                         <button
                           onClick={() => {
@@ -1195,7 +1175,7 @@ export const ClipInspector: React.FC = () => {
                           }}
                           data-testid="keyframe-remove"
                           aria-label={`Eliminar keyframe de ${kf.t.toFixed(2)} segundos`}
-                          className="p-1.5 text-red-400 hover:text-red-300 hover:bg-red-950/40 rounded transition focus-visible:ring-2 focus-visible:ring-red-400 focus-visible:outline-none"
+                          className="p-1.5 text-danger hover:text-danger hover:bg-danger/10 rounded transition focus-visible:outline-none"
                         >
                           <Trash2 size={13} />
                         </button>
@@ -1208,7 +1188,7 @@ export const ClipInspector: React.FC = () => {
                     onClick={() => setSelectedKeyframeT(null)}
                     data-testid="keyframe-deselect"
                     aria-label="Volver a editar los valores fijos del clip"
-                    className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                    className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
                   >
                     Volver a los valores fijos
                   </button>
@@ -1222,7 +1202,7 @@ export const ClipInspector: React.FC = () => {
                   }}
                   data-testid="keyframe-clear"
                   aria-label="Borrar todos los keyframes del clip"
-                  className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
                 >
                   Borrar keyframes
                 </button>
@@ -1231,28 +1211,23 @@ export const ClipInspector: React.FC = () => {
               <p
                 role="status"
                 data-testid="keyframe-empty"
-                className="text-[11px] leading-snug text-slate-500"
+                className="text-[11px] leading-snug text-text-3"
               >
                 Sin keyframes: el clip usa su transformación fija. Añade uno para
                 animarlo.
               </p>
             )}
           </div>
-        </div>
+        </Section>
       )}
 
       {/* F9 · COLOR FILTERS */}
       {isVideoOrImage && (
-        <div className="space-y-3 mb-4" data-testid="inspector-color-section">
-          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Palette size={13} className="text-fuchsia-400" />
-            <span>Color del Clip</span>
-          </div>
-
-          <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+        <Section titulo="Color del Clip">
+          <div data-testid="inspector-color-section" className="space-y-2 rounded border border-border-subtle bg-raised p-2.5">
             {/* Preset */}
             <div>
-              <label htmlFor={`clip-color-preset-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+              <label htmlFor={`clip-color-preset-${clip.id}`} className="text-[11px] text-text-2 block mb-1">
                 Preset de color:
               </label>
               <select
@@ -1268,7 +1243,7 @@ export const ClipInspector: React.FC = () => {
                     filters: preset.id === 'original' ? undefined : { ...preset.filters },
                   });
                 }}
-                className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-fuchsia-500 disabled:opacity-50"
+                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none disabled:opacity-50"
               >
                 {COLOR_FILTER_PRESET_ORDER.map((presetId) => (
                   <option key={presetId} value={presetId}>
@@ -1284,9 +1259,9 @@ export const ClipInspector: React.FC = () => {
               const value = clip.filters?.[slider.key] ?? slider.neutral;
               return (
                 <div key={slider.key}>
-                  <div className="flex justify-between text-[11px] text-slate-400 mb-1">
+                  <div className="flex justify-between text-[11px] text-text-2 mb-1">
                     <label htmlFor={`clip-color-${slider.key}-${clip.id}`}>{slider.label}:</label>
-                    <span className="font-mono text-slate-300">{slider.format(value)}</span>
+                    <span className="font-mono text-text-2">{slider.format(value)}</span>
                   </div>
                   <input
                     id={`clip-color-${slider.key}-${clip.id}`}
@@ -1303,7 +1278,7 @@ export const ClipInspector: React.FC = () => {
                       next[slider.key] = parseFloat(e.target.value);
                       updateClip(clip.id, { filters: next });
                     }}
-                    className="w-full h-1.5 bg-dark-750 accent-fuchsia-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-fuchsia-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                   />
                 </div>
               );
@@ -1315,7 +1290,7 @@ export const ClipInspector: React.FC = () => {
               data-testid="clip-color-reset"
               aria-label="Restablecer los filtros de color del clip"
               disabled={!colorFiltersEnabled}
-              className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-fuchsia-400 focus-visible:outline-none disabled:opacity-50"
+              className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none disabled:opacity-50"
             >
               Restablecer color
             </button>
@@ -1327,27 +1302,23 @@ export const ClipInspector: React.FC = () => {
             <p
               role="status"
               data-testid="clip-color-unsupported"
-              className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+              className="rounded border border-warning/40 bg-warning/10 p-2 text-[10px] leading-snug text-warning"
             >
               {COLOR_FILTER_UNSUPPORTED_MESSAGE}
             </p>
           )}
-        </div>
+        </Section>
       )}
 
       {/* AUDIO PROPERTIES */}
       {hasAudio && (
-        <div className="space-y-3 mb-4">
-          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Volume2 size={13} className="text-emerald-400" />
-            <span>Audio del Clip</span>
-          </div>
+        <Section titulo="Audio">
 
           {/* Volume */}
           <div>
-            <div className="flex justify-between text-xs text-slate-400 mb-1">
+            <div className="flex justify-between text-xs text-text-2 mb-1">
               <span>Volumen:</span>
-              <span className="font-mono text-slate-200">{Math.round((clip.volume ?? 1) * 100)}%</span>
+              <span className="font-mono text-text-1">{Math.round((clip.volume ?? 1) * 100)}%</span>
             </div>
             <div className="flex items-center gap-2">
               <input
@@ -1358,15 +1329,15 @@ export const ClipInspector: React.FC = () => {
                 value={clip.volume ?? 1}
                 aria-label="Volumen del clip"
                 onChange={(e) => updateClip(clip.id, { volume: parseFloat(e.target.value) })}
-                className="flex-1 h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                className="flex-1 h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
               />
               <button
                 onClick={() => updateClip(clip.id, { muted: !clip.muted })}
                 aria-label={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
-                className={`p-1.5 rounded transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none ${
-                  clip.muted ? 'bg-rose-950/40 text-rose-300 border border-rose-800/50' : 'bg-dark-800 text-slate-300 hover:text-white'
+                className={`p-1.5 rounded transition focus-visible:outline-none ${
+                  clip.muted ? 'bg-danger/10 text-danger border border-danger/50' : 'bg-raised text-text-2 hover:text-white'
                 }`}
-                title={clip.muted ? 'Clip silenciado' : 'Silenciar clip'}
+                title={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
               >
                 {clip.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
               </button>
@@ -1375,21 +1346,21 @@ export const ClipInspector: React.FC = () => {
 
           {/* FUNDIDOS DE AUDIO */}
           <div className="space-y-2 pt-1" data-testid="audio-fade-section">
-            <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Volume2 size={13} className="text-emerald-400" />
+            <div className="text-xs font-semibold text-text-2 uppercase tracking-wider flex items-center gap-1.5">
+              <Volume2 size={13} className="text-text-3" />
               <span>Fundidos de audio</span>
             </div>
-            <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-3">
-              <p className="text-[10px] leading-snug text-slate-500">
+            <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-3">
+              <p className="text-[10px] leading-snug text-text-3">
                 El volumen sube al inicio y baja al final del clip. La curva de potencia igual
                 mantiene la sonoridad constante durante la rampa.
               </p>
 
               {/* Entrada */}
               <div>
-                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                <div className="flex justify-between text-xs text-text-2 mb-1">
                   <label htmlFor={`audio-fade-in-${clip.id}`}>Fundido de entrada:</label>
-                  <span className="font-mono text-slate-200">
+                  <span className="font-mono text-text-1">
                     {(clip.audioFadeIn?.duration ?? 0).toFixed(2)} s
                   </span>
                 </div>
@@ -1411,9 +1382,9 @@ export const ClipInspector: React.FC = () => {
                           : { duration: v, curve: clip.audioFadeIn?.curve ?? DEFAULT_AUDIO_FADE_CURVE },
                     });
                   }}
-                  className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
                 />
-                <label htmlFor={`audio-fade-in-curve-${clip.id}`} className="text-[10px] text-slate-500 block mt-1 mb-1">
+                <label htmlFor={`audio-fade-in-curve-${clip.id}`} className="text-[10px] text-text-3 block mt-1 mb-1">
                   Curva de entrada:
                 </label>
                 <select
@@ -1433,7 +1404,7 @@ export const ClipInspector: React.FC = () => {
                       },
                     });
                   }}
-                  className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
                 >
                   <option value="equalPower">Potencia igual (recomendada)</option>
                   <option value="linear">Lineal</option>
@@ -1442,9 +1413,9 @@ export const ClipInspector: React.FC = () => {
 
               {/* Salida */}
               <div>
-                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                <div className="flex justify-between text-xs text-text-2 mb-1">
                   <label htmlFor={`audio-fade-out-${clip.id}`}>Fundido de salida:</label>
-                  <span className="font-mono text-slate-200">
+                  <span className="font-mono text-text-1">
                     {(clip.audioFadeOut?.duration ?? 0).toFixed(2)} s
                   </span>
                 </div>
@@ -1466,9 +1437,9 @@ export const ClipInspector: React.FC = () => {
                           : { duration: v, curve: clip.audioFadeOut?.curve ?? DEFAULT_AUDIO_FADE_CURVE },
                     });
                   }}
-                  className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
                 />
-                <label htmlFor={`audio-fade-out-curve-${clip.id}`} className="text-[10px] text-slate-500 block mt-1 mb-1">
+                <label htmlFor={`audio-fade-out-curve-${clip.id}`} className="text-[10px] text-text-3 block mt-1 mb-1">
                   Curva de salida:
                 </label>
                 <select
@@ -1488,7 +1459,7 @@ export const ClipInspector: React.FC = () => {
                       },
                     });
                   }}
-                  className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
                 >
                   <option value="equalPower">Potencia igual (recomendada)</option>
                   <option value="linear">Lineal</option>
@@ -1500,7 +1471,7 @@ export const ClipInspector: React.FC = () => {
                   onClick={() => updateClip(clip.id, { audioFadeIn: undefined, audioFadeOut: undefined })}
                   data-testid="audio-fade-clear"
                   aria-label="Quitar fundidos de audio"
-                  className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
                 >
                   Quitar fundidos
                 </button>
@@ -1510,12 +1481,12 @@ export const ClipInspector: React.FC = () => {
 
           {/* EFECTOS DE AUDIO: paneo / EQ de 3 bandas / ducking */}
           <div className="space-y-2 pt-1" data-testid="audio-effects-section">
-            <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-              <Sliders size={13} className="text-emerald-400" />
+            <div className="text-xs font-semibold text-text-2 uppercase tracking-wider flex items-center gap-1.5">
+              <Sliders size={13} className="text-text-3" />
               <span>Efectos de audio</span>
             </div>
-            <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-3">
-              <p className="text-[10px] leading-snug text-slate-500">
+            <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-3">
+              <p className="text-[10px] leading-snug text-text-3">
                 El paneo coloca el clip en el campo estéreo y la EQ ajusta graves, medios y
                 agudos. El ducking baja este clip automáticamente mientras hay voz en otra
                 pista (la música baja cuando entra la voz).
@@ -1523,9 +1494,9 @@ export const ClipInspector: React.FC = () => {
 
               {/* Paneo */}
               <div>
-                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                <div className="flex justify-between text-xs text-text-2 mb-1">
                   <label htmlFor={`audio-pan-${clip.id}`}>Paneo:</label>
-                  <span className="font-mono text-slate-200">
+                  <span className="font-mono text-text-1">
                     {formatPanValue(clip.audioEffects?.pan ?? 0)}
                   </span>
                 </div>
@@ -1544,9 +1515,9 @@ export const ClipInspector: React.FC = () => {
                       audioEffects: { ...(clip.audioEffects ?? {}), pan: parseFloat(e.target.value) },
                     })
                   }
-                  className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                 />
-                <p className="text-[10px] leading-snug text-slate-500 mt-1">
+                <p className="text-[10px] leading-snug text-text-3 mt-1">
                   −1 = izquierda, 0 = centro, +1 = derecha.
                 </p>
               </div>
@@ -1554,7 +1525,7 @@ export const ClipInspector: React.FC = () => {
                 <p
                   role="status"
                   data-testid="clip-audio-pan-unsupported"
-                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                  className="text-[10px] leading-snug text-warning bg-warning/10 border border-warning/40 rounded p-2"
                 >
                   {STEREO_PANNER_UNSUPPORTED_MESSAGE}
                 </p>
@@ -1565,9 +1536,9 @@ export const ClipInspector: React.FC = () => {
                 const value = clip.audioEffects?.eq?.[slider.key] ?? 0;
                 return (
                   <div key={slider.key}>
-                    <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <div className="flex justify-between text-xs text-text-2 mb-1">
                       <label htmlFor={`audio-eq-${slider.key}-${clip.id}`}>{slider.label}:</label>
-                      <span className="font-mono text-slate-200">
+                      <span className="font-mono text-text-1">
                         {value > 0 ? `+${value.toFixed(1)} dB` : `${value.toFixed(1)} dB`}
                       </span>
                     </div>
@@ -1593,7 +1564,7 @@ export const ClipInspector: React.FC = () => {
                           },
                         })
                       }
-                      className="w-full h-1.5 bg-dark-750 accent-emerald-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                     />
                   </div>
                 );
@@ -1602,7 +1573,7 @@ export const ClipInspector: React.FC = () => {
                 <p
                   role="status"
                   data-testid="clip-audio-eq-unsupported"
-                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                  className="text-[10px] leading-snug text-warning bg-warning/10 border border-warning/40 rounded p-2"
                 >
                   {BIQUAD_FILTER_UNSUPPORTED_MESSAGE}
                 </p>
@@ -1624,13 +1595,13 @@ export const ClipInspector: React.FC = () => {
                     })
                   }
                   aria-label="Atenuar este clip cuando haya diálogo en otra pista"
-                  className="w-3.5 h-3.5 accent-emerald-500 rounded focus-visible:ring-2 focus-visible:ring-emerald-500"
+                  className="w-3.5 h-3.5 accent-accent rounded"
                 />
-                <span className="text-[11px] text-slate-300 font-medium">
+                <span className="text-[11px] text-text-2 font-medium">
                   Ducking: bajar cuando entra la voz
                 </span>
               </label>
-              <p className="text-[10px] leading-snug text-slate-500" data-testid="clip-audio-duck-hint">
+              <p className="text-[10px] leading-snug text-text-3" data-testid="clip-audio-duck-hint">
                 {clip.audioEffects?.duck === true
                   ? 'Este clip se atenúa 8 dB mientras se escucha una pista marcada como «Diálogo».'
                   : 'Actívalo para que este clip (normalmente música) se atenúe mientras se escucha una pista marcada como «Diálogo».'}
@@ -1638,7 +1609,7 @@ export const ClipInspector: React.FC = () => {
 
               {/* Rol de la pista (gobierna el ducking) */}
               <div>
-                <label htmlFor={`track-role-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+                <label htmlFor={`track-role-${clip.id}`} className="text-[11px] text-text-2 block mb-1">
                   Rol de la pista «{track?.name ?? 'Desconocida'}»:
                 </label>
                 <select
@@ -1651,14 +1622,14 @@ export const ClipInspector: React.FC = () => {
                     const value = e.target.value;
                     setTrackRole(track.id, value === '' ? undefined : (value as TrackRole));
                   }}
-                  className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
                 >
                   <option value="">Sin rol</option>
                   <option value="dialogue">{TRACK_ROLE_LABELS.dialogue}</option>
                   <option value="music">{TRACK_ROLE_LABELS.music}</option>
                   <option value="sfx">{TRACK_ROLE_LABELS.sfx}</option>
                 </select>
-                <p className="text-[10px] leading-snug text-slate-500 mt-1">
+                <p className="text-[10px] leading-snug text-text-3 mt-1">
                   Una pista «Diálogo» atenúa los clips con ducking de las demás pistas.
                 </p>
               </div>
@@ -1670,28 +1641,28 @@ export const ClipInspector: React.FC = () => {
                   onClick={() => updateClip(clip.id, { audioEffects: undefined })}
                   data-testid="clip-audio-effects-reset"
                   aria-label="Restablecer los efectos de audio del clip"
-                  className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:outline-none"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
                 >
                   Restablecer efectos de audio
                 </button>
               )}
             </div>
           </div>
-        </div>
+        </Section>
       )}
 
       {/* PLAYBACK SPEED CONTROL */}
       {(hasAudio || clip.type === 'video') && (
-        <div className="space-y-3 mb-4">
-          <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-            <Gauge size={13} className="text-blue-400" />
-            <span>Velocidad de Reproducción</span>
-          </div>
+        <Section
+          titulo="Velocidad"
+          alRestablecer={() => updateClip(clip.id, { speed: 1, preservePitch: true })}
+          etiquetaRestablecer="Restablecer la velocidad del clip"
+        >
 
-          <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+          <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
             <div className="flex justify-between items-center text-xs">
-              <span className="text-slate-400">Factor actual:</span>
-              <span className="font-mono text-blue-400 font-semibold">{clip.speed || 1}x</span>
+              <span className="text-text-2">Velocidad:</span>
+              <span className="font-mono text-accent font-semibold">{clip.speed || 1}x</span>
             </div>
 
             {/* Quick Speed Preset Buttons */}
@@ -1702,8 +1673,8 @@ export const ClipInspector: React.FC = () => {
                   onClick={() => updateClip(clip.id, { speed: spd })}
                   className={`py-1 text-xs rounded border transition font-mono ${
                     (clip.speed || 1) === spd
-                      ? 'bg-blue-600 text-white border-blue-500 font-bold shadow-sm'
-                      : 'bg-dark-900 text-slate-300 border-dark-750 hover:bg-dark-850 hover:text-white'
+                      ? 'border-accent-fill bg-accent-fill font-bold text-white'
+                      : 'bg-panel text-text-2 border-border hover:bg-raised hover:text-white'
                   }`}
                 >
                   {spd}x
@@ -1713,7 +1684,7 @@ export const ClipInspector: React.FC = () => {
 
             {/* Continuous Speed Slider */}
             <div>
-              <div className="flex justify-between text-[10px] text-slate-500 mt-1 mb-1">
+              <div className="flex justify-between text-[10px] text-text-3 mt-1 mb-1">
                 <span>0.25x</span>
                 <span>1x (Normal)</span>
                 <span>4.0x</span>
@@ -1726,7 +1697,7 @@ export const ClipInspector: React.FC = () => {
                 aria-label="Velocidad del clip"
                 value={clip.speed || 1}
                 onChange={(e) => updateClip(clip.id, { speed: parseFloat(e.target.value) })}
-                className="w-full h-1.5 bg-dark-750 accent-blue-500 rounded cursor-pointer"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer"
               />
             </div>
 
@@ -1742,40 +1713,36 @@ export const ClipInspector: React.FC = () => {
                 data-testid="clip-preserve-pitch"
                 checked={clip.preservePitch !== false}
                 onChange={(e) => updateClip(clip.id, { preservePitch: e.target.checked })}
-                className="w-3.5 h-3.5 accent-blue-500 rounded focus-visible:ring-2 focus-visible:ring-blue-500"
+                className="w-3.5 h-3.5 accent-accent rounded"
               />
-              <span className="text-[11px] text-slate-300 font-medium">
+              <span className="text-[11px] text-text-2 font-medium">
                 Preservar el tono (pitch)
               </span>
             </label>
-            <p className="text-[10px] leading-snug text-slate-500" data-testid="clip-preserve-pitch-hint">
+            <p className="text-[10px] leading-snug text-text-3" data-testid="clip-preserve-pitch-hint">
               {clip.preservePitch === false
                 ? 'El tono sube o baja con la velocidad (efecto "chipmunk"). El preview y el export se comportan igual.'
                 : 'Al acelerar, la voz mantiene su tono original: el preview y el MP4 exportado suenan exactamente igual.'}
             </p>
           </div>
-        </div>
+        </Section>
       )}
 
       {/* TRANSITIONS & FADES */}
-      <div className="space-y-3 mb-4">
-        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-          <Sparkles size={13} className="text-amber-400" />
-          <span>Transiciones y Fundidos</span>
-        </div>
+      <Section titulo="Fundidos">
 
         {/* Fade In */}
-        <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+        <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
           <div className="flex justify-between items-center text-xs">
-            <span className="font-medium text-slate-300">Fundido de Entrada (In):</span>
-            <span className="text-[11px] font-mono text-slate-400">
+            <span className="font-medium text-text-1">Fundido de entrada:</span>
+            <span className="text-[11px] font-mono text-text-2">
               {(clip.transition?.fadeInDuration ?? 0).toFixed(1)}s
             </span>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-slate-400 block mb-1">Efecto:</label>
+              <label className="text-[10px] text-text-2 block mb-1">Efecto:</label>
               <select
                 value={clip.transition?.fadeInType || 'none'}
                 onChange={(e) => {
@@ -1790,7 +1757,7 @@ export const ClipInspector: React.FC = () => {
                     },
                   });
                 }}
-                className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none"
+                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
               >
                 {FADE_IN_OPTIONS.map((o) => (
                   <option key={o.id} value={o.id}>
@@ -1801,7 +1768,7 @@ export const ClipInspector: React.FC = () => {
             </div>
 
             <div>
-              <label className="text-[10px] text-slate-400 block mb-1">Duración:</label>
+              <label className="text-[10px] text-text-2 block mb-1">Duración:</label>
               <input
                 type="range"
                 min="0.1"
@@ -1820,24 +1787,24 @@ export const ClipInspector: React.FC = () => {
                     },
                   })
                 }
-                className="w-full h-1.5 bg-dark-750 accent-amber-500 rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:outline-none"
               />
             </div>
           </div>
         </div>
 
         {/* Fade Out */}
-        <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+        <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
           <div className="flex justify-between items-center text-xs">
-            <span className="font-medium text-slate-300">Fundido de Salida (Out):</span>
-            <span className="text-[11px] font-mono text-slate-400">
+            <span className="font-medium text-text-1">Fundido de salida:</span>
+            <span className="text-[11px] font-mono text-text-2">
               {(clip.transition?.fadeOutDuration ?? 0).toFixed(1)}s
             </span>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="text-[10px] text-slate-400 block mb-1">Efecto:</label>
+              <label className="text-[10px] text-text-2 block mb-1">Efecto:</label>
               <select
                 value={clip.transition?.fadeOutType || 'none'}
                 onChange={(e) => {
@@ -1852,7 +1819,7 @@ export const ClipInspector: React.FC = () => {
                     },
                   });
                 }}
-                className="w-full bg-dark-900 border border-dark-750 text-slate-200 text-xs rounded p-1.5 outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
+                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none focus-visible:outline-none"
               >
                 {FADE_OUT_OPTIONS.map((o) => (
                   <option key={o.id} value={o.id}>
@@ -1863,7 +1830,7 @@ export const ClipInspector: React.FC = () => {
             </div>
 
             <div>
-              <label className="text-[10px] text-slate-400 block mb-1">Duración:</label>
+              <label className="text-[10px] text-text-2 block mb-1">Duración:</label>
               <input
                 type="range"
                 min="0.1"
@@ -1882,23 +1849,20 @@ export const ClipInspector: React.FC = () => {
                     },
                   })
                 }
-                className="w-full h-1.5 bg-dark-750 accent-amber-500 rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:outline-none"
               />
             </div>
           </div>
         </div>
-      </div>
+      </Section>
 
       {/* F5 · FUNDIDO DE CRUCE */}
-      <div className="space-y-3 mb-4" data-testid="crossfade-section">
-        <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
-          <Sparkles size={13} className="text-violet-400" />
-          <span>Fundido de cruce</span>
-        </div>
-        <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 space-y-2">
+      <Section titulo="Fundido de cruce">
+        <div data-testid="crossfade-section">
+        <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
           {crossfadeInfo.activePair && crossfadeInfo.neighbour ? (
             <>
-              <p className="text-[11px] leading-snug text-slate-400" data-testid="crossfade-active-label">
+              <p className="text-[11px] leading-snug text-text-2" data-testid="crossfade-active-label">
                 {crossfadeInfo.neighbour.selectedRole === 'out' ? (
                   <>«{clip.name}» sale y «{crossfadeInfo.neighbour.name}» entra ({crossfadeInfo.currentDuration.toFixed(2)} s).</>
                 ) : (
@@ -1906,7 +1870,7 @@ export const ClipInspector: React.FC = () => {
                 )}
               </p>
               <div>
-                <label htmlFor={`crossfade-duration-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+                <label htmlFor={`crossfade-duration-${clip.id}`} className="text-[11px] text-text-2 block mb-1">
                   Duración del fundido: {crossfadeInfo.currentDuration.toFixed(2)} s
                 </label>
                 <input
@@ -1920,7 +1884,7 @@ export const ClipInspector: React.FC = () => {
                   disabled={!crossfadeInfo.canCreate}
                   aria-label="Duración del fundido de cruce"
                   onChange={(e) => setCrossfadeDuration(clip.id, parseFloat(e.target.value))}
-                  className="w-full h-1.5 bg-dark-750 accent-violet-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                 />
               </div>
               <button
@@ -1928,7 +1892,7 @@ export const ClipInspector: React.FC = () => {
                 disabled={!crossfadeInfo.canRemove}
                 data-testid="crossfade-remove"
                 aria-label="Eliminar fundido de cruce"
-                className="w-full text-center py-1.5 text-[11px] font-medium text-slate-300 hover:text-white bg-dark-850 hover:bg-dark-800 rounded border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Eliminar fundido
               </button>
@@ -1936,7 +1900,7 @@ export const ClipInspector: React.FC = () => {
                 <p
                   role="status"
                   data-testid="crossfade-disabled-reason"
-                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                  className="text-[10px] leading-snug text-warning bg-warning/10 border border-warning/40 rounded p-2"
                 >
                   {crossfadeInfo.createReason}
                 </p>
@@ -1944,13 +1908,13 @@ export const ClipInspector: React.FC = () => {
             </>
           ) : crossfadeInfo.neighbour ? (
             <>
-              <p className="text-[11px] leading-snug text-slate-400" data-testid="crossfade-neighbour-label">
+              <p className="text-[11px] leading-snug text-text-2" data-testid="crossfade-neighbour-label">
                 Vecino: «{crossfadeInfo.neighbour.name}» (
                 {crossfadeInfo.neighbour.selectedRole === 'out' ? 'este clip sale' : 'este clip entra'}).
                 Ambos se mezclarán durante el fundido.
               </p>
               <div>
-                <label htmlFor={`crossfade-desired-duration-${clip.id}`} className="text-[11px] text-slate-400 block mb-1">
+                <label htmlFor={`crossfade-desired-duration-${clip.id}`} className="text-[11px] text-text-2 block mb-1">
                   Duración del fundido: {Math.min(Math.max(desiredCrossfade, crossfadeFrameDuration(projectFps ?? 30)), crossfadeInfo.maxDuration).toFixed(2)} s
                 </label>
                 <input
@@ -1964,7 +1928,7 @@ export const ClipInspector: React.FC = () => {
                   disabled={!crossfadeInfo.canCreate}
                   aria-label="Duración del fundido de cruce a crear"
                   onChange={(e) => setDesiredCrossfade(parseFloat(e.target.value))}
-                  className="w-full h-1.5 bg-dark-750 accent-violet-500 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                 />
               </div>
               <button
@@ -1981,7 +1945,7 @@ export const ClipInspector: React.FC = () => {
                 disabled={!crossfadeInfo.canCreate}
                 data-testid="crossfade-create"
                 aria-label="Crear fundido de cruce"
-                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-violet-700 hover:bg-violet-600 rounded border border-violet-600 transition focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Crear fundido
               </button>
@@ -1989,7 +1953,7 @@ export const ClipInspector: React.FC = () => {
                 <p
                   role="status"
                   data-testid="crossfade-disabled-reason"
-                  className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                  className="text-[10px] leading-snug text-warning bg-warning/10 border border-warning/40 rounded p-2"
                 >
                   {crossfadeInfo.createReason}
                 </p>
@@ -2006,14 +1970,14 @@ export const ClipInspector: React.FC = () => {
                 data-testid="crossfade-create"
                 aria-label="Crear fundido de cruce"
                 title={crossfadeInfo.createReason ?? 'La pista está bloqueada'}
-                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-violet-700 hover:bg-violet-600 rounded border border-violet-600 transition focus-visible:ring-2 focus-visible:ring-violet-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Crear fundido
               </button>
               <p
                 role="status"
                 data-testid="crossfade-disabled-reason"
-                className="text-[10px] leading-snug text-amber-300/90 bg-amber-950/30 border border-amber-800/50 rounded p-2"
+                className="text-[10px] leading-snug text-warning bg-warning/10 border border-warning/40 rounded p-2"
               >
                 {crossfadeInfo.createReason ??
                   'La pista está bloqueada: desbloquéala para poder crear el fundido de cruce.'}
@@ -2023,13 +1987,14 @@ export const ClipInspector: React.FC = () => {
             <p
               role="status"
               data-testid="crossfade-no-neighbour"
-              className="text-[11px] leading-snug text-slate-500"
+              className="text-[11px] leading-snug text-text-3"
             >
               {crossfadeInfo.createReason ?? 'Sin clip vecino para fundir.'}
             </p>
           )}
         </div>
-      </div>
+        </div>
+        </Section>
 
       {policySection}
     </div>

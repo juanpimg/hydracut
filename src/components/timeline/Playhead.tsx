@@ -77,22 +77,24 @@ export const Playhead: React.FC<PlayheadProps> = ({ timelineHeight }) => {
   return (
     <div
       ref={playheadRef}
+      data-testid="playhead"
+      title="Cabezal de reproducción"
       style={{
         transform: `translateX(${masterClock.getTime() * zoom}px)`,
         height: `${timelineHeight}px`,
       }}
       className="absolute top-0 left-0 z-30 pointer-events-none will-change-transform"
     >
-      {/* Triangular / Pill Head with Touch Hitbox */}
+      {/* F4 · Cabezal de 1 px en el acento con un mango pequeño (sin segundo acento ni brillos). */}
       <div
         onPointerDown={handleDragStart}
-        className="relative -left-[7px] w-[15px] h-[18px] bg-red-500 rounded-b cursor-ew-resize pointer-events-auto flex items-center justify-center shadow-lg group hover:bg-red-400 touch-none transition select-none before:absolute before:-inset-2 before:z-30"
+        className="relative -left-[5px] w-[11px] h-[14px] bg-accent rounded-b-sm cursor-ew-resize pointer-events-auto flex items-start justify-center touch-none select-none before:absolute before:-inset-2 before:z-30"
       >
-        <div className="w-[1px] h-[8px] bg-white/70" />
+        <div className="mt-[3px] w-px h-[8px] bg-panel" />
       </div>
 
       {/* Vertical Needle Line */}
-      <div className="w-[1.5px] h-full bg-red-500 shadow-sm pointer-events-none -left-[0.5px] relative" />
+      <div className="w-px h-full bg-accent pointer-events-none relative" />
     </div>
   );
 };

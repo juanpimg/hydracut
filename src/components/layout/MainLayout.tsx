@@ -1,6 +1,7 @@
-import React, { Suspense, lazy, useEffect } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
+import { InspectorPanel } from '../inspector/InspectorPanel';
 import { PreviewPlayer } from '../player/PreviewPlayer';
 import { PlayerControls } from '../player/PlayerControls';
 import { Timeline } from '../timeline/Timeline';
@@ -130,14 +131,14 @@ export const StoreErrorBanner: React.FC = () => {
       {storageError && (
         <div
           role="alert"
-          className="flex items-start gap-2 rounded-lg border border-rose-700/70 bg-rose-950/95 px-3 py-2 text-[11px] leading-tight text-rose-200 shadow-xl"
+          className="flex items-start gap-2 rounded border border-danger/60 bg-overlay px-3 py-2 text-[11px] leading-tight text-text-1"
         >
           <span className="flex-1">{storageError.message}</span>
           <button
             type="button"
             onClick={clearStorageError}
-            aria-label="Cerrar aviso de guardado"
-            className="pointer-events-auto shrink-0 rounded px-1 text-rose-300 hover:text-white"
+            aria-label="Cerrar aviso"
+            className="pointer-events-auto shrink-0 rounded px-1 text-text-2 hover:text-text-1"
           >
             ✕
           </button>
@@ -147,14 +148,14 @@ export const StoreErrorBanner: React.FC = () => {
         <div
           role="alert"
           data-testid="store-last-error"
-          className="flex items-start gap-2 rounded-lg border border-amber-600/70 bg-amber-950/95 px-3 py-2 text-[11px] leading-tight text-amber-200 shadow-xl"
+          className="flex items-start gap-2 rounded border border-warning/50 bg-overlay px-3 py-2 text-[11px] leading-tight text-text-1"
         >
           <span className="flex-1">{lastError}</span>
           <button
             type="button"
             onClick={clearLastError}
             aria-label="Cerrar aviso"
-            className="pointer-events-auto shrink-0 rounded px-1 text-amber-300 hover:text-white"
+            className="pointer-events-auto shrink-0 rounded px-1 text-text-2 hover:text-text-1"
           >
             ✕
           </button>
@@ -163,6 +164,32 @@ export const StoreErrorBanner: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * Altura de la línea de tiempo: 280–360 px redimensionable, mínimo 200.
+ *
+ * Se guarda en `localStorage` (con resguardo ante modo privado) para que el
+ * ajuste sobreviva a la recarga.
+ */
+const TIMELINE_HEIGHT_DEFAULT = 320;
+const TIMELINE_HEIGHT_MIN = 200;
+const TIMELINE_HEIGHT_MAX = 360;
+const TIMELINE_HEIGHT_KEY = 'hydracut.timelineHeight';
+
+function clampTimelineHeight(value: number): number {
+  if (!Number.isFinite(value)) return TIMELINE_HEIGHT_DEFAULT;
+  return Math.min(TIMELINE_HEIGHT_MAX, Math.max(TIMELINE_HEIGHT_MIN, value));
+}
+
+function readTimelineHeight(): number {
+  try {
+    const raw = window.localStorage.getItem(TIMELINE_HEIGHT_KEY);
+    if (raw === null) return TIMELINE_HEIGHT_DEFAULT;
+    return clampTimelineHeight(Number(raw));
+  } catch {
+    return TIMELINE_HEIGHT_DEFAULT;
+  }
+}
 
 export const MainLayout: React.FC = () => {
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
@@ -352,6 +379,60 @@ export const MainLayout: React.FC = () => {
 
   const isMobile = useIsMobile(768);
 
+  // Altura redimensionable de la línea de tiempo (solo escritorio).
+  const [timelineHeight, setTimelineHeight] = useState<number>(() =>
+    typeof window === 'undefined' ? TIMELINE_HEIGHT_DEFAULT : readTimelineHeight()
+  );
+
+  const applyTimelineHeight = useCallback((height: number) => {
+    const clamped = clampTimelineHeight(height);
+    setTimelineHeight(clamped);
+    try {
+      window.localStorage.setItem(TIMELINE_HEIGHT_KEY, String(clamped));
+    } catch {
+      /* modo privado: el ajuste vive solo en memoria */
+    }
+  }, []);
+
+  // Arrastre del divisor: mover el ratón cambia la altura entre 200 y 360 px.
+  const onResizeMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startHeight = timelineHeight;
+      const onMove = (move: MouseEvent) => {
+        applyTimelineHeight(startHeight + (startY - move.clientY));
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    },
+    [applyTimelineHeight, timelineHeight]
+  );
+
+  // Teclado en el divisor: flechas arriba/abajo en pasos de 8 px.
+  const onResizeKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        applyTimelineHeight(timelineHeight + 8);
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        applyTimelineHeight(timelineHeight - 8);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        applyTimelineHeight(TIMELINE_HEIGHT_MAX);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        applyTimelineHeight(TIMELINE_HEIGHT_MIN);
+      }
+    },
+    [applyTimelineHeight, timelineHeight]
+  );
+
   if (isMobile) {
     return (
       <>
@@ -367,29 +448,48 @@ export const MainLayout: React.FC = () => {
     // browser chrome covered the bottom timeline. The inline `100dvh` wins
     // wherever it is supported and the class stays as the fallback.
     <div
-      className="flex flex-col h-screen w-screen overflow-hidden bg-dark-950 text-slate-100 select-none"
+      className="flex flex-col h-screen w-screen overflow-hidden bg-app text-text-1 select-none"
       style={{ height: '100dvh' }}
     >
-      {/* Top Header */}
+      {/* Barra de la app (40 px) */}
       <Header />
 
-      {/* Center Stage: Sidebar + Monitor */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Tools & Media Bin */}
+      {/* Centro: rail + panel | visor | inspector */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* Izquierda: rail de 48 px + panel de 264 px */}
         <Sidebar />
 
         {/* Center: Video Preview & Controls */}
-        <div className="flex-1 flex flex-col bg-dark-950 overflow-hidden">
+        <div className="flex-1 flex flex-col bg-app overflow-hidden min-w-0 min-h-0">
           <PreviewPlayer />
           <PlayerControls />
         </div>
+
+        {/* Derecha: inspector permanente de 300 px */}
+        <InspectorPanel />
       </div>
 
-      {/* Bottom: Multitrack Interactive Timeline */}
+      {/* Bottom: Multitrack Interactive Timeline (redimensionable) */}
       <div
-        className="h-60 sm:h-64 md:h-72 max-h-[40vh] w-full min-w-0 shrink-0"
-        style={{ maxHeight: '40dvh' }}
+        className="relative w-full min-w-0 shrink-0"
+        style={{ height: timelineHeight }}
+        data-testid="timeline-shell"
       >
+        {/* Divisor de arrastre en el borde superior */}
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          aria-label="Cambiar altura de la línea de tiempo"
+          aria-valuemin={TIMELINE_HEIGHT_MIN}
+          aria-valuemax={TIMELINE_HEIGHT_MAX}
+          aria-valuenow={Math.round(timelineHeight)}
+          title="Arrastrar para cambiar la altura de la línea de tiempo"
+          tabIndex={0}
+          data-testid="timeline-resize-handle"
+          onMouseDown={onResizeMouseDown}
+          onKeyDown={onResizeKeyDown}
+          className="absolute -top-1 left-0 z-20 h-2 w-full cursor-ns-resize touch-none"
+        />
         <Timeline />
       </div>
 

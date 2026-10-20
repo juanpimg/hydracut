@@ -4,6 +4,7 @@ import { Clip } from '../../types/project';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
 import { formatDuration, pixelsToTime } from '../../core/utils/time';
+import { Badge } from '../ui/Badge';
 
 interface ClipItemProps {
   clip: Clip;
@@ -626,16 +627,20 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   };
 
   /**
-   * F6 · The border of the clip depends on the selection state:
+   * F6 · The border of the clip depends on the selection state.
    *
-   * - PRIMARY selection → a strong ring (2 px) + the highest z-index;
-   * - selected (not primary) → a thinner ring: the clip is part of the
+   * F3 · La selección es un contorno claro (precedente FCP/Resolve), no un
+   * resplandor de color: el primario lleva contorno blanco y el resto de la
+   * selección un contorno tenue.
+   *
+   * - PRIMARY selection → a strong outline + the highest z-index;
+   * - selected (not primary) → a thinner outline: the clip is part of the
    *   selection but it is not the clip the Inspector is editing;
    * - not selected → the normal border of the clip type.
    */
   const getSelectionBorder = (idleBorder: string): string => {
-    if (isSelected) return 'border-cyan-400 ring-2 ring-cyan-400 z-20 shadow-md';
-    if (isInSelection) return 'border-cyan-400/70 ring-1 ring-cyan-400/50 z-20';
+    if (isSelected) return 'border-white ring-1 ring-white z-20';
+    if (isInSelection) return 'border-white/60 z-20';
     return idleBorder;
   };
 
@@ -643,35 +648,27 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
     switch (clip.type) {
       case 'video':
         return {
-          bg: 'bg-dark-900/95',
-          border: getSelectionBorder('border-blue-500/40 hover:border-blue-400/80'),
-          accent: 'text-blue-300',
-          badge: 'bg-blue-950/80 text-blue-300 border-blue-700/60',
-          icon: <Film size={12} className="text-blue-400 shrink-0" />,
+          bg: 'bg-panel/95',
+          border: getSelectionBorder('border-clip-video/50 hover:border-clip-video'),
+          icon: <Film size={12} className="text-text-2 shrink-0" />,
         };
       case 'audio':
         return {
-          bg: 'bg-dark-900/95',
-          border: getSelectionBorder('border-emerald-500/40 hover:border-emerald-400/80'),
-          accent: 'text-emerald-300',
-          badge: 'bg-emerald-950/80 text-emerald-300 border-emerald-700/60',
-          icon: <Music size={12} className="text-emerald-400 shrink-0" />,
+          bg: 'bg-panel/95',
+          border: getSelectionBorder('border-clip-audio/50 hover:border-clip-audio'),
+          icon: <Music size={12} className="text-text-2 shrink-0" />,
         };
       case 'text':
         return {
-          bg: 'bg-dark-900/95',
-          border: getSelectionBorder('border-amber-500/40 hover:border-amber-400/80'),
-          accent: 'text-amber-300',
-          badge: 'bg-amber-950/80 text-amber-300 border-amber-700/60',
-          icon: <Type size={12} className="text-amber-400 shrink-0" />,
+          bg: 'bg-panel/95',
+          border: getSelectionBorder('border-clip-text/50 hover:border-clip-text'),
+          icon: <Type size={12} className="text-text-2 shrink-0" />,
         };
       default:
         return {
-          bg: 'bg-dark-900/95',
-          border: getSelectionBorder('border-dark-700 hover:border-dark-600'),
-          accent: 'text-slate-300',
-          badge: 'bg-dark-800 text-slate-300 border-dark-700',
-          icon: <Film size={12} className="shrink-0" />,
+          bg: 'bg-panel/95',
+          border: getSelectionBorder('border-border hover:border-text-3'),
+          icon: <Film size={12} className="text-text-2 shrink-0" />,
         };
     }
   };
@@ -680,8 +677,9 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
 
   // F3: a clip without a usable media gets a warning border: it must not
   // look like a normal clip when it renders black and silent.
+  // (danger/warning are real semantics here: missing vs undecodable media.)
   const themeBorder = mediaUnavailable
-    ? 'border-rose-500/70 bg-rose-950/30'
+    ? 'border-danger/70 bg-danger/15'
     : theme.border;
 
   // Transitions visual metrics
@@ -733,7 +731,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         left: `${leftPx}px`,
         width: `${widthPx}px`,
       }}
-      className={`absolute top-1 bottom-1 rounded-md border ${themeBorder} ${theme.bg} flex items-center justify-between ${isInSelection ? 'overflow-visible' : 'overflow-hidden'} cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none`}
+      className={`absolute top-1 bottom-1 rounded-md border ${themeBorder} ${theme.bg} flex items-center justify-between ${isInSelection ? 'overflow-visible' : 'overflow-hidden'} cursor-grab active:cursor-grabbing select-none transition-shadow z-10 touch-none group focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none`}
     >
       {/* Background Filmstrip for Video clips */}
       {clip.type === 'video' && media?.thumbnails && media.thumbnails.length > 0 && (() => {
@@ -786,21 +784,17 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         <div
           data-testid="fade-in-indicator"
           style={{ width: `${fadeInWidthPx}px` }}
-          className={`absolute top-0 bottom-0 left-0 pointer-events-none border-r border-dashed border-blue-400/60 z-10 flex items-start p-1 ${
+          className={`absolute top-0 bottom-0 left-0 pointer-events-none border-r border-white/25 z-10 flex items-start p-1 ${
             fadeInType === 'fade-white'
-              ? 'bg-gradient-to-r from-white/70 to-transparent'
-              : 'bg-gradient-to-r from-black/80 to-transparent'
+              ? 'bg-white/40'
+              : 'bg-black/70'
           }`}
-          title={`Fade In: ${fadeInType} (${fadeInDuration}s)`}
+          title={`Fundido de entrada: ${fadeInType} (${fadeInDuration.toFixed(1).replace('.', ',')} s)`}
         >
           <span
-            className={`text-[8px] font-mono px-0.5 rounded leading-tight ${
-              fadeInType === 'fade-white'
-                ? 'text-slate-900 bg-white/80 font-bold'
-                : 'text-blue-300 bg-black/60'
-            }`}
+            className="text-[8px] font-mono px-0.5 rounded leading-tight text-text-1 bg-panel/80"
           >
-            ▲ In
+            ▲ Entrada
           </span>
         </div>
       )}
@@ -810,21 +804,17 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         <div
           data-testid="fade-out-indicator"
           style={{ width: `${fadeOutWidthPx}px` }}
-          className={`absolute top-0 bottom-0 right-0 pointer-events-none border-l border-dashed border-blue-400/60 z-10 flex items-start justify-end p-1 ${
+          className={`absolute top-0 bottom-0 right-0 pointer-events-none border-l border-white/25 z-10 flex items-start justify-end p-1 ${
             fadeOutType === 'fade-white'
-              ? 'bg-gradient-to-l from-white/70 to-transparent'
-              : 'bg-gradient-to-l from-black/80 to-transparent'
+              ? 'bg-white/40'
+              : 'bg-black/70'
           }`}
-          title={`Fade Out: ${fadeOutType} (${fadeOutDuration}s)`}
+          title={`Fundido de salida: ${fadeOutType} (${fadeOutDuration.toFixed(1).replace('.', ',')} s)`}
         >
           <span
-            className={`text-[8px] font-mono px-0.5 rounded leading-tight ${
-              fadeOutType === 'fade-white'
-                ? 'text-slate-900 bg-white/80 font-bold'
-                : 'text-blue-300 bg-black/60'
-            }`}
+            className="text-[8px] font-mono px-0.5 rounded leading-tight text-text-1 bg-panel/80"
           >
-            ▼ Out
+            ▼ Salida
           </span>
         </div>
       )}
@@ -841,38 +831,38 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         aria-valuemax={Number(trimStartBounds.max.toFixed(3))}
         aria-valuenow={Number(clip.start.toFixed(3))}
         aria-valuetext={formatDuration(clip.start)}
-        className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
+        className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
           showHandles
-            ? 'opacity-100 bg-white text-dark-950 shadow-md'
-            : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-blue-400/80 text-white'
+            ? 'opacity-100 bg-white text-app shadow-md'
+            : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-white/70 text-white'
         }`}
-        title="Recortar inicio (Trim In) — usa las flechas del teclado para ajustar"
+        title="Recortar inicio: usa las flechas del teclado para ajustar"
       >
-        <div className={`w-[2px] h-3.5 rounded-full ${isInSelection ? 'bg-dark-900' : 'bg-white/80'}`} />
+        <div className={`w-[2px] h-3.5 rounded-sm ${isInSelection ? 'bg-app' : 'bg-white/80'}`} />
       </div>
 
       {/* Clip Content Label & Badges */}
       <div className="flex-1 px-2 flex items-center gap-1.5 min-w-0 overflow-hidden pointer-events-none z-10">
         {theme.icon}
-        <span className="text-xs font-semibold text-slate-100 truncate">
+        <span className="text-xs font-semibold text-text-1 truncate">
           {clip.name}
         </span>
 
         {/* Speed indicator */}
         {clip.speed && clip.speed !== 1 && (
-          <span className="text-[9px] font-mono px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 font-bold shrink-0">
-            {clip.speed}x
-          </span>
+          <Badge variant="neutral">
+            <span className="font-mono font-bold">{clip.speed}x</span>
+          </Badge>
         )}
 
         {/* Transition active indicator */}
         {(hasFadeIn || hasFadeOut) && (
-          <span title="Transición activa" className="text-[9px] font-mono font-semibold px-1 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
-            FADE
+          <span title="Fundido activo" className="shrink-0">
+            <Badge variant="neutral">Fundido</Badge>
           </span>
         )}
 
-        {clip.muted && <VolumeX size={11} className="text-rose-400 shrink-0 ml-1" />}
+        {clip.muted && <VolumeX size={11} className="text-text-2 shrink-0 ml-1" />}
 
         {/* F3: the media of this clip is not available (B-14). */}
         {mediaUnavailable && (
@@ -881,13 +871,13 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
             role="status"
             title={
               mediaMissing
-                ? 'El archivo de este medio no está disponible: revínculalo en el panel de medios'
-                : 'El archivo de este medio no se puede decodificar: revínculalo en el panel de medios'
+                ? 'Este medio no está disponible: revínculalo desde Medios'
+                : 'Este medio no se puede decodificar: revínculalo desde Medios'
             }
             className={`text-[9px] font-mono font-semibold px-1 py-0.5 rounded shrink-0 flex items-center gap-0.5 border ${
               mediaMissing
-                ? 'bg-rose-950/90 text-rose-200 border-rose-600/70'
-                : 'bg-amber-950/90 text-amber-200 border-amber-600/70'
+                ? 'bg-danger/15 text-danger border-danger/60'
+                : 'bg-warning/15 text-warning border-warning/60'
             }`}
           >
             <AlertTriangle size={9} />
@@ -895,7 +885,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
           </span>
         )}
 
-        <span className="text-[10px] font-mono text-slate-400 shrink-0 ml-auto font-medium">
+        <span className="text-[10px] font-mono text-text-2 shrink-0 ml-auto font-medium">
           {formatDuration(clip.duration)}
         </span>
       </div>
@@ -925,7 +915,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
           aria-label="Acciones de portapapeles del clip"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
-          className="absolute bottom-0.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-0.5 px-1 py-0.5 rounded-md bg-dark-950/95 border border-dark-700 shadow-md"
+          className="absolute bottom-0.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-0.5 px-1 py-0.5 rounded-md bg-app/95 border border-border shadow-md"
         >
           <button
             type="button"
@@ -933,7 +923,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
             aria-label={copyScopeLabel}
             data-testid="clip-copy-button"
             onClick={() => copyClips(resolveActionScopeIds(clip.id, selectedClipIds))}
-            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-text-2 hover:text-text-1 hover:bg-raised focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
           >
             <Copy size={12} className="shrink-0" />
             {showClipboardLabels && <span className="text-[9px] font-semibold">{scopeCount > 1 ? copyScopeLabel : 'Copiar'}</span>}
@@ -941,11 +931,11 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
           <button
             type="button"
             title="Pegar"
-            aria-label={`Pegar en ${clip.name}`}
+            aria-label="Pegar"
             data-testid="clip-paste-button"
             disabled={!hasClipboard}
             onClick={() => pasteClips(clip.trackId)}
-            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 disabled:opacity-30 disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-text-2 hover:text-text-1 hover:bg-raised disabled:opacity-30 disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
           >
             <ClipboardPaste size={12} className="shrink-0" />
             {showClipboardLabels && <span className="text-[9px] font-semibold">Pegar</span>}
@@ -956,7 +946,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
             aria-label={duplicateScopeLabel}
             data-testid="clip-duplicate-button"
             onClick={() => duplicateClips(resolveActionScopeIds(clip.id, selectedClipIds))}
-            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-slate-300 hover:text-white hover:bg-dark-700 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-text-2 hover:text-text-1 hover:bg-raised focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
           >
             <CopyPlus size={12} className="shrink-0" />
             {showClipboardLabels && <span className="text-[9px] font-semibold">{scopeCount > 1 ? duplicateScopeLabel : 'Duplicar'}</span>}
@@ -977,14 +967,14 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         aria-valuemax={Number(trimEndBounds.max.toFixed(3))}
         aria-valuenow={Number((clip.start + clip.duration).toFixed(3))}
         aria-valuetext={formatDuration(clip.start + clip.duration)}
-        className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
+        className={`w-3.5 h-full cursor-ew-resize flex items-center justify-center shrink-0 z-20 touch-none select-none relative before:absolute before:-inset-x-3.5 before:inset-y-0 before:z-30 transition-all focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
           showHandles
-            ? 'opacity-100 bg-white text-dark-950 shadow-md'
-            : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-blue-400/80 text-white'
+            ? 'opacity-100 bg-white text-app shadow-md'
+            : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-white/70 text-white'
         }`}
-        title="Recortar final (Trim Out) — usa las flechas del teclado para ajustar"
+        title="Recortar final: usa las flechas del teclado para ajustar"
       >
-        <div className={`w-[2px] h-3.5 rounded-full ${isInSelection ? 'bg-dark-900' : 'bg-white/80'}`} />
+        <div className={`w-[2px] h-3.5 rounded-sm ${isInSelection ? 'bg-app' : 'bg-white/80'}`} />
       </div>
     </div>
   );

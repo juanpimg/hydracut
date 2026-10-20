@@ -1,9 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useRef, useState } from 'react';
 import {
-  Film,
-  Music,
-  Type,
   Eye,
   EyeOff,
   Lock,
@@ -16,14 +12,23 @@ import {
   ArrowDown,
   Trash2,
 } from 'lucide-react';
-import { Track } from '../../types/project';
+import { Track, TrackType } from '../../types/project';
 import { useProjectStore } from '../../store/useProjectStore';
-import { moveFocusWithin } from '../../hooks/useFocusTrap';
+import { IconButton } from '../ui/IconButton';
+import { Badge } from '../ui/Badge';
+import { Menu, MenuItem, MenuSeparador } from '../ui/Menu';
 
 interface TrackHeaderProps {
   track: Track;
   index?: number;
 }
+
+/** F2 · El color del tipo es una marca de 2 px, no una pastilla. */
+const MARCA_POR_TIPO: Record<TrackType, string> = {
+  video: 'bg-clip-video',
+  audio: 'bg-clip-audio',
+  text: 'bg-clip-text',
+};
 
 export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
   const toggleTrackMute = useProjectStore((s) => s.toggleTrackMute);
@@ -35,369 +40,195 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
   const tracks = useProjectStore((s) => s.project.tracks);
 
   const [menuOpen, setMenuOpen] = useState(false);
-  const [popoverCoords, setPopoverCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
   const menuBtnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   const trackIndex = typeof index === 'number' ? index : tracks.findIndex((t) => t.id === track.id);
   const canDelete = tracks.length > 1;
   const canMoveUp = trackIndex > 0;
   const canMoveDown = trackIndex !== -1 && trackIndex < tracks.length - 1;
 
-  // Track badge configurations and colors
-  const getBadgeConfig = () => {
-    switch (track.type) {
-      case 'video':
-        return {
-          icon: <Film size={11} className="text-blue-400 shrink-0" />,
-          style: 'bg-blue-500/15 border-blue-500/30 text-blue-400',
-        };
-      case 'audio':
-        return {
-          icon: <Music size={11} className="text-emerald-400 shrink-0" />,
-          style: 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400',
-        };
-      case 'text':
-        return {
-          icon: <Type size={11} className="text-purple-400 shrink-0" />,
-          style: 'bg-purple-500/15 border-purple-500/30 text-purple-400',
-        };
-    }
-  };
-
-  const getShortName = () => {
+  /** F2 · El mínimo legible es el código corto (V1/A1/T1), nunca un recorte a 3 letras. */
+  const codigo = (() => {
     const num = track.name.match(/\d+/)?.[0] || '1';
     return `${track.type[0].toUpperCase()}${num}`;
-  };
+  })();
 
-  const badgeConfig = getBadgeConfig();
+  const tituloVisibilidad = track.isVisible ? 'Ocultar pista' : 'Mostrar pista';
+  const tituloSonido = track.isMuted ? 'Activar sonido' : 'Silenciar pista';
+  const tituloBloqueo = track.isLocked ? 'Desbloquear pista' : 'Bloquear pista';
 
-  // Handle menu opening and position calculation
-  const handleToggleMenu = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (!menuOpen && menuBtnRef.current) {
-      const rect = menuBtnRef.current.getBoundingClientRect();
-      const menuWidth = 180;
-      const menuHeight = 190;
-      let left = rect.right + 6;
-      if (left + menuWidth > window.innerWidth) {
-        left = Math.max(8, rect.left - menuWidth - 4);
-      }
-      let top = rect.top;
-      if (top + menuHeight > window.innerHeight) {
-        top = Math.max(8, window.innerHeight - menuHeight - 12);
-      }
-      setPopoverCoords({ top, left });
-      setMenuOpen(true);
-    } else {
-      setMenuOpen(false);
-    }
-  };
-
-  // Close the menu on Escape and navigate it with the arrow keys (audit UI-14)
-  useEffect(() => {
-    if (!menuOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        setMenuOpen(false);
-        menuBtnRef.current?.focus();
-        return;
-      }
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        moveFocusWithin(menuRef.current, '[role="menuitem"]', e.key === 'ArrowDown' ? 'next' : 'prev');
-        return;
-      }
-      if (e.key === 'Home' || e.key === 'End') {
-        e.preventDefault();
-        moveFocusWithin(menuRef.current, '[role="menuitem"]', e.key === 'Home' ? 'first' : 'last');
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-
-    const raf =
-      typeof requestAnimationFrame === 'function'
-        ? requestAnimationFrame(() => {
-            moveFocusWithin(menuRef.current, '[role="menuitem"]', 'first');
-          })
-        : null;
-    if (raf === null) moveFocusWithin(menuRef.current, '[role="menuitem"]', 'first');
-
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      if (raf !== null) cancelAnimationFrame(raf);
-    };
-  }, [menuOpen]);
-
-  // Touch hitbox button base styling (44px height guaranteed; width 28px real
-  // + 4px pseudo expansion each side. Gap between buttons absorbs the expansion
-  // so neighboring hit areas overlap by at most ~4px instead of ~14px.)
-  const buttonBaseClass =
-    "relative flex items-center justify-center rounded-md transition active:scale-95 touch-manipulation h-11 min-h-[44px] w-7 min-w-[28px] after:absolute after:-inset-1 after:content-[''] focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none";
+  const devolverFoco = () => menuBtnRef.current?.focus();
 
   return (
     <div
       data-testid={`track-header-${track.id}`}
-      className="h-14 px-1.5 sm:px-2 md:px-3 bg-dark-900 border-b border-r border-dark-800 flex items-center justify-between select-none group overflow-hidden"
+      className="h-14 px-2 bg-panel border-b border-r border-border-subtle flex flex-col justify-center gap-1 select-none overflow-hidden"
     >
-      {/* 1. Track Badge & Full Name */}
-      <div className="flex items-center gap-1 min-w-0 flex-1 pr-1 overflow-hidden">
-        <span
-          data-testid={`track-badge-${track.id}`}
-          className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] sm:text-[10px] font-mono font-bold border shrink-0 max-w-[56px] sm:max-w-none truncate ${badgeConfig.style}`}
-          title={track.name}
-        >
-          <span className="hidden min-[420px]:inline-flex shrink-0">{badgeConfig.icon}</span>
-          <span className="truncate">{getShortName()}</span>
-        </span>
-        <span className="text-xs font-semibold text-slate-300 truncate hidden md:inline" title={track.name}>
+      {/* Fila 1 · Marca de tipo + código + nombre real (el nombre completo vive en el title). */}
+      <div className="flex items-center gap-1.5 min-w-0">
+        <span aria-hidden="true" className={`w-0.5 self-stretch rounded-sm ${MARCA_POR_TIPO[track.type]}`} />
+        <Badge variant="neutral">
+          <span className="font-mono">{codigo}</span>
+        </Badge>
+        <span className="text-body-sm font-medium text-text-1 truncate" title={track.name}>
           {track.name}
         </span>
       </div>
 
       {/*
-        2. Direct Touch Action Buttons.
-
-        UI-12: on 320–390 px phones the four buttons needed 136 px inside a
-        112 px column and were painted on top of the first clips of the lane
-        area. Below 400 px only the visibility and the "more" buttons stay
-        inline; mute and lock move into the "more" menu (see below).
+        Fila 2 · Como mucho 3 micro-controles + el disparador del menú.
+        Por debajo de 400 px solo quedan visibilidad y menú en línea; sonido y
+        bloqueo se mudan al menú para no pintar sobre los carriles.
       */}
-      <div className="flex items-center gap-1 shrink-0">
-        {/* Visibility (Eye) */}
-        <button
-          type="button"
+      <div className="flex items-center gap-0.5 shrink-0">
+        <IconButton
+          size="sm"
+          aria-label={tituloVisibilidad}
+          title={tituloVisibilidad}
           onClick={(e) => {
             e.stopPropagation();
             toggleTrackVisibility(track.id);
           }}
-          className={`${buttonBaseClass} ${
-            !track.isVisible
-              ? 'text-amber-400 bg-amber-950/50 border border-amber-500/30'
-              : 'text-slate-400 hover:text-white'
-          }`}
-          title={track.isVisible ? 'Ocultar pista' : 'Mostrar pista'}
-          aria-label={track.isVisible ? 'Ocultar pista' : 'Mostrar pista'}
+          className={track.isVisible ? '' : 'text-warning'}
         >
-          {track.isVisible ? <Eye size={13} /> : <EyeOff size={13} />}
-        </button>
+          {track.isVisible ? <Eye size={14} /> : <EyeOff size={14} />}
+        </IconButton>
 
-        {/* Mute (Audio / Video) — inline only from 400px up */}
-        {track.type !== 'text' ? (
-          <button
-            type="button"
+        {track.type !== 'text' && (
+          <IconButton
+            size="sm"
+            aria-label={tituloSonido}
+            title={tituloSonido}
             onClick={(e) => {
               e.stopPropagation();
               toggleTrackMute(track.id);
             }}
-            className={`${buttonBaseClass} hidden min-[400px]:flex ${
-              track.isMuted
-                ? 'text-red-400 bg-red-950/50 border border-red-500/30'
-                : 'text-slate-400 hover:text-white'
-            }`}
-            title={track.isMuted ? 'Activar audio' : 'Silenciar pista'}
-            aria-label={track.isMuted ? 'Activar audio' : 'Silenciar pista'}
+            className={`hidden min-[400px]:inline-flex ${track.isMuted ? 'text-danger' : ''}`}
           >
-            {track.isMuted ? <VolumeX size={13} /> : <Volume2 size={13} />}
-          </button>
-        ) : (
-          /* Placeholder invisible to preserve columnar grid alignment */
-          <div className="hidden min-[400px]:block w-7 min-w-[28px] h-11 min-h-[44px]" aria-hidden="true" />
+            {track.isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+          </IconButton>
         )}
 
-        {/* Lock — inline only from 400px up */}
-        <button
-          type="button"
+        <IconButton
+          size="sm"
+          aria-label={tituloBloqueo}
+          title={tituloBloqueo}
           onClick={(e) => {
             e.stopPropagation();
             toggleTrackLock(track.id);
           }}
-          className={`${buttonBaseClass} hidden min-[400px]:flex ${
-            track.isLocked
-              ? 'text-amber-400 bg-amber-950/50 border border-amber-500/30'
-              : 'text-slate-400 hover:text-white'
-          }`}
-          title={track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}
-          aria-label={track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}
+          className={`hidden min-[400px]:inline-flex ${track.isLocked ? 'text-warning' : ''}`}
         >
-          {track.isLocked ? <Lock size={13} /> : <Unlock size={13} />}
-        </button>
+          {track.isLocked ? <Lock size={14} /> : <Unlock size={14} />}
+        </IconButton>
 
-        {/* Quick action menu button '...' */}
-        <button
+        <IconButton
           ref={menuBtnRef}
-          type="button"
-          onClick={handleToggleMenu}
-          data-testid={`track-menu-btn-${track.id}`}
-          className={`${buttonBaseClass} ${
-            menuOpen
-              ? 'text-cyan-400 bg-cyan-950/50 border border-cyan-500/30'
-              : 'text-slate-400 hover:text-white'
-          }`}
-          title="Opciones de pista"
+          size="sm"
           aria-label="Opciones de pista"
+          title="Opciones de pista"
           aria-haspopup="true"
           aria-expanded={menuOpen}
+          data-testid={`track-menu-btn-${track.id}`}
+          active={menuOpen}
+          onClick={(e) => {
+            e.stopPropagation();
+            setMenuOpen((open) => !open);
+          }}
         >
           <MoreVertical size={14} />
-        </button>
+        </IconButton>
       </div>
 
-      {/* 3. Popover Menu (Mounted via Portal into document.body to avoid parent overflow clipping) */}
-      {menuOpen &&
-        typeof document !== 'undefined' &&
-        createPortal(
-          <div className="fixed inset-0 z-50">
-            {/* Click-outside backdrop */}
-            <div
-              className="fixed inset-0 bg-black/25 backdrop-blur-[0.5px]"
-              onClick={(e) => {
-                e.stopPropagation();
-                setMenuOpen(false);
-                menuBtnRef.current?.focus();
-              }}
-            />
+      {/* F2 · El menú de la pista es un Menu del sistema (portal, sin blur, sin goto casero). */}
+      <Menu
+        ancla={menuBtnRef}
+        abierto={menuOpen}
+        onCerrar={() => setMenuOpen(false)}
+        ariaLabel="Opciones de pista"
+      >
+        <div className="px-2.5 py-1.5 text-caption text-text-2 flex items-center justify-between gap-2 uppercase">
+          <span className="truncate normal-case text-body-sm text-text-1">{track.name}</span>
+          <span className="shrink-0">{track.type}</span>
+        </div>
+        <MenuSeparador />
 
-            {/* Menu Popover Container */}
-            <div
-              ref={menuRef}
-              role="menu"
-              aria-label="Opciones de pista"
-              data-testid={`track-menu-${track.id}`}
-              style={{ top: `${popoverCoords.top}px`, left: `${popoverCoords.left}px` }}
-              className="fixed z-[60] w-44 max-h-[70dvh] overflow-y-auto bg-dark-900 border border-dark-750 rounded-lg shadow-2xl py-1 px-1 text-slate-200 text-xs flex flex-col gap-0.5 animate-scaleUp"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-2.5 py-1.5 border-b border-dark-800 text-[10px] font-mono font-bold text-slate-400 flex items-center justify-between">
-                <span className="truncate">{track.name}</span>
-                <span className="uppercase text-[9px] text-slate-500 ml-1 shrink-0">{track.type}</span>
-              </div>
-
-              {/* Mute — only below 400px, where the inline button is hidden */}
-              {track.type !== 'text' && (
-                <button
-                  role="menuitem"
-                  title={track.isMuted ? 'Activar audio' : 'Silenciar pista'}
-                  aria-label={track.isMuted ? 'Activar audio' : 'Silenciar pista'}
-                  data-testid={`track-menu-mute-${track.id}`}
-                  onClick={() => {
-                    toggleTrackMute(track.id);
-                    setMenuOpen(false);
-                    menuBtnRef.current?.focus();
-                  }}
-                  className="min-[400px]:hidden w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white transition text-left min-h-[44px] touch-manipulation"
-                >
-                  {track.isMuted ? <VolumeX size={14} className="text-red-400 shrink-0" /> : <Volume2 size={14} className="shrink-0" />}
-                  <span className="truncate">{track.isMuted ? 'Activar audio' : 'Silenciar pista'}</span>
-                </button>
-              )}
-
-              {/* Lock — only below 400px, where the inline button is hidden */}
-              <button
-                role="menuitem"
-                title={track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}
-                aria-label={track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}
-                data-testid={`track-menu-lock-${track.id}`}
-                onClick={() => {
-                  toggleTrackLock(track.id);
-                  setMenuOpen(false);
-                  menuBtnRef.current?.focus();
-                }}
-                className="min-[400px]:hidden w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white transition text-left min-h-[44px] touch-manipulation"
-              >
-                {track.isLocked ? <Lock size={14} className="text-amber-400 shrink-0" /> : <Unlock size={14} className="shrink-0" />}
-                <span className="truncate">{track.isLocked ? 'Desbloquear pista' : 'Bloquear pista'}</span>
-              </button>
-
-              {/* Duplicar pista */}
-              <button
-                role="menuitem"
-                title="Duplicar pista"
-                aria-label="Duplicar pista"
-                data-testid={`track-menu-duplicate-${track.id}`}
-                onClick={() => {
-                  duplicateTrack(track.id);
-                  setMenuOpen(false);
-                  menuBtnRef.current?.focus();
-                }}
-                className="w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white transition text-left min-h-[40px] touch-manipulation"
-              >
-                <Copy size={14} className="text-cyan-400 shrink-0" />
-                <span className="truncate">Duplicar pista</span>
-              </button>
-
-              {/* Subir pista */}
-              <button
-                role="menuitem"
-                title="Subir pista"
-                aria-label="Subir pista"
-                data-testid={`track-menu-up-${track.id}`}
-                disabled={!canMoveUp}
-                onClick={() => {
-                  reorderTrack(track.id, 'up');
-                  setMenuOpen(false);
-                  menuBtnRef.current?.focus();
-                }}
-                className={`w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md transition text-left min-h-[40px] touch-manipulation ${
-                  canMoveUp
-                    ? 'hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white'
-                    : 'opacity-40 cursor-not-allowed text-slate-500'
-                }`}
-              >
-                <ArrowUp size={14} className="text-blue-400 shrink-0" />
-                <span className="truncate">Subir pista</span>
-              </button>
-
-              {/* Bajar pista */}
-              <button
-                role="menuitem"
-                title="Bajar pista"
-                aria-label="Bajar pista"
-                data-testid={`track-menu-down-${track.id}`}
-                disabled={!canMoveDown}
-                onClick={() => {
-                  reorderTrack(track.id, 'down');
-                  setMenuOpen(false);
-                  menuBtnRef.current?.focus();
-                }}
-                className={`w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md transition text-left min-h-[40px] touch-manipulation ${
-                  canMoveDown
-                    ? 'hover:bg-dark-800 active:bg-dark-750 text-slate-200 hover:text-white'
-                    : 'opacity-40 cursor-not-allowed text-slate-500'
-                }`}
-              >
-                <ArrowDown size={14} className="text-blue-400 shrink-0" />
-                <span className="truncate">Bajar pista</span>
-              </button>
-
-              {/* Divider & Delete */}
-              {canDelete && (
-                <>
-                  <div className="my-0.5 border-t border-dark-800" />
-                  <button
-                    role="menuitem"
-                    title="Eliminar pista"
-                    aria-label="Eliminar pista"
-                    data-testid={`track-menu-delete-${track.id}`}
-                    onClick={() => {
-                      removeTrack(track.id);
-                      setMenuOpen(false);
-                      menuBtnRef.current?.focus();
-                    }}
-                    className="w-full flex items-center gap-2 px-2.5 py-2.5 rounded-md hover:bg-red-950/40 active:bg-red-950/60 text-red-400 hover:text-red-300 transition text-left min-h-[40px] touch-manipulation"
-                  >
-                    <Trash2 size={14} className="text-red-400 shrink-0" />
-                    <span className="truncate">Eliminar pista</span>
-                  </button>
-                </>
-              )}
-            </div>
-          </div>,
-          document.body
+        {/* Sonido y bloqueo: solo donde están ocultos en línea (< 400 px). */}
+        {track.type !== 'text' && (
+          <MenuItem
+            className="min-[400px]:hidden"
+            icon={track.isMuted ? <VolumeX size={14} aria-hidden="true" /> : <Volume2 size={14} aria-hidden="true" />}
+            data-testid={`track-menu-mute-${track.id}`}
+            onClick={() => {
+              toggleTrackMute(track.id);
+              devolverFoco();
+            }}
+          >
+            {tituloSonido}
+          </MenuItem>
         )}
+        <MenuItem
+          className="min-[400px]:hidden"
+          icon={track.isLocked ? <Lock size={14} aria-hidden="true" /> : <Unlock size={14} aria-hidden="true" />}
+          data-testid={`track-menu-lock-${track.id}`}
+          onClick={() => {
+            toggleTrackLock(track.id);
+            devolverFoco();
+          }}
+        >
+          {tituloBloqueo}
+        </MenuItem>
+
+        <MenuItem
+          icon={<Copy size={14} aria-hidden="true" />}
+          data-testid={`track-menu-duplicate-${track.id}`}
+          onClick={() => {
+            duplicateTrack(track.id);
+            devolverFoco();
+          }}
+        >
+          Duplicar pista
+        </MenuItem>
+        <MenuItem
+          icon={<ArrowUp size={14} aria-hidden="true" />}
+          data-testid={`track-menu-up-${track.id}`}
+          disabled={!canMoveUp}
+          onClick={() => {
+            reorderTrack(track.id, 'up');
+            devolverFoco();
+          }}
+        >
+          Subir pista
+        </MenuItem>
+        <MenuItem
+          icon={<ArrowDown size={14} aria-hidden="true" />}
+          data-testid={`track-menu-down-${track.id}`}
+          disabled={!canMoveDown}
+          onClick={() => {
+            reorderTrack(track.id, 'down');
+            devolverFoco();
+          }}
+        >
+          Bajar pista
+        </MenuItem>
+
+        {canDelete && (
+          <>
+            <MenuSeparador />
+            <MenuItem
+              danger
+              icon={<Trash2 size={14} aria-hidden="true" />}
+              data-testid={`track-menu-delete-${track.id}`}
+              onClick={() => {
+                removeTrack(track.id);
+                devolverFoco();
+              }}
+            >
+              Eliminar pista
+            </MenuItem>
+          </>
+        )}
+      </Menu>
     </div>
   );
 };

@@ -1,20 +1,31 @@
-import React, { useRef } from 'react';
-import { 
-  RotateCcw, 
-  RotateCw, 
-  HelpCircle, 
+import React from 'react';
+import {
+  RotateCcw,
+  RotateCw,
+  HelpCircle,
   BookOpen,
-  Smartphone, 
-  Tv, 
+  Smartphone,
+  Tv,
   Square,
   Download,
   FolderKanban,
-  Github
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
 import { AspectRatio } from '../../types/project';
+import { Button } from '../ui/Button';
+import { IconButton } from '../ui/IconButton';
+import { SegmentedControl } from '../ui/SegmentedControl';
+import { Tooltip } from '../ui/Tooltip';
 
+/**
+ * Barra de la app (40 px): marca · proyecto · relación de aspecto ·
+ * deshacer/rehacer · Exportar a la derecha.
+ *
+ * Superficies planas con hairlines de 1 px, sin gradientes ni brillos. El
+ * botón de exportar va al extremo derecho (posición universal) y su etiqueta
+ * visible no promete un formato (se elige en el diálogo).
+ */
 export const Header: React.FC = () => {
   const projectName = useProjectStore((s) => s.project.name);
   const aspectRatio = useProjectStore((s) => s.project.aspectRatio);
@@ -26,71 +37,54 @@ export const Header: React.FC = () => {
   const canUndo = useProjectStore((s) => s.past.length > 0);
   const canRedo = useProjectStore((s) => s.future.length > 0);
 
-  // UI-29: subscribe to the individual fields instead of the whole store.
+  // UI-29: suscripción a los campos individuales, no a todo el store.
   const setExportModalOpen = useUIStore((s) => s.setExportModalOpen);
   const setShortcutsModalOpen = useUIStore((s) => s.setShortcutsModalOpen);
   const setProjectsModalOpen = useUIStore((s) => s.setProjectsModalOpen);
   const setWelcomeOpen = useUIStore((s) => s.setWelcomeOpen);
 
-  const aspectRefs = useRef<Array<HTMLButtonElement | null>>([]);
-
-  const aspectRatios: { id: AspectRatio; label: string; icon: React.ReactNode }[] = [
-    { id: '16:9', label: '16:9 Panorámico', icon: <Tv size={14} /> },
-    { id: '9:16', label: '9:16 Shorts/Reels', icon: <Smartphone size={14} /> },
-    { id: '1:1', label: '1:1 Cuadrado', icon: <Square size={14} /> },
-  ];
-
-  /** UI-14: the radiogroup was not keyboard navigable at all. */
-  const handleAspectKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
-    const count = aspectRatios.length;
-    let next = -1;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (index + 1) % count;
-    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (index - 1 + count) % count;
-    else if (e.key === 'Home') next = 0;
-    else if (e.key === 'End') next = count - 1;
-    if (next < 0) return;
-
-    e.preventDefault();
-    setAspectRatio(aspectRatios[next].id);
-    aspectRefs.current[next]?.focus();
-  };
-
   return (
-    <header className="h-14 bg-dark-900 border-b border-dark-800 px-3 sm:px-4 flex items-center justify-between z-30 select-none min-w-0 overflow-x-auto no-scrollbar">
-      {/* Left: Brand & Project Manager */}
-      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+    <header className="flex h-10 min-w-0 items-center justify-between gap-2 overflow-x-auto border-b border-border-subtle bg-panel px-3 no-scrollbar select-none">
+      {/* Izquierda: marca y proyecto */}
+      <div className="flex shrink-0 items-center gap-2">
         <button
           onClick={() => {
             const hasWork = project.clips.length > 0;
             if (
               !hasWork ||
-              confirm('¿Volver al Hub de HydraApps? Tu proyecto está autoguardado en este navegador.')
+              confirm('¿Volver al Hub? El proyecto queda guardado en este navegador.')
             ) {
               window.location.href = '/';
             }
           }}
-          className="flex items-center gap-2 px-2.5 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded-lg text-white font-bold text-sm transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="HydraCut — HydraApps Suite (volver al Hub)"
-          aria-label="Volver al Hub de HydraApps"
+          className="flex h-8 items-center gap-2 rounded border border-border bg-raised px-2 text-sm font-bold text-text-1 transition hover:bg-overlay"
+          title="Volver al Hub"
+          aria-label="Volver al Hub"
         >
-          <div className="w-5 h-5 rounded bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center text-[11px] font-black shadow-sm text-white">
+          {/* Marca plana: cuadrado con borde de 1 px, sin gradiente ni brillo. */}
+          <span
+            aria-hidden="true"
+            className="flex h-5 w-5 items-center justify-center rounded-sm border border-border bg-panel text-[11px] font-black text-text-1"
+          >
             H
-          </div>
-          <span className="tracking-tight hidden sm:inline">Hydra<span className="text-cyan-400">Cut</span></span>
-          <span className="text-[9px] uppercase font-mono px-1 py-0.5 rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/60 font-semibold tracking-wider hidden md:inline">
+          </span>
+          <span className="hidden tracking-tight sm:inline">
+            Hydra<span className="text-accent">Cut</span>
+          </span>
+          <span className="hidden rounded-sm border border-border px-1 py-0.5 font-mono text-[9px] font-semibold tracking-wider text-text-3 uppercase md:inline">
             Studio
           </span>
         </button>
 
-        <div className="h-5 w-[1px] bg-dark-750 shrink-0" />
+        <div aria-hidden="true" className="h-5 w-px shrink-0 bg-border-subtle" />
 
         <button
           onClick={() => setProjectsModalOpen(true)}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-dark-800 hover:bg-dark-750 text-slate-200 hover:text-white rounded-lg border border-dark-700 hover:border-cyan-500/40 text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none shrink-0"
-          title="Gestor de Proyectos (Abrir, Nuevo, Guardar, Respaldos)"
-          aria-label="Abrir gestor de proyectos"
+          className="flex h-8 shrink-0 items-center gap-1.5 rounded border border-border bg-raised px-2.5 text-xs font-semibold text-text-1 transition hover:bg-overlay"
+          title="Abrir proyectos"
+          aria-label="Abrir proyectos"
         >
-          <FolderKanban size={15} className="text-cyan-400" />
+          <FolderKanban size={15} className="text-text-2" aria-hidden="true" />
           <span className="hidden sm:inline">Proyectos</span>
         </button>
 
@@ -99,118 +93,93 @@ export const Header: React.FC = () => {
           value={projectName}
           onChange={(e) => setProjectName(e.target.value)}
           aria-label="Nombre del proyecto"
-          className="bg-transparent hover:bg-dark-800 focus:bg-dark-800 text-slate-200 focus:text-white px-2 py-1 rounded text-xs sm:text-sm font-medium border border-transparent focus:border-dark-700 outline-none transition w-32 sm:w-44 md:w-52 truncate focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+          className="w-32 truncate rounded border border-transparent bg-transparent px-2 py-1 text-xs font-medium text-text-2 transition outline-none hover:bg-raised focus:border-border focus:bg-raised focus:text-text-1 sm:w-44 sm:text-body md:w-52"
           title="Renombrar proyecto"
         />
       </div>
 
-      {/* Middle: Aspect Ratio & Undo/Redo */}
-      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 mx-2">
-        {/* Aspect Ratio Switcher — radiogroup with roving tabindex + arrow keys (UI-14) */}
-        <div role="radiogroup" aria-label="Relación de aspecto del proyecto" className="flex bg-dark-950 p-1 rounded-lg border border-dark-800 gap-0.5 sm:gap-1">
-          {aspectRatios.map((item, index) => {
-            const isSelected = aspectRatio === item.id;
-            return (
-              <button
-                key={item.id}
-                ref={(el) => {
-                  aspectRefs.current[index] = el;
-                }}
-                role="radio"
-                aria-checked={isSelected}
-                tabIndex={isSelected ? 0 : -1}
-                onClick={() => setAspectRatio(item.id)}
-                onKeyDown={(e) => handleAspectKeyDown(e, index)}
-                className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 rounded text-xs font-medium transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
-                  isSelected
-                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 font-semibold'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-dark-850 border border-transparent'
-                }`}
-                title={`Formato ${item.label}`}
-                aria-label={`Formato ${item.label}`}
-              >
-                {item.icon}
-                <span className="hidden md:inline">{item.id}</span>
-              </button>
-            );
-          })}
-        </div>
+      {/* Centro: relación de aspecto y deshacer/rehacer */}
+      <div className="mx-2 flex shrink-0 items-center gap-2">
+        <SegmentedControl<AspectRatio>
+          ariaLabel="Relación de aspecto del proyecto"
+          name="relacion-aspecto"
+          value={aspectRatio}
+          onChange={setAspectRatio}
+          options={[
+            { value: '16:9', label: '16:9', icon: <Tv size={14} aria-hidden="true" /> },
+            { value: '9:16', label: '9:16', icon: <Smartphone size={14} aria-hidden="true" /> },
+            { value: '1:1', label: '1:1', icon: <Square size={14} aria-hidden="true" /> },
+          ]}
+        />
 
-        <div className="hidden sm:block h-5 w-[1px] bg-dark-750 mx-0.5 shrink-0" />
+        <div aria-hidden="true" className="mx-0.5 hidden h-5 w-px shrink-0 bg-border-subtle sm:block" />
 
-        {/* Undo / Redo */}
-        <div className="flex items-center gap-0.5 sm:gap-1 bg-dark-950 p-1 rounded-lg border border-dark-800">
-          <button
-            onClick={undo}
-            disabled={!canUndo}
-            className={`p-1.5 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
-              canUndo ? 'text-slate-300 hover:bg-dark-800 hover:text-white' : 'text-slate-600 cursor-not-allowed opacity-40'
-            }`}
-            title="Deshacer (Ctrl+Z)"
-            aria-label="Deshacer última acción (Ctrl+Z)"
-          >
-            <RotateCcw size={14} />
-          </button>
-          <button
-            onClick={redo}
-            disabled={!canRedo}
-            className={`p-1.5 rounded transition flex items-center justify-center focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
-              canRedo ? 'text-slate-300 hover:bg-dark-800 hover:text-white' : 'text-slate-600 cursor-not-allowed opacity-40'
-            }`}
-            title="Rehacer (Ctrl+Y)"
-            aria-label="Rehacer última acción (Ctrl+Y)"
-          >
-            <RotateCw size={14} />
-          </button>
+        <div className="flex items-center gap-1 rounded border border-border-subtle bg-panel p-1">
+          <Tooltip content="Deshacer (Ctrl+Z)">
+            <IconButton
+              size="sm"
+              onClick={undo}
+              disabled={!canUndo}
+              aria-label="Deshacer (Ctrl+Z)"
+              title="Deshacer (Ctrl+Z)"
+            >
+              <RotateCcw size={14} aria-hidden="true" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip content="Rehacer (Ctrl+Y)">
+            <IconButton
+              size="sm"
+              onClick={redo}
+              disabled={!canRedo}
+              aria-label="Rehacer (Ctrl+Y)"
+              title="Rehacer (Ctrl+Y)"
+            >
+              <RotateCw size={14} aria-hidden="true" />
+            </IconButton>
+          </Tooltip>
         </div>
       </div>
 
-      {/* Right: Shortcuts, Github & Primary Export */}
-      <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-        {/* Shortcuts modal trigger */}
-        <button
-          onClick={() => setShortcutsModalOpen(true)}
-          className="p-2 text-slate-400 hover:text-white hover:bg-dark-800 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Atajos de Teclado"
-          aria-label="Ver atajos de teclado"
-        >
-          <HelpCircle size={16} />
-        </button>
+      {/* Derecha: ayuda, guía y exportar (siempre al extremo derecho) */}
+      <div className="flex shrink-0 items-center gap-1">
+        <Tooltip content="Atajos de teclado">
+          <IconButton
+            size="sm"
+            onClick={() => setShortcutsModalOpen(true)}
+            aria-label="Atajos de teclado"
+            title="Atajos de teclado"
+          >
+            <HelpCircle size={16} aria-hidden="true" />
+          </IconButton>
+        </Tooltip>
 
         {/* Guía de inicio: reabre la bienvenida a propósito (es de primer
             arranque y ya no se muestra sola al recargar). */}
-        <button
-          onClick={() => setWelcomeOpen(true)}
-          className="p-2 text-slate-400 hover:text-white hover:bg-dark-800 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Guía de inicio"
-          aria-label="Abrir guía de inicio"
-          data-testid="header-guide-button"
-        >
-          <BookOpen size={16} />
-        </button>
+        <Tooltip content="Guía de inicio">
+          <IconButton
+            size="sm"
+            onClick={() => setWelcomeOpen(true)}
+            aria-label="Abrir guía de inicio"
+            title="Guía de inicio"
+            data-testid="header-guide-button"
+          >
+            <BookOpen size={16} aria-hidden="true" />
+          </IconButton>
+        </Tooltip>
 
-        {/* GitHub link */}
-        <a
-          href="https://github.com/juanpimg/hydracut"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="p-2 text-slate-400 hover:text-white hover:bg-dark-800 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Ver código en GitHub"
-          aria-label="Ver HydraCut en GitHub (pestaña nueva)"
-        >
-          <Github size={16} />
-        </a>
-
-        {/* Primary Export Button (MP4 y WebM: la etiqueta no promete un formato) */}
-        <button
+        {/* Botón primario de exportar (la etiqueta no promete un formato). */}
+        <Button
+          variant="primary"
+          size="sm"
+          icon={<Download size={14} aria-hidden="true" />}
           onClick={() => setExportModalOpen(true)}
-          className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 bg-cyan-500 hover:bg-cyan-400 text-dark-950 font-bold text-xs rounded-lg active:scale-95 transition shadow-sm focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:outline-none shrink-0"
           aria-label="Abrir modal de exportación de vídeo"
+          title="Exportar vídeo"
           data-testid="export-open-button"
+          className="ml-1 shrink-0 font-bold"
         >
-          <Download size={14} className="stroke-[2.5]" />
-          <span>Exportar vídeo</span>
-        </button>
+          Exportar vídeo
+        </Button>
       </div>
     </header>
   );

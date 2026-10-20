@@ -3,32 +3,70 @@
 @tailwind utilities;
 
 @layer base {
-  body {
-    @apply bg-dark-950 text-slate-100;
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  /* Tokens de DESIGN.md como propiedades CSS para el chrome del navegador
+     (scrollbars, selección, caret, foco): el mismo ramp que Tailwind. */
+  :root {
+    --hc-app: #0d1117;
+    --hc-panel: #161b22;
+    --hc-raised: #1f242e;
+    --hc-overlay: #262d38;
+    --hc-border-subtle: #21262d;
+    --hc-border: #30363d;
+    --hc-text-1: #f0f3f6;
+    --hc-text-2: #9aa4b2;
+    --hc-text-3: #636c76;
+    --hc-accent: #22d3ee;
+    --hc-accent-soft: rgba(34, 211, 238, 0.12);
   }
 
-  /* Custom scrollbar */
+  body {
+    @apply bg-app text-text-1 font-sans;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    /* El cursor de texto también es acento: detalle barato de "diseñado". */
+    caret-color: var(--hc-accent);
+  }
+
+  /* Barras de desplazamiento con el ramp de tokens. */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
   ::-webkit-scrollbar-track {
-    background: #121316;
+    background: var(--hc-panel);
   }
   ::-webkit-scrollbar-thumb {
-    background: #2e323b;
-    border-radius: 3px;
+    background: var(--hc-border);
+    border-radius: 4px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #3f4450;
+    background: var(--hc-text-3);
   }
 
-  /* Firefox scrollbar parity */
+  /* Paridad en Firefox. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: #2e323b #121316;
+    scrollbar-color: var(--hc-border) var(--hc-panel);
   }
+
+  /* Selección con el acento. */
+  ::selection {
+    background: var(--hc-accent-soft);
+    color: var(--hc-text-1);
+  }
+
+  /* Anillo de foco global: 2 px de acento con 1 px de desplazamiento.
+     Solo se quita el outline por defecto donde se sustituye por este. */
+  :focus-visible {
+    outline: 2px solid var(--hc-accent);
+    outline-offset: 1px;
+  }
+}
+
+/* Números tabulares (timecodes, duraciones, medidas): combina con
+   `font-mono text-timecode`. */
+.tabular {
+  font-variant-numeric: tabular-nums;
 }
 
 .no-select {
@@ -42,4 +80,24 @@
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+/* Desplazamiento denso y fino para la línea de tiempo. */
+.panel-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hc-border) var(--hc-panel);
+}
+.panel-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.panel-scroll::-webkit-scrollbar-track {
+  background: var(--hc-panel);
+}
+.panel-scroll::-webkit-scrollbar-thumb {
+  background: var(--hc-border);
+  border-radius: 3px;
+}
+.panel-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--hc-text-3);
 }

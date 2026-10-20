@@ -2,6 +2,62 @@ import React from 'react';
 import { X, Keyboard } from 'lucide-react';
 import { useUIStore } from '../../store/useUIStore';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { Button } from '../ui/Button';
+
+interface Atajo {
+  tecla: string;
+  descripcion: string;
+}
+
+interface GrupoAtajos {
+  titulo: string;
+  atajos: Atajo[];
+}
+
+/**
+ * Los atajos reflejan los manejadores REALES, en el mismo orden en que la
+ * app los resuelve: portapapeles (`resolveClipboardShortcut` en
+ * `layout/MainLayout.tsx` → `copyClips` / `pasteClips` / `duplicateClips`
+ * del store) y seleccionar todo (`Ctrl+A` en `timeline/Timeline.tsx` →
+ * `selectAllClips` del store, el mismo atajo que el botón «Seleccionar
+ * todo»). Mantener esta lista sincronizada con esos ficheros.
+ */
+const GRUPOS: GrupoAtajos[] = [
+  {
+    titulo: 'Reproducción',
+    atajos: [
+      { tecla: 'Espacio', descripcion: 'Reproducir o pausar' },
+      { tecla: '← / →', descripcion: 'Retroceder o avanzar 1 fotograma' },
+      { tecla: 'Home', descripcion: 'Ir al inicio de la línea de tiempo' },
+    ],
+  },
+  {
+    titulo: 'Portapapeles y selección',
+    atajos: [
+      { tecla: 'Ctrl + C', descripcion: 'Copiar los clips seleccionados' },
+      { tecla: 'Ctrl + V', descripcion: 'Pegar los clips copiados' },
+      { tecla: 'Ctrl + D', descripcion: 'Duplicar los clips seleccionados' },
+      { tecla: 'Ctrl + A', descripcion: 'Seleccionar todos los clips' },
+    ],
+  },
+  {
+    titulo: 'Edición',
+    atajos: [
+      { tecla: 'S', descripcion: 'Dividir el clip en el cabezal (S)' },
+      { tecla: 'Supr / Backspace', descripcion: 'Eliminar el clip seleccionado' },
+      { tecla: 'Ctrl + Z', descripcion: 'Deshacer última acción' },
+      { tecla: 'Ctrl + Shift + Z', descripcion: 'Rehacer acción' },
+      { tecla: 'Ctrl + Y', descripcion: 'Rehacer acción' },
+    ],
+  },
+  {
+    titulo: 'Vista y diálogo',
+    atajos: [
+      { tecla: 'Ctrl + Rueda', descripcion: 'Acercar o alejar la línea de tiempo' },
+      { tecla: 'Esc', descripcion: 'Cerrar el diálogo o quitar la selección' },
+    ],
+  },
+];
 
 export const ShortcutsModal: React.FC = () => {
   const { isShortcutsModalOpen, setShortcutsModalOpen } = useUIStore();
@@ -17,31 +73,6 @@ export const ShortcutsModal: React.FC = () => {
 
   if (!isShortcutsModalOpen) return null;
 
-  /**
-   * The bindings below mirror the REAL handlers, in the same order the app
-   * resolves them: clipboard copy/paste/duplicate (`resolveClipboardShortcut`
-   * in `layout/MainLayout.tsx` → `copyClips` / `pasteClips` /
-   * `duplicateClips` of the store) and select-all (`Ctrl+A` in
-   * `timeline/Timeline.tsx` → `selectAllClips` of the store, same shortcut as
-   * the "Seleccionar todo" button). Keep this list in sync with those files.
-   */
-  const shortcuts = [
-    { key: 'Espacio', desc: 'Reproducir / Pausar reproducción' },
-    { key: 'S', desc: 'Cortar / Dividir clip en la posición del cabezal' },
-    { key: 'Supr / Backspace', desc: 'Eliminar el clip seleccionado' },
-    { key: '← / →', desc: 'Retroceder o avanzar 1 fotograma' },
-    { key: 'Ctrl + C', desc: 'Copiar los clips seleccionados' },
-    { key: 'Ctrl + V', desc: 'Pegar los clips copiados' },
-    { key: 'Ctrl + D', desc: 'Duplicar los clips seleccionados' },
-    { key: 'Ctrl + A', desc: 'Seleccionar todos los clips' },
-    { key: 'Ctrl + Z', desc: 'Deshacer última acción' },
-    { key: 'Ctrl + Shift + Z', desc: 'Rehacer acción' },
-    { key: 'Ctrl + Y', desc: 'Rehacer acción' },
-    { key: 'Ctrl + Rueda', desc: 'Zoom in / Zoom out en el timeline' },
-    { key: 'Home', desc: 'Ir al inicio del timeline (00:00:00:00)' },
-    { key: 'Esc', desc: 'Cerrar modal / Deseleccionar clip' },
-  ];
-
   return (
     <div
       ref={dialogRef}
@@ -49,47 +80,60 @@ export const ShortcutsModal: React.FC = () => {
       aria-modal="true"
       aria-label="Atajos de teclado"
       tabIndex={-1}
-      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none animate-fadeIn focus:outline-none"
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 select-none focus:outline-none"
       onClick={(e) => {
         if (e.target === e.currentTarget) setShortcutsModalOpen(false);
       }}
     >
-      <div className="bg-dark-900 border border-dark-800 rounded-xl w-full max-w-sm shadow-2xl overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-dark-800 flex items-center justify-between">
+      <div className="bg-raised border border-border rounded-lg w-full max-w-[560px] shadow-overlay overflow-hidden flex flex-col max-h-[560px]">
+        {/* Cabecera */}
+        <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <Keyboard size={18} className="text-blue-400" />
-            <h3 className="text-sm font-bold text-white">Atajos de Teclado</h3>
+            <Keyboard size={16} className="text-text-2" aria-hidden="true" />
+            <h3 className="text-title text-text-1">Atajos de teclado</h3>
           </div>
           <button
             onClick={() => setShortcutsModalOpen(false)}
-            aria-label="Cerrar modal de atajos"
-            className="text-slate-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            aria-label="Cerrar"
+            className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded text-text-2 transition hover:bg-overlay hover:text-text-1"
           >
-            <X size={18} />
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
 
-        {/* Shortcuts list */}
-        <div className="p-5 space-y-2.5">
-          {shortcuts.map((sc, idx) => (
-            <div key={idx} className="flex items-center justify-between text-xs">
-              <span className="text-slate-400">{sc.desc}</span>
-              <kbd className="px-2 py-1 bg-dark-950 border border-dark-750 rounded text-slate-200 font-mono text-[11px] shadow-sm">
-                {sc.key}
-              </kbd>
-            </div>
+        {/* Lista densa por áreas */}
+        <div className="px-3 py-2 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2">
+          {GRUPOS.map((grupo) => (
+            <section key={grupo.titulo} aria-label={grupo.titulo}>
+              <h4 className="text-caption uppercase tracking-wider text-text-3">
+                {grupo.titulo}
+              </h4>
+              <ul className="flex flex-col">
+                {grupo.atajos.map((atajo) => (
+                  <li
+                    key={atajo.tecla}
+                    className="flex h-7 items-center justify-between gap-2 text-body-sm"
+                  >
+                    <span className="truncate text-text-2" title={atajo.descripcion}>{atajo.descripcion}</span>
+                    <kbd className="tabular shrink-0 rounded border border-border bg-panel px-1.5 py-0.5 font-mono text-timecode text-text-1">
+                      {atajo.tecla}
+                    </kbd>
+                  </li>
+                ))}
+              </ul>
+            </section>
           ))}
         </div>
 
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-dark-800 flex justify-end bg-dark-950">
-          <button
+        {/* Pie */}
+        <div className="px-3 py-2 border-t border-border-subtle flex justify-end">
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => setShortcutsModalOpen(false)}
-            className="px-4 py-1.5 min-h-[44px] bg-dark-800 hover:bg-dark-750 text-white text-xs rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
           >
-            Entendido
-          </button>
+            Cerrar
+          </Button>
         </div>
       </div>
     </div>

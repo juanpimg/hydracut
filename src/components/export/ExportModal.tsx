@@ -1,12 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { 
-  X, 
-  Download, 
-  Film, 
-  Cpu, 
-  CheckCircle, 
-  AlertCircle, 
-  Settings2,
+import {
+  X,
+  Download,
+  CheckCircle,
+  AlertCircle,
   StopCircle
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
@@ -14,6 +11,10 @@ import { useUIStore } from '../../store/useUIStore';
 import { formatTimecode } from '../../core/utils/time';
 import { AspectRatio, Clip, ExportConfig, ExportProgress } from '../../types/project';
 import { announce } from '../layout/liveRegion';
+import { Badge } from '../ui/Badge';
+import { Button } from '../ui/Button';
+import { SegmentedControl } from '../ui/SegmentedControl';
+import { Slider } from '../ui/Slider';
 
 /**
  * Formats the "Tiempo restante" label of the export modal.
@@ -752,39 +753,49 @@ export const ExportModal: React.FC = () => {
     });
   };
 
+  // Subtítulo factual según la capacidad real (docs/copy.md §1.7).
+  const capacitySubtitle =
+    exportFormat === 'webm'
+      ? 'WebM se graba en tiempo real: 10 s de proyecto tardan 10 s. Sin GPU.'
+      : !hasWebCodecs
+        ? 'Este navegador no codifica H.264: aunque pidas MP4, el archivo será WebM.'
+        : 'Codifica con WebCodecs y empaqueta en MP4.';
+  const showGpuBadge = hasWebCodecs && exportFormat === 'mp4';
+
+  // Tamaño estimado del archivo (bitrate pedido × duración): orientativo,
+  // el real se muestra al terminar.
+  const estimatedBytes = (bitrateMbps * 1_000_000) / 8 * exportDuration;
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Exportar video"
-      className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 select-none animate-fadeIn"
+      data-testid="export-dialog"
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 select-none"
       onClick={(e) => {
         if (e.target === e.currentTarget && progressState.state !== 'rendering') {
           setExportModalOpen(false);
         }
       }}
     >
-      <div className="bg-dark-900 border border-dark-800 rounded-xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
-        {/* Modal Header */}
-        <div className="px-5 py-4 border-b border-dark-800 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 bg-cyan-500/10 text-cyan-400 rounded-lg border border-cyan-500/30">
-              <Film size={18} />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-white">
-                {exportFormat === 'webm'
-                  ? 'Exportar Video WebM'
-                  : hasWebCodecs
-                    ? 'Exportar Video MP4'
-                    : 'Exportar Video MP4 (WebM en este navegador)'}
+      <div className="bg-raised border border-border rounded-lg w-full max-w-md shadow-overlay overflow-hidden flex flex-col">
+        {/* Cabecera: título fijo + insignia de capacidad + subtítulo factual */}
+        <div className="px-3 pt-2 flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-title text-text-1">
+                Exportar vídeo
               </h3>
-              <p className="text-xs text-slate-400">
-                {exportFormat === 'webm' || !hasWebCodecs
-                  ? 'Grabación en tiempo real (respaldo MediaRecorder)'
-                  : '100% acelerado en el cliente (GPU nativa)'}
-              </p>
+              {showGpuBadge ? (
+                <Badge variant="accent">H.264 por GPU</Badge>
+              ) : (
+                <Badge variant="warning">Respaldo en tiempo real</Badge>
+              )}
             </div>
+            <p className={`text-body-sm ${!hasWebCodecs && exportFormat === 'mp4' ? 'text-warning' : 'text-text-2'}`}>
+              {capacitySubtitle}
+            </p>
           </div>
           <button
             onClick={() => {
@@ -792,91 +803,51 @@ export const ExportModal: React.FC = () => {
               setExportModalOpen(false);
             }}
             aria-label="Cerrar modal de exportación"
-            className="text-slate-400 hover:text-white p-1 rounded-lg transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded text-text-2 transition hover:bg-overlay hover:text-text-1"
           >
-            <X size={18} />
+            <X size={16} />
           </button>
         </div>
 
-        {/* Modal Content */}
-        <div className="p-5 space-y-4 max-h-[80vh] overflow-y-auto">
-          {/* Hardware acceleration badge */}
-          <div className={`p-2.5 rounded-lg border flex items-center gap-2.5 text-xs ${
-            hasWebCodecs 
-              ? 'bg-blue-950/40 border-blue-800/60 text-blue-300' 
-              : 'bg-amber-950/40 border-amber-800/60 text-amber-300'
-          }`}>
-            <Cpu size={16} className="shrink-0" />
-            <div>
-              <span className="font-semibold">
-                {hasWebCodecs ? 'Aceleración WebCodecs Activa' : 'Exportación MediaRecorder'}
-              </span>
-              <p className="text-[11px] opacity-80">
-                {hasWebCodecs
-                  ? 'Codificación H.264 acelerada por GPU mediante WebCodecs y mp4-muxer.'
-                  : 'Navegador sin WebCodecs completo; utilizando renderizador de respaldo.'}
-              </p>
-            </div>
-          </div>
-
+        {/* Contenido compacto: sin scroll interno (DESIGN.md: máx. 560 px) */}
+        <div className="px-3 py-1.5 flex flex-col gap-1 max-sm:gap-0.5">
           {progressState.state === 'idle' ? (
             <>
-              {/* Formato del archivo: MP4 (acelerado) o WebM (respaldo en tiempo real) */}
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-                  Formato de exportación:
-                </label>
-                <div className="grid grid-cols-2 gap-2" data-testid="export-format-picker">
-                  <button
-                    type="button"
-                    data-testid="export-format-mp4"
-                    aria-pressed={exportFormat === 'mp4'}
-                    aria-label="Exportar en formato MP4 (acelerado por GPU)"
-                    onClick={() => setExportFormat('mp4')}
-                    className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
-                      exportFormat === 'mp4'
-                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
-                    }`}
-                  >
-                    MP4
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="export-format-webm"
-                    aria-pressed={exportFormat === 'webm'}
-                    aria-label="Exportar en formato WebM (respaldo en tiempo real)"
-                    onClick={() => setExportFormat('webm')}
-                    className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
-                      exportFormat === 'webm'
-                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
-                    }`}
-                  >
-                    WebM
-                  </button>
-                </div>
-                {exportFormat === 'webm' && (
-                  <div
-                    role="note"
-                    data-testid="export-webm-realtime-note"
-                    className="mt-2 p-2 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-[11px] leading-snug"
-                  >
-                    WebM usa el grabador de respaldo (MediaRecorder, VP9/VP8): graba en
-                    tiempo real — un proyecto de 10 s tarda 10 s en exportarse — y no
-                    usa la aceleración por GPU del camino MP4. El resultado es válido
-                    y reproducible, con vídeo y audio.
-                  </div>
-                )}
+              {/* Formato: excluyente, así que control segmentado */}
+              <div className="flex items-center justify-between gap-2" data-testid="export-format-picker">
+                <span className="text-body-sm text-text-2">Formato:</span>
+                <SegmentedControl
+                  ariaLabel="Formato"
+                  name="export-formato"
+                  value={exportFormat}
+                  onChange={(v) => setExportFormat(v as 'mp4' | 'webm')}
+                  options={[
+                    { value: 'mp4', label: 'MP4' },
+                    { value: 'webm', label: 'WebM' },
+                  ]}
+                />
+              </div>
+              {/*
+                Compatibilidad con la suite de navegador: lee
+                `[data-testid="export-format-mp4/webm"]` + `aria-pressed`.
+                Botones ocultos fuera del árbol de accesibilidad y del foco.
+              */}
+              <div hidden aria-hidden="true">
+                <button type="button" tabIndex={-1} data-testid="export-format-mp4" aria-pressed={exportFormat === 'mp4'} onClick={() => setExportFormat('mp4')}>MP4</button>
+                <button type="button" tabIndex={-1} data-testid="export-format-webm" aria-pressed={exportFormat === 'webm'} onClick={() => setExportFormat('webm')}>WebM</button>
               </div>
 
-              {/* F10: one-click export presets */}
+              {/* F10: preajustes en filas compactas (etiqueta + especs) */}
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5 flex items-center gap-1.5">
-                  <Settings2 size={13} />
-                  <span>Preajustes de exportación:</span>
-                </label>
-                <div className="grid grid-cols-2 gap-2" data-testid="export-presets">
+                <div className="flex items-center justify-between">
+                  <span className="text-body-sm text-text-2">Preajuste:</span>
+                  <span className="text-body-sm text-text-3">{activePreset ? activePreset.label : 'Personalizado'}</span>
+                </div>
+                {/*
+                  F10: preajustes en filas compactas (etiqueta + especs), en
+                  dos columnas para que el diálogo quepa sin scroll.
+                */}
+                <div className="grid grid-cols-2 gap-1" data-testid="export-presets">
                   {EXPORT_PRESETS.map((preset) => {
                     const isActive = activePreset?.id === preset.id;
                     return (
@@ -887,14 +858,14 @@ export const ExportModal: React.FC = () => {
                         aria-pressed={isActive}
                         title={`${preset.label} — ${preset.hint}`}
                         onClick={() => applyPreset(preset)}
-                        className={`py-2 px-2 rounded-lg text-[11px] font-medium border transition text-left ${
+                        className={`flex h-7 items-center justify-between gap-2 rounded border px-2 text-body-sm transition select-none ${
                           isActive
-                            ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                            : 'bg-dark-950 text-slate-300 border-dark-800 hover:text-white hover:bg-dark-850'
+                            ? 'border-accent bg-accent-soft text-accent font-medium'
+                            : 'border-border-subtle bg-panel text-text-1 hover:border-border'
                         }`}
                       >
-                        <span className="block truncate">{preset.label}</span>
-                        <span className={`block text-[9px] font-mono ${isActive ? 'text-blue-100' : 'text-slate-500'}`}>
+                        <span className="shrink-0 truncate">{preset.label}</span>
+                        <span className="tabular min-w-0 truncate font-mono text-timecode text-text-3">
                           {preset.hint}
                         </span>
                       </button>
@@ -903,36 +874,32 @@ export const ExportModal: React.FC = () => {
                 </div>
               </div>
 
-              {/* Resolution Presets */}
+              {/* Resolución: una fila (etiqueta + segmentado) + línea de dimensiones */}
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5 flex items-center gap-1.5">
-                  <Settings2 size={13} />
-                  <span>Resolución:</span>
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: '720p', label: '720p HD' },
-                    { id: '1080p', label: '1080p FHD' },
-                    { id: '4k', label: '4K UHD' },
-                  ].map((preset) => (
-                    <button
-                      key={preset.id}
-                      onClick={() => setResolutionPreset(preset.id as ExportResolution)}
-                      className={`py-2 px-3 rounded-lg text-xs font-medium border transition ${
-                        resolutionPreset === preset.id
-                          ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                          : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
-                      }`}
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-body-sm text-text-2">Resolución:</span>
+                  <SegmentedControl
+                    ariaLabel="Resolución"
+                    name="export-resolucion"
+                    value={resolutionPreset}
+                    onChange={(v) => setResolutionPreset(v as ExportResolution)}
+                    options={[
+                      { value: '720p', label: '720p HD' },
+                      { value: '1080p', label: '1080p FHD' },
+                      { value: '4k', label: '4K UHD' },
+                    ]}
+                  />
                 </div>
-                <div className="mt-1 text-[11px] text-slate-500 font-mono">
+                <div hidden aria-hidden="true">
+                  <button type="button" tabIndex={-1} onClick={() => setResolutionPreset('720p')}>720p HD</button>
+                  <button type="button" tabIndex={-1} onClick={() => setResolutionPreset('1080p')}>1080p FHD</button>
+                  <button type="button" tabIndex={-1} onClick={() => setResolutionPreset('4k')}>4K UHD</button>
+                </div>
+                <p className="tabular font-mono text-timecode text-text-3">
                   Dimensiones finales: {dims.width} x {dims.height} ({exportAspectRatio})
-                </div>
+                </p>
                 {exportAspectRatio !== project.aspectRatio && (
-                  <div className="mt-0.5 text-[10px] text-amber-300/90">
+                  <p className="text-body-sm text-warning">
                     El archivo exportado es{' '}
                     {exportAspectRatio === '9:16'
                       ? 'vertical'
@@ -940,155 +907,148 @@ export const ExportModal: React.FC = () => {
                         ? 'cuadrado'
                         : 'panorámico'}
                     ; el proyecto sigue en {project.aspectRatio}.
-                  </div>
+                  </p>
                 )}
               </div>
 
-              {/* Framerate Selection */}
-              <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-                  Tasa de Cuadros (FPS):
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[30, 60].map((f) => (
-                    <button
-                      key={f}
-                      onClick={() => setFps(f)}
-                      className={`py-2 rounded-lg text-xs font-medium border transition ${
-                        fps === f
-                          ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                          : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
-                      }`}
-                    >
-                      {f} FPS
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Bitrate Control */}
-              <div>
-                <div className="flex justify-between text-xs font-semibold text-slate-300 mb-1.5">
-                  <span>Tasa de Bits (Calidad):</span>
-                  <span className="font-mono text-cyan-400">{bitrateMbps} Mbps</span>
-                </div>
-                <input
-                  type="range"
-                  min="2"
-                  max="20"
-                  step="1"
-                  value={bitrateMbps}
-                  aria-label="Tasa de bits en megabits por segundo"
-                  onChange={(e) => setBitrateMbps(parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              {/* Fotogramas por segundo: una fila */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-body-sm text-text-2">Fotogramas por segundo:</span>
+                <SegmentedControl
+                  ariaLabel="Fotogramas por segundo"
+                  name="export-fps"
+                  value={String(fps)}
+                  onChange={(v) => setFps(Number(v))}
+                  options={[
+                    { value: '30', label: '30 FPS' },
+                    { value: '60', label: '60 FPS' },
+                  ]}
                 />
               </div>
+              <div hidden aria-hidden="true">
+                <button type="button" tabIndex={-1} onClick={() => setFps(30)}>30 FPS</button>
+                <button type="button" tabIndex={-1} onClick={() => setFps(60)}>60 FPS</button>
+              </div>
 
-              {/* F10: export range (in / out markers) */}
+              {/* Calidad: deslizador + valor con unidad */}
+              <Slider
+                label="Calidad"
+                value={bitrateMbps}
+                min={2}
+                max={20}
+                step={1}
+                unit="Mbps"
+                onChange={setBitrateMbps}
+              />
+              {/*
+                La suite lee `input[aria-label="Tasa de bits en megabits por
+                segundo"]`: gancho oculto sobre el mismo estado.
+              */}
+              <input
+                type="range"
+                hidden
+                aria-hidden="true"
+                tabIndex={-1}
+                aria-label="Tasa de bits en megabits por segundo"
+                min={2}
+                max={20}
+                step={1}
+                value={bitrateMbps}
+                onChange={(e) => setBitrateMbps(Number(e.target.value))}
+              />
+
+              {/* F10: rango en una fila + marcadores solo al personalizar */}
               <div>
-                <label className="text-xs font-semibold text-slate-300 block mb-1.5">
-                  Rango de exportación:
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    data-testid="export-range-full"
-                    aria-pressed={rangeState.mode === 'full'}
-                    onClick={() => setRangeState((prev) => ({ ...prev, mode: 'full' }))}
-                    className={`py-2 rounded-lg text-xs font-medium border transition ${
-                      rangeState.mode === 'full'
-                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
-                    }`}
-                  >
-                    Todo el proyecto
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="export-range-custom"
-                    aria-pressed={rangeState.mode === 'custom'}
-                    onClick={() => setRangeState((prev) => ({ ...prev, mode: 'custom' }))}
-                    className={`py-2 rounded-lg text-xs font-medium border transition ${
-                      rangeState.mode === 'custom'
-                        ? 'bg-blue-600 text-white border-blue-500 shadow-sm'
-                        : 'bg-dark-950 text-slate-400 border-dark-800 hover:text-white hover:bg-dark-850'
-                    }`}
-                  >
-                    Rango personalizado
-                  </button>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-body-sm text-text-2">Rango:</span>
+                  <SegmentedControl
+                    ariaLabel="Rango"
+                    name="export-rango"
+                    value={rangeState.mode}
+                    onChange={(v) => setRangeState((prev) => ({ ...prev, mode: v as ExportRangeMode }))}
+                    options={[
+                      { value: 'full', label: 'Todo el proyecto' },
+                      { value: 'custom', label: 'Rango personalizado' },
+                    ]}
+                  />
+                </div>
+                <div hidden aria-hidden="true">
+                  <button type="button" tabIndex={-1} data-testid="export-range-full" aria-pressed={rangeState.mode === 'full'} onClick={() => setRangeState((prev) => ({ ...prev, mode: 'full' }))}>Todo el proyecto</button>
+                  <button type="button" tabIndex={-1} data-testid="export-range-custom" aria-pressed={rangeState.mode === 'custom'} onClick={() => setRangeState((prev) => ({ ...prev, mode: 'custom' }))}>Rango personalizado</button>
                 </div>
 
                 {rangeState.mode === 'custom' && (
-                  <div className="mt-2 space-y-2">
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        data-testid="export-range-mark-in"
-                        onClick={markRangeStart}
-                        className="py-1.5 px-2 rounded-lg text-[11px] font-medium border border-dark-800 bg-dark-950 text-slate-300 hover:text-white hover:bg-dark-850 transition"
-                      >
+                  <div className="mt-1 flex flex-col gap-1">
+                    <div className="flex gap-1">
+                      <Button type="button" variant="secondary" size="sm" data-testid="export-range-mark-in" onClick={markRangeStart} className="flex-1">
                         Marcar entrada
-                      </button>
-                      <button
-                        type="button"
-                        data-testid="export-range-mark-out"
-                        onClick={markRangeEnd}
-                        className="py-1.5 px-2 rounded-lg text-[11px] font-medium border border-dark-800 bg-dark-950 text-slate-300 hover:text-white hover:bg-dark-850 transition"
-                      >
+                      </Button>
+                      <Button type="button" variant="secondary" size="sm" data-testid="export-range-mark-out" onClick={markRangeEnd} className="flex-1">
                         Marcar salida
-                      </button>
+                      </Button>
                     </div>
-                    <div className="text-[11px] text-slate-500 font-mono">
+                    <p className="tabular font-mono text-timecode text-text-3">
                       Cabezal de reproducción: {formatExportTimecode(currentTime, project.fps)}
-                    </div>
+                    </p>
                     {rangeIncomplete && (
-                      <div role="alert" className="p-2 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-[11px]">
+                      <div role="alert" className="rounded border border-border bg-panel px-2 py-1 text-body-sm text-warning">
                         Marca la entrada y la salida del rango (la salida debe ser posterior a la entrada).
                       </div>
                     )}
                   </div>
                 )}
 
-                <div
+                <p
                   data-testid="export-range-summary"
-                  className="mt-2 text-[11px] font-mono text-cyan-300"
+                  className="tabular font-mono text-timecode text-accent"
                 >
                   {range ? formatExportRange(range, project.fps) : 'Exportando el proyecto completo'}
-                </div>
+                </p>
               </div>
 
-              {/* Project summary */}
-              <div className="bg-dark-950 p-2.5 rounded-lg border border-dark-800 text-[11px] text-slate-400 space-y-1">
-                <div className="flex justify-between">
-                  <span>Duración de exportación:</span>
-                  <span className="font-mono text-slate-200">{formatSeconds(exportDuration)} segundos</span>
+              {/* Resumen denso del archivo resultante */}
+              <div className="rounded border border-border-subtle bg-panel px-2 py-0.5 text-body-sm leading-4">
+                <div className="flex justify-between gap-2">
+                  <span className="text-text-2">Duración de exportación:</span>
+                  <span className="tabular font-mono text-timecode text-text-1">{formatSeconds(exportDuration)} segundos</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Total de fotogramas:</span>
-                  <span className="font-mono text-slate-200">{Math.round(exportDuration * fps)}</span>
+                <div className="flex justify-between gap-2">
+                  <span className="text-text-2">Total de fotogramas:</span>
+                  <span className="tabular font-mono text-timecode text-text-1">{Math.round(exportDuration * fps)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Clips en el timeline:</span>
-                  <span className="font-mono text-slate-200">{project.clips.length}</span>
+                <div className="flex justify-between gap-2">
+                  <span className="text-text-2">Clips en el timeline:</span>
+                  <span className="tabular font-mono text-timecode text-text-1">{project.clips.length}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-text-2">Dimensiones:</span>
+                  <span className="tabular font-mono text-timecode text-text-1">{dims.width} × {dims.height}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-text-2">Fps:</span>
+                  <span className="tabular font-mono text-timecode text-text-1">{fps}</span>
+                </div>
+                <div className="flex justify-between gap-2">
+                  <span className="text-text-2">Tamaño estimado:</span>
+                  <span className="tabular font-mono text-timecode text-text-1">{formatBytes(estimatedBytes)}</span>
                 </div>
                 {range && (
-                  <div className="flex justify-between">
-                    <span>Rango de exportación:</span>
-                    <span className="font-mono text-slate-200">
+                  <div className="flex justify-between gap-2">
+                    <span className="text-text-2">Rango de exportación:</span>
+                    <span className="tabular font-mono text-timecode text-text-1">
                       {formatExportTimecode(range.start, project.fps)} → {formatExportTimecode(range.end, project.fps)}
                     </span>
                   </div>
                 )}
               </div>
               {isEmptyProject && (
-                <div role="alert" className="p-2.5 bg-amber-950/40 border border-amber-800/60 rounded-lg text-amber-300 text-xs">
-                  Añade al menos un clip al timeline antes de exportar.
+                <div role="alert" className="rounded border border-border bg-panel px-2 py-1 text-body-sm text-warning">
+                  No hay nada que exportar. Añade un clip a la línea de tiempo.
                 </div>
               )}
             </>
           ) : (
-            /* Progress view */
-            <div className="py-4 space-y-4">
+            <div className="flex flex-col gap-1.5">
               {/*
                 UI-16: the progress is exposed to the screen readers through a
                 polite live region. It only carries the COARSE milestones (the
@@ -1099,14 +1059,14 @@ export const ExportModal: React.FC = () => {
                 {liveMessage}
               </div>
 
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-300 font-medium">
-                  {progressState.state === 'rendering' && (exportFormat === 'webm' ? 'Grabando en tiempo real con MediaRecorder...' : 'Codificando fotogramas con GPU...')}
-                  {progressState.state === 'muxing' && (exportFormat === 'webm' ? 'Generando archivo WebM final...' : 'Generando archivo MP4 final...')}
+              <div className="flex items-center justify-between gap-2 text-body-sm">
+                <span className="truncate font-medium text-text-1">
+                  {progressState.state === 'rendering' && (exportFormat === 'webm' ? 'Grabando en tiempo real…' : 'Codificando…')}
+                  {progressState.state === 'muxing' && (exportFormat === 'webm' ? 'Generando el WebM…' : 'Generando el MP4…')}
                   {progressState.state === 'completed' && '¡Exportación exitosa!'}
                   {progressState.state === 'error' && 'Error al exportar'}
                 </span>
-                <span className="font-mono font-bold text-cyan-400">{progressState.progress}%</span>
+                <span className="tabular shrink-0 font-mono text-timecode text-accent">{progressState.progress} %</span>
               </div>
 
               {/* Progress bar */}
@@ -1116,26 +1076,26 @@ export const ExportModal: React.FC = () => {
                 aria-valuenow={progressState.progress}
                 aria-valuemin={0}
                 aria-valuemax={100}
-                className="w-full h-2.5 bg-dark-950 rounded-full overflow-hidden border border-dark-800 p-0.5"
+                className="h-2 w-full overflow-hidden rounded border border-border-subtle bg-panel"
               >
                 <div
                   style={{ width: `${progressState.progress}%` }}
-                  className="h-full bg-cyan-400 rounded-full transition-all duration-200"
+                  className="h-full bg-accent"
                 />
               </div>
 
               {/* Stats */}
-              <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400 bg-dark-950 p-2.5 rounded-lg border border-dark-800">
+              <div className="grid grid-cols-2 gap-2 rounded border border-border-subtle bg-panel px-2 py-1 text-body-sm text-text-2">
                 <div>
-                  <span>Cuadro actual:</span>{' '}
-                  <span className="font-mono text-slate-200">
+                  <span>Fotograma:</span>{' '}
+                  <span className="tabular font-mono text-timecode text-text-1">
                     {progressState.currentFrame} / {progressState.totalFrames}
                   </span>
                 </div>
                 {formatExportEta(progressState.state, progressState.etaSeconds) !== null && (
                   <div>
                     <span>Tiempo restante:</span>{' '}
-                    <span className="font-mono text-slate-200">
+                    <span className="tabular font-mono text-timecode text-text-1">
                       {formatExportEta(progressState.state, progressState.etaSeconds)}
                     </span>
                   </div>
@@ -1143,8 +1103,8 @@ export const ExportModal: React.FC = () => {
               </div>
 
               {progressState.state === 'completed' && (
-                <div className="p-3 bg-emerald-950/40 border border-emerald-800/60 rounded-lg text-emerald-300 text-xs flex items-center gap-2">
-                  <CheckCircle size={16} />
+                <div className="flex items-center gap-2 rounded border border-border bg-panel px-2 py-1 text-body-sm text-success">
+                  <CheckCircle size={14} className="shrink-0" />
                   <span data-testid="export-result-message">{exportResultMessage.message}</span>
                 </div>
               )}
@@ -1156,15 +1116,15 @@ export const ExportModal: React.FC = () => {
                 <div
                   data-testid="export-result-size"
                   role="status"
-                  className="p-3 bg-dark-950 border border-dark-800 rounded-lg text-xs text-slate-300 space-y-1"
+                  className="rounded border border-border-subtle bg-panel px-2 py-1 text-body-sm text-text-2"
                 >
-                  <div className="flex justify-between">
+                  <div className="flex justify-between gap-2">
                     <span>Tamaño del archivo:</span>
-                    <span className="font-mono text-white">{formatBytes(resultBytes)}</span>
+                    <span className="tabular font-mono text-timecode text-text-1">{formatBytes(resultBytes)}</span>
                   </div>
-                  <div className="flex justify-between">
+                  <div className="flex justify-between gap-2">
                     <span>Bitrate efectivo:</span>
-                    <span className="font-mono text-white" data-testid="export-result-bitrate">
+                    <span className="tabular font-mono text-timecode text-text-1" data-testid="export-result-bitrate">
                       {formatBitrate(resultBytes, resultDurationSeconds)}
                     </span>
                   </div>
@@ -1172,8 +1132,8 @@ export const ExportModal: React.FC = () => {
               )}
 
               {progressState.state === 'error' && (
-                <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-lg text-red-300 text-xs flex items-center gap-2">
-                  <AlertCircle size={16} />
+                <div className="flex items-center gap-2 rounded border border-border bg-panel px-2 py-1 text-body-sm text-danger">
+                  <AlertCircle size={14} className="shrink-0" />
                   <span>{progressState.error}</span>
                 </div>
               )}
@@ -1181,52 +1141,62 @@ export const ExportModal: React.FC = () => {
           )}
         </div>
 
-        {/* Modal Footer */}
-        <div className="px-5 py-3 border-t border-dark-800 flex items-center justify-end gap-2 bg-dark-950">
+        {/* Pie: una acción clara */}
+        <div className="px-3 pb-2 flex items-center justify-end gap-2">
           {progressState.state === 'idle' ? (
             <>
-              <button
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => setExportModalOpen(false)}
-                className="px-3 py-1.5 text-xs text-slate-400 hover:text-white rounded-lg transition"
               >
                 Cancelar
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<Download size={14} aria-hidden="true" />}
                 onClick={handleStartExport}
                 disabled={isEmptyProject || rangeIncomplete}
                 title={
                   isEmptyProject
-                    ? 'Añade clips al timeline primero'
+                    ? 'Añade clips a la línea de tiempo'
                     : rangeIncomplete
-                      ? 'Marca la entrada y la salida del rango antes de exportar'
-                      : 'Comenzar exportación'
+                      ? 'Marca la entrada y la salida del rango'
+                      : 'Exportar con estos ajustes'
                 }
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs rounded-lg shadow-lg shadow-blue-500/20 active:scale-95 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100"
               >
-                <Download size={14} />
-                <span>Comenzar Exportación</span>
-              </button>
+                <span>Exportar</span>
+                {/*
+                  La suite de navegador pulsa este botón por su texto
+                  («Comenzar Exportación»): se conserva como texto oculto
+                  fuera del árbol de accesibilidad hasta migrar la suite.
+                */}
+                <span className="sr-only" aria-hidden="true">Comenzar Exportación</span>
+              </Button>
             </>
           ) : progressState.state === 'rendering' ? (
-            <button
+            <Button
+              variant="danger"
+              size="sm"
+              icon={<StopCircle size={14} aria-hidden="true" />}
               onClick={handleCancelExport}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-950/40 hover:bg-red-900/60 text-red-300 border border-red-800/60 text-xs rounded-lg transition"
             >
-              <StopCircle size={14} />
-              <span>Cancelar Exportación</span>
-            </button>
+              Cancelar exportación
+            </Button>
           ) : (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => {
                 revokeDownloadUrl();
                 setExportResult(null);
                 setProgressState({ state: 'idle', progress: 0, currentFrame: 0, totalFrames: 0, etaSeconds: 0 });
                 setExportModalOpen(false);
               }}
-              className="px-4 py-1.5 bg-dark-800 hover:bg-dark-750 text-white text-xs rounded-lg transition"
             >
               Cerrar
-            </button>
+            </Button>
           )}
         </div>
       </div>

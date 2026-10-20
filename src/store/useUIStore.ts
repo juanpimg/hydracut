@@ -1,7 +1,16 @@
 import { create } from 'zustand';
 import { hasSeenWelcome, markWelcomeSeen } from '../core/utils/appFlags';
 
-export type SidebarTab = 'media' | 'text' | 'inspector' | 'export';
+/**
+ * Pestañas del rail izquierdo.
+ *
+ * El Inspector ya no es una pestaña del rail (vive en su propia columna a la
+ * derecha, como en los editores profesionales): `setActiveTab('inspector')`
+ * es un no-op inofensivo para no romper a los llamadores antiguos
+ * (`ClipItem` aún lo invoca al seleccionar un clip). La pestaña muerta
+ * `'export'` se eliminó del tipo.
+ */
+export type SidebarTab = 'media' | 'text' | 'inspector';
 export type TimelineTool = 'select' | 'split';
 
 export interface UIState {
@@ -35,7 +44,13 @@ export const useUIStore = create<UIState>((set) => ({
   activeTool: 'select',
   isGeneratingSamples: false,
 
-  setActiveTab: (activeTab) => set({ activeTab }),
+  setActiveTab: (activeTab) => {
+    // El Inspector es una columna permanente a la derecha, no una pestaña:
+    // esta llamada histórica no debe mover el panel izquierdo (antes
+    // arrancaba el bin de medios al hacer clic en un clip).
+    if (activeTab === 'inspector') return;
+    set({ activeTab });
+  },
   setExportModalOpen: (isExportModalOpen) => set({ isExportModalOpen }),
   setShortcutsModalOpen: (isShortcutsModalOpen) => set({ isShortcutsModalOpen }),
   setProjectsModalOpen: (isProjectsModalOpen) => set({ isProjectsModalOpen }),

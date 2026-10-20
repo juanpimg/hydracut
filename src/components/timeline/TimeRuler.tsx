@@ -244,9 +244,10 @@ export const TimeRuler: React.FC<TimeRulerProps> = ({ scrollLeft }) => {
     <div
       ref={rulerRef}
       data-testid="time-ruler"
+      aria-label="Regla de tiempo"
       onPointerDown={handlePointerDown}
       style={{ width: `${totalWidth}px` }}
-      className="relative h-7 bg-dark-900 border-b border-dark-800 cursor-pointer select-none text-[10px] font-mono text-slate-500 overflow-hidden touch-none"
+      className="relative h-7 bg-panel border-b border-border-subtle cursor-pointer select-none overflow-hidden touch-none"
     >
       {ticks.map((tick) => {
         const left = tick.time * zoom;
@@ -258,13 +259,13 @@ export const TimeRuler: React.FC<TimeRulerProps> = ({ scrollLeft }) => {
           >
             {tick.isMajor ? (
               <>
-                <span className="absolute top-1 left-1 font-semibold text-slate-400">
+                <span className="absolute top-1 left-1 font-mono tabular text-timecode text-text-1">
                   {tick.label}
                 </span>
-                <div className="w-[1px] h-3 bg-dark-600" />
+                <div className="w-px h-3 bg-border" />
               </>
             ) : (
-              <div className="w-[1px] h-1.5 bg-dark-750" />
+              <div className="w-px h-1.5 bg-border-subtle" />
             )}
           </div>
         );

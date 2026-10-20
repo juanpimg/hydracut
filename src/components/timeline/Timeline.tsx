@@ -1,11 +1,15 @@
 import React, { useRef, useEffect } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
+import { masterClock } from '../../core/engine/MasterClock';
 import { Clip, Track } from '../../types/project';
 import { TimelineToolbar } from './TimelineToolbar';
 import { TimeRuler } from './TimeRuler';
 import { TrackHeader } from './TrackHeader';
 import { TrackLane } from './TrackLane';
 import { Playhead } from './Playhead';
+import { Button } from '../ui/Button';
+import { Badge } from '../ui/Badge';
+import { announce } from '../layout/liveRegion';
 
 /**
  * F6 · Height of a track lane in px (must match the `h-14` of `TrackLane`).
@@ -86,7 +90,6 @@ export const Timeline: React.FC = () => {
   const selectClips = useProjectStore((s) => s.selectClips);
   const selectAllClips = useProjectStore((s) => s.selectAllClips);
   const snappingGuideTime = useProjectStore((s) => s.snappingGuideTime);
-
   const lanesContainerRef = useRef<HTMLDivElement>(null);
   const headersContainerRef = useRef<HTMLDivElement>(null);
   /** F6 · The rubber band rectangle (updated IMPERATIVELY: no React render). */
@@ -410,21 +413,54 @@ export const Timeline: React.FC = () => {
     container.scrollLeft = 0;
   };
 
+  /**
+   * F5 · La acción del estado vacío: añade el primer medio utilizable en el
+   * cabezal (sin cruzar a la ola U3: no toca el importador del bin).
+   */
+  const handleAnadirPrimerMedio = () => {
+    const estado = useProjectStore.getState();
+    const medio =
+      estado.project.mediaPool.find((m) => m.status !== 'missing' && m.status !== 'error') ??
+      estado.project.mediaPool[0];
+    if (!medio) return;
+    estado.addClipFromMedia(medio, undefined, masterClock.getTime());
+    announce(`«${medio.name}» añadido a la línea de tiempo`);
+  };
+
+  const hayClips = project.clips.length > 0;
+  const hayMedios = project.mediaPool.length > 0;
+
   return (
-    <div className="flex flex-col h-full w-full max-w-full min-w-0 bg-dark-950 border-t border-dark-800 select-none z-10 overflow-hidden">
+    <div className="flex flex-col h-full w-full max-w-full min-w-0 bg-app border-t border-border-subtle select-none z-10 overflow-hidden">
       {/* Top Toolbar */}
-      <TimelineToolbar onFitToScreen={handleFitToScreen} />
+      <TimelineToolbar
+        onFitToScreen={handleFitToScreen}
+        selectAllSlot={
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            data-testid="select-all-clips"
+            aria-label="Seleccionar todos los clips"
+            title="Seleccionar todo (Ctrl+A)"
+            onClick={selectAllClips}
+            disabled={project.clips.length === 0}
+          >
+            Seleccionar todo
+          </Button>
+        }
+      />
 
       {/* Main Timeline Workspace */}
       <div className="flex-1 flex w-full max-w-full min-w-0 overflow-hidden">
         {/* Left Column: Track Headers */}
-        <div className="w-28 min-[400px]:w-36 sm:w-40 md:w-48 lg:w-56 bg-dark-900 border-r border-dark-800 flex flex-col shrink-0 z-20 overflow-hidden">
+        <div className="w-28 min-[400px]:w-36 sm:w-40 md:w-48 lg:w-56 bg-panel border-r border-border-subtle flex flex-col shrink-0 z-20 overflow-hidden">
           {/* Header spacer aligned with ruler */}
-          <div className="h-7 shrink-0 bg-dark-900 border-b border-dark-800 px-2 sm:px-3 flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-slate-500">
+          <div className="h-7 shrink-0 bg-panel border-b border-border-subtle px-2 flex items-center justify-between text-caption uppercase text-text-2">
             <span>Pistas</span>
-            <span className="text-[9px] font-mono font-medium text-slate-400 bg-dark-800 px-1.5 py-0.5 rounded">
-              {project.tracks.length}
-            </span>
+            <Badge variant="neutral">
+              <span className="font-mono">{project.tracks.length}</span>
+            </Badge>
           </div>
 
           {/* Track Headers List — scrolls vertically in sync with the lanes */}
@@ -437,84 +473,95 @@ export const Timeline: React.FC = () => {
               <TrackHeader key={track.id} track={track} index={idx} />
             ))}
           </div>
-
-          {/* F6 · Select every clip (also reachable with Ctrl + A). */}
-          <div className="shrink-0 border-t border-dark-800 p-1.5">
-            <button
-              type="button"
-              data-testid="select-all-clips"
-              aria-label="Seleccionar todos los clips"
-              title="Seleccionar todo (Ctrl+A)"
-              onClick={selectAllClips}
-              disabled={project.clips.length === 0}
-              className="w-full min-h-[32px] px-1.5 py-1 rounded text-[10px] font-semibold text-slate-300 bg-dark-850 hover:text-white hover:bg-dark-800 border border-dark-750 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Seleccionar todo
-            </button>
-          </div>
         </div>
 
-        {/* Right Area: Scrollable Tracks & Ruler */}
-        <div
-          ref={lanesContainerRef}
-          onScroll={handleLanesScroll}
-          onPointerDown={handleLanesPointerDown}
-          onClick={() => {
-            // F6: the click that follows a rubber band must not clear the
-            // selection the band just made.
-            if (bandConsumedClickRef.current) {
-              bandConsumedClickRef.current = false;
-              return;
-            }
-            selectClip(null);
-          }}
-          className="flex-1 overflow-auto relative bg-dark-950/80 min-w-0"
-        >
-          {/*
-            Time Ruler — `sticky top-0` keeps it pinned to the top of the
-            scrollport while the tracks scroll vertically, and it scrolls
-            horizontally with the lanes (one single scroll source, no JS).
-            `scrollLeft` stays 0 on purpose: the ruler is already translated by
-            the native scroll of the container.
-          */}
+        {/* Right Area: Scrollable Tracks & Ruler + Empty State overlay */}
+        <div className="flex-1 relative min-w-0 overflow-hidden">
           <div
-            className="sticky top-0 z-20 h-7 bg-dark-900 border-b border-dark-800 [&>div]:!w-full"
-            style={{ width: `${totalWidth}px` }}
+            ref={lanesContainerRef}
+            onScroll={handleLanesScroll}
+            onPointerDown={handleLanesPointerDown}
+            onClick={() => {
+              // F6: the click that follows a rubber band must not clear the
+              // selection the band just made.
+              if (bandConsumedClickRef.current) {
+                bandConsumedClickRef.current = false;
+                return;
+              }
+              selectClip(null);
+            }}
+            className="absolute inset-0 overflow-auto bg-app min-w-0"
           >
-            <TimeRuler scrollLeft={0} />
-          </div>
-
-          {/* Track Lanes */}
-          <div style={{ width: `${totalWidth}px` }} className="relative">
-            {project.tracks.map((track) => (
-              <TrackLane key={track.id} track={track} width={totalWidth} />
-            ))}
-
-            {/* F6 · Rubber band. It is painted IMPERATIVELY (one style write
-                per frame): the timeline never re-renders while the band is
-                being dragged. */}
+            {/*
+              Time Ruler — `sticky top-0` keeps it pinned to the top of the
+              scrollport while the tracks scroll vertically, and it scrolls
+              horizontally with the lanes (one single scroll source, no JS).
+              `scrollLeft` stays 0 on purpose: the ruler is already translated by
+              the native scroll of the container.
+            */}
             <div
-              ref={rubberBandRef}
-              data-testid="rubber-band"
-              aria-hidden="true"
-              className="absolute hidden pointer-events-none border border-cyan-300/90 bg-cyan-400/10 rounded-sm z-40"
-            />
-          </div>
-
-          {/* Draggable Playhead */}
-          <Playhead timelineHeight={totalTimelineHeight} />
-
-          {/* Vertical Snapping Guide Line */}
-          {snappingGuideTime !== null && (
-            <div
-              data-testid="snapping-guide-line"
-              style={{
-                left: `${snappingGuideTime * zoom}px`,
-                height: `${totalTimelineHeight}px`,
-              }}
-              className="absolute top-0 w-[2px] bg-yellow-400 shadow-[0_0_8px_#facc15] z-30 pointer-events-none"
+              className="sticky top-0 z-20 h-7 bg-panel [&>div]:!w-full"
+              style={{ width: `${totalWidth}px` }}
             >
-              <div className="absolute top-6 -left-1 w-2.5 h-2.5 bg-yellow-400 rotate-45 shadow" />
+              <TimeRuler scrollLeft={0} />
+            </div>
+
+            {/* Track Lanes */}
+            <div style={{ width: `${totalWidth}px` }} className="relative">
+              {project.tracks.map((track) => (
+                <TrackLane key={track.id} track={track} width={totalWidth} />
+              ))}
+
+              {/* F6 · Rubber band. It is painted IMPERATIVELY (one style write
+                  per frame): the timeline never re-renders while the band is
+                  being dragged. */}
+              <div
+                ref={rubberBandRef}
+                data-testid="rubber-band"
+                aria-hidden="true"
+                className="absolute hidden pointer-events-none border border-accent bg-accent-soft rounded-sm z-40"
+              />
+            </div>
+
+            {/* Draggable Playhead */}
+            <Playhead timelineHeight={totalTimelineHeight} />
+
+            {/* Vertical Snapping Guide Line */}
+            {snappingGuideTime !== null && (
+              <div
+                data-testid="snapping-guide-line"
+                style={{
+                  left: `${snappingGuideTime * zoom}px`,
+                  height: `${totalTimelineHeight}px`,
+                }}
+                className="absolute top-0 w-[2px] bg-accent z-30 pointer-events-none"
+              >
+                <div className="absolute top-6 -left-1 w-2.5 h-2.5 bg-accent rotate-45" />
+              </div>
+            )}
+          </div>
+
+          {/* F5 · Estado vacío diseñado: titular + una acción (+ pista de arrastrar y soltar). */}
+          {!hayClips && (
+            <div
+              data-testid="timeline-empty-state"
+              className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-4"
+            >
+              <div className="pointer-events-auto flex max-w-72 flex-col items-center gap-1.5 rounded-md border border-border bg-panel px-6 py-5 text-center">
+                <p className="text-body-lg text-text-1">Sin clips</p>
+                <p className="text-body-sm text-text-2">
+                  Arrastra un medio al carril o impórtalo desde Medios
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleAnadirPrimerMedio}
+                  disabled={!hayMedios}
+                  title={hayMedios ? 'Añade el primer medio en el cabezal' : 'Importa primero un archivo desde Medios'}
+                >
+                  Añade un medio
+                </Button>
+              </div>
             </div>
           )}
         </div>

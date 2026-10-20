@@ -1,9 +1,11 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Maximize2, Minimize2 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { compositor, computeRenderScale } from '../../core/engine/Compositor';
 import { masterClock } from '../../core/engine/MasterClock';
 import { audioEngine } from '../../core/engine/AudioEngine';
 import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
+import { IconButton } from '../ui/IconButton';
 
 export const PreviewPlayer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -214,10 +216,27 @@ export const PreviewPlayer: React.FC = () => {
     }
   };
 
+  /** Pantalla completa del visor (solo escritorio; el móvil tiene la suya). */
+  const [aPantallaCompleta, setAPantallaCompleta] = useState(false);
+  useEffect(() => {
+    const alCambiarPantalla = () => setAPantallaCompleta(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', alCambiarPantalla);
+    return () => document.removeEventListener('fullscreenchange', alCambiarPantalla);
+  }, []);
+  const alternarPantallaCompleta = () => {
+    const contenedor = containerRef.current;
+    if (!contenedor) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      contenedor.requestFullscreen().catch(() => {});
+    }
+  };
+
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 bg-dark-950 flex items-center justify-center p-4 overflow-hidden select-none"
+      className="relative flex-1 bg-app flex items-center justify-center p-4 overflow-hidden select-none"
     >
       {/* Canvas wrapper.
           The width is `min(100%, <project width>)` instead of the intrinsic
@@ -225,7 +244,7 @@ export const PreviewPlayer: React.FC = () => {
           store is re-fitted for the display (KI-02). */}
       <div
         style={{ width: `min(100%, ${resolution.width}px)` }}
-        className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-dark-800 ${getAspectClass()}`}
+        className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-border-subtle ${getAspectClass()}`}
       >
         <canvas
           ref={canvasRef}
@@ -236,20 +255,31 @@ export const PreviewPlayer: React.FC = () => {
           aria-label={clips.length === 0 ? 'Monitor vacío: importa medios para empezar' : `Monitor: ${clips.length} clips en el timeline`}
         />
 
-        {/* Resolution Badge */}
-        <div className="absolute top-2 left-2 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded text-[11px] font-mono text-slate-400 pointer-events-none border border-white/5">
+        {/* Insignia de resolución: etiqueta discreta, sin pastilla ni borde. */}
+        <span className="absolute bottom-2 left-2 pointer-events-none text-caption text-text-2">
           {resolution.width}x{resolution.height} ({aspectRatio})
-        </div>
+        </span>
 
-        {/* Empty-state guide */}
+        {/* Estado vacío: titular + secundario (el lienzo no lleva acciones). */}
         {clips.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 gap-2 bg-black/40">
-            <p className="text-sm font-bold text-white">Timeline vacío</p>
-            <p className="text-xs text-slate-400 max-w-[32ch]">
-              Importa videos o genera clips de prueba para verlos aquí.
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 gap-1 pointer-events-none">
+            <p className="text-title text-text-1">Sin clips</p>
+            <p className="text-body-sm text-text-2 max-w-[32ch]">
+              Añade un clip para empezar a editar.
             </p>
           </div>
         )}
+
+        {/* Pantalla completa: botón discreto en la esquina del visor. */}
+        <IconButton
+          aria-label="Pantalla completa"
+          title="Pantalla completa"
+          size="sm"
+          onClick={alternarPantallaCompleta}
+          className="absolute right-2 top-2 bg-black/60 text-text-2 hover:text-text-1"
+        >
+          {aPantallaCompleta ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </IconButton>
       </div>
     </div>
   );

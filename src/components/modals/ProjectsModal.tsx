@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import {
   X,
   FolderKanban,
@@ -9,9 +8,6 @@ import {
   Tv,
   Smartphone,
   Square,
-  Clock,
-  Layers,
-  Film,
   Copy,
   Pencil,
   Trash2,
@@ -19,7 +15,7 @@ import {
   Check,
   AlertTriangle,
   FolderOpen,
-  Sparkles,
+  MoreVertical,
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -35,15 +31,13 @@ import {
   rehydrateProjectMedia,
 } from '../../core/storage/projectStorage';
 import { ProjectMetadata, AspectRatio } from '../../types/project';
-import { useAnchoredMenu } from '../../hooks/useAnchoredMenu';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
-import { moveFocusWithin } from '../../hooks/useFocusTrap';
 import { announce } from '../layout/liveRegion';
-
-/** Width of the per-project export menu, in px. */
-const EXPORT_MENU_WIDTH = 160;
-/** Height of the per-project export menu, in px (2 items). */
-const EXPORT_MENU_HEIGHT = 84;
+import { Badge } from '../ui/Badge';
+import { Button } from '../ui/Button';
+import { IconButton } from '../ui/IconButton';
+import { Input } from '../ui/Input';
+import { Menu, MenuItem, MenuSeparador } from '../ui/Menu';
 
 export const ProjectsModal: React.FC = () => {
   const { isProjectsModalOpen, setProjectsModalOpen } = useUIStore();
@@ -63,21 +57,22 @@ export const ProjectsModal: React.FC = () => {
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<ProjectMetadata | null>(null);
 
-  // Export menu state
-  const [exportMenuId, setExportMenuId] = useState<string | null>(null);
+  // Fila con el menú de acciones abierto (abrir, duplicar, exportar, eliminar).
+  const [rowMenuId, setRowMenuId] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const exportMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const exportMenuRef = useRef<HTMLDivElement>(null);
+  // Disparadores del menú por proyecto + ancla del menú abierto.
+  const triggerRefs = useRef(new Map<string, HTMLButtonElement>());
+  const menuAncla = useRef<HTMLButtonElement | null>(null);
 
   /**
    * UI-08: the modal declared `role="dialog" aria-modal="true"` but never
    * moved the focus inside, never trapped it and never restored it.
    */
   const handleEscape = useCallback(() => {
-    if (exportMenuId) {
-      // The export menu is a nested overlay: it closes first.
-      setExportMenuId(null);
+    if (rowMenuId) {
+      // El menú de la fila es un overlay anidado: se cierra primero.
+      setRowMenuId(null);
       return;
     }
     if (deleteTarget) {
@@ -87,21 +82,9 @@ export const ProjectsModal: React.FC = () => {
     } else {
       setProjectsModalOpen(false);
     }
-  }, [exportMenuId, deleteTarget, editingId, setProjectsModalOpen]);
+  }, [rowMenuId, deleteTarget, editingId, setProjectsModalOpen]);
 
   const dialogRef = useFocusTrap<HTMLDivElement>(isProjectsModalOpen, { onEscape: handleEscape });
-
-  const {
-    position: exportMenuPosition,
-    update: updateExportMenuPosition,
-  } = useAnchoredMenu(exportMenuId !== null, exportMenuTriggerRef, {
-    menuWidth: EXPORT_MENU_WIDTH,
-    menuHeight: EXPORT_MENU_HEIGHT,
-    align: 'end',
-    preferredPlacement: 'top',
-    gap: 6,
-    padding: 8,
-  });
 
   const refreshList = useCallback(async () => {
     try {
@@ -118,7 +101,7 @@ export const ProjectsModal: React.FC = () => {
       setSearchQuery('');
       setEditingId(null);
       setDeleteTarget(null);
-      setExportMenuId(null);
+      setRowMenuId(null);
     }
   }, [isProjectsModalOpen, refreshList]);
 
@@ -235,7 +218,7 @@ export const ProjectsModal: React.FC = () => {
         return;
       }
       exportProjectToFile(proj, ext);
-      setExportMenuId(null);
+      setRowMenuId(null);
       announce(`Proyecto exportado como .${ext}`);
     } catch (err) {
       alert('Error al exportar el proyecto: ' + (err as Error).message);
@@ -316,31 +299,28 @@ export const ProjectsModal: React.FC = () => {
     });
   };
 
-  const renderAspectBadge = (ratio: AspectRatio) => {
-    if (ratio === '9:16') {
-      return (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-pink-500/10 text-pink-400 border border-pink-500/20 text-[10px] font-mono">
-          <Smartphone size={10} /> 9:16
-        </span>
-      );
-    }
-    if (ratio === '1:1') {
-      return (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-mono">
-          <Square size={10} /> 1:1
-        </span>
-      );
-    }
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 text-[10px] font-mono">
-        <Tv size={10} /> 16:9
-      </span>
-    );
+  /** Icono 16:9 de la fila según la relación de aspecto del proyecto. */
+  const renderAspectIcon = (ratio: AspectRatio) => {
+    if (ratio === '9:16') return <Smartphone size={16} aria-hidden="true" />;
+    if (ratio === '1:1') return <Square size={16} aria-hidden="true" />;
+    return <Tv size={16} aria-hidden="true" />;
   };
 
   const filteredProjects = projects.filter((p) =>
     p.name.toLowerCase().includes(searchQuery.trim().toLowerCase())
   );
+
+  // Proyecto con el menú de acciones abierto.
+  const menuProject = rowMenuId ? (projects.find((p) => p.id === rowMenuId) ?? null) : null;
+
+  const openRowMenu = (p: ProjectMetadata) => {
+    if (rowMenuId === p.id) {
+      setRowMenuId(null);
+      return;
+    }
+    menuAncla.current = triggerRefs.current.get(p.id) ?? null;
+    setRowMenuId(p.id);
+  };
 
   return (
     <div
@@ -350,72 +330,70 @@ export const ProjectsModal: React.FC = () => {
       aria-modal="true"
       aria-labelledby="projects-modal-title"
       tabIndex={-1}
-      className="fixed inset-0 bg-black/75 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-6 select-none animate-fadeIn focus:outline-none"
+      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-6 select-none focus:outline-none"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="bg-dark-900 border border-dark-800 rounded-2xl w-full max-w-4xl max-h-[90dvh] shadow-2xl flex flex-col overflow-hidden relative">
+      <div className="bg-raised border border-border rounded-lg w-full max-w-2xl max-h-[90dvh] shadow-overlay flex flex-col overflow-hidden relative">
         {/* Drag Overlay visual cue */}
         {isDragging && (
-          <div className="absolute inset-0 bg-cyan-950/80 border-2 border-dashed border-cyan-400 z-50 rounded-2xl flex flex-col items-center justify-center pointer-events-none p-6 text-center backdrop-blur-sm animate-scaleUp">
-            <Upload size={48} className="text-cyan-400 mb-3" />
-            <h3 className="text-lg font-bold text-white mb-1">Suelta tu archivo de proyecto</h3>
-            <p className="text-xs text-cyan-200">Admite archivos .hydra y .json de HydraCut</p>
+          <div className="absolute inset-0 bg-panel border-2 border-dashed border-accent z-50 rounded-lg flex flex-col items-center justify-center pointer-events-none p-6 text-center">
+            <Upload size={32} className="text-accent mb-2" aria-hidden="true" />
+            <h3 className="text-title text-text-1 mb-1">Suelta el archivo</h3>
+            <p className="text-body-sm text-text-2">Admite archivos .hydra y .json de HydraCut</p>
           </div>
         )}
 
-        {/* Modal Header */}
-        <div className="px-5 py-4 border-b border-dark-800 flex items-center justify-between bg-dark-950/80 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
-              <FolderKanban size={18} />
+        {/* Cabecera */}
+        <div className="px-3 py-2 border-b border-border-subtle flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded bg-panel border border-border-subtle text-text-2 flex items-center justify-center shrink-0">
+              <FolderKanban size={16} aria-hidden="true" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h2 id="projects-modal-title" className="text-base font-bold text-white">Mis Proyectos</h2>
-                <span className="px-2 py-0.5 rounded-full bg-dark-800 text-slate-300 text-xs font-semibold">
-                  {projects.length}
-                </span>
+                <h2 id="projects-modal-title" className="text-title text-text-1">Mis proyectos</h2>
+                <Badge variant="neutral">{projects.length}</Badge>
               </div>
-              <p className="text-[11px] text-slate-400">
-                Almacenamiento 100% privado en tu navegador (IndexedDB)
+              <p className="text-body-sm text-text-2">
+                Se guarda solo en este navegador
               </p>
             </div>
           </div>
 
-          <button
+          <IconButton
+            aria-label="Cerrar"
+            title="Cerrar (Esc)"
             onClick={() => setProjectsModalOpen(false)}
-            className="text-slate-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-dark-800 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-            title="Cerrar modal (Esc)"
-            aria-label="Cerrar ventana de proyectos"
           >
-            <X size={18} />
-          </button>
+            <X size={16} aria-hidden="true" />
+          </IconButton>
         </div>
 
-        {/* Action Bar & Search */}
-        <div className="p-4 border-b border-dark-800 bg-dark-900/90 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between shrink-0">
-          {/* Action buttons */}
+        {/* Acciones y búsqueda */}
+        <div className="p-3 border-b border-border-subtle flex flex-col sm:flex-row gap-2 items-stretch sm:items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="primary"
               onClick={handleCreateNew}
               disabled={loading}
               data-testid="projects-new-btn"
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-semibold text-xs rounded-lg shadow-md shadow-cyan-500/20 active:scale-95 transition min-h-[44px] focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              icon={<Plus size={15} aria-hidden="true" />}
+              className="min-h-[44px] sm:min-h-0"
             >
-              <Plus size={15} />
-              <span>Nuevo Proyecto</span>
-            </button>
+              Nuevo proyecto
+            </Button>
 
-            <button
+            <Button
+              variant="secondary"
               onClick={() => fileInputRef.current?.click()}
               disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-2 bg-dark-800 hover:bg-dark-750 text-slate-200 hover:text-white font-medium text-xs rounded-lg border border-dark-700 active:scale-95 transition min-h-[44px] focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              icon={<Upload size={14} aria-hidden="true" />}
+              className="min-h-[44px] sm:min-h-0"
             >
-              <Upload size={14} className="text-cyan-400" />
-              <span>Importar (.hydra / .json)</span>
-            </button>
+              Importar (.hydra / .json)
+            </Button>
 
             <input
               ref={fileInputRef}
@@ -426,44 +404,42 @@ export const ProjectsModal: React.FC = () => {
             />
           </div>
 
-          {/* Search box */}
-          <div className="relative flex-1 sm:max-w-xs">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-            <input
+          {/* Búsqueda */}
+          <div className="relative flex-1 sm:max-w-[220px]">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-3 pointer-events-none" aria-hidden="true" />
+            <Input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Buscar proyecto por nombre..."
               data-testid="projects-search"
-              className="w-full bg-dark-950 border border-dark-800 focus:border-cyan-500/50 text-slate-200 placeholder-slate-500 pl-8 pr-3 py-1.5 min-h-[40px] rounded-lg text-xs outline-none transition focus-visible:ring-2 focus-visible:ring-cyan-400"
+              aria-label="Buscar proyecto por nombre"
+              className="pl-8"
             />
           </div>
         </div>
 
-        {/* Gallery / Project List Body */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-5">
+        {/* Lista de proyectos: un proyecto = una fila */}
+        <div className="flex-1 overflow-y-auto p-3">
           {filteredProjects.length === 0 ? (
-            <div className="h-64 flex flex-col items-center justify-center text-center p-6 border-2 border-dashed border-dark-800 rounded-xl bg-dark-950/40">
-              <FolderKanban size={36} className="text-slate-600 mb-2.5" />
-              <p className="text-sm font-semibold text-slate-300">
-                {searchQuery ? 'No se encontraron proyectos con ese nombre' : 'No tienes proyectos guardados aún'}
+            <div className="py-10 flex flex-col items-center justify-center text-center px-6 rounded-md border border-dashed border-border bg-panel">
+              <FolderKanban size={28} className="text-text-3 mb-2" aria-hidden="true" />
+              <p className="text-body font-medium text-text-1">
+                {searchQuery ? 'No se encontraron proyectos con ese nombre' : 'Sin proyectos'}
               </p>
-              <p className="text-xs text-slate-500 max-w-sm mt-1 mb-4">
+              <p className="text-body-sm text-text-2 mt-0.5 mb-3">
                 {searchQuery
                   ? 'Intenta con otro término de búsqueda o limpia el filtro.'
-                  : 'Crea tu primer proyecto o arrastra un archivo .hydra / .json para comenzar.'}
+                  : 'Crea uno o arrastra un .hydra / .json.'}
               </p>
               {!searchQuery && (
-                <button
-                  onClick={handleCreateNew}
-                  className="px-4 py-2 min-h-[44px] bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-semibold transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                >
-                  Crear Proyecto Ahora
-                </button>
+                <Button variant="primary" onClick={handleCreateNew} className="min-h-[44px] sm:min-h-0">
+                  Crear proyecto
+                </Button>
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            <div className="flex flex-col gap-1.5" role="list" aria-label="Proyectos">
               {filteredProjects.map((p) => {
                 const isActive = p.id === currentProjectId;
                 const isEditing = editingId === p.id;
@@ -471,167 +447,95 @@ export const ProjectsModal: React.FC = () => {
                 return (
                   <div
                     key={p.id}
+                    role="listitem"
                     data-testid={`project-card-${p.id}`}
-                    className={`bg-dark-950 rounded-xl border transition-all duration-200 flex flex-col justify-between overflow-hidden relative group ${
+                    className={`flex items-center gap-3 rounded-md border px-2 py-2 transition ${
                       isActive
-                        ? 'border-cyan-500/60 shadow-lg shadow-cyan-500/10 ring-1 ring-cyan-500/30'
-                        : 'border-dark-800 hover:border-dark-700'
+                        ? 'border-accent bg-panel'
+                        : 'border-border-subtle bg-panel hover:border-border'
                     }`}
                   >
-                    {/* Card Header & Title */}
-                    <div className="p-3.5 pb-2">
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        {isEditing ? (
-                          <div className="flex items-center gap-1 w-full">
-                            <input
-                              type="text"
-                              value={editName}
-                              onChange={(e) => setEditName(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') commitRename(p.id);
-                                if (e.key === 'Escape') setEditingId(null);
-                              }}
-                              autoFocus
-                              className="w-full bg-dark-850 border border-cyan-500 px-2 py-1 rounded text-xs text-white outline-none"
-                            />
-                            <button
-                              onClick={() => commitRename(p.id)}
-                              className="min-w-[36px] min-h-[36px] flex items-center justify-center bg-cyan-600 hover:bg-cyan-500 text-white rounded transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                              title="Guardar nombre"
-                            >
-                              <Check size={13} />
-                            </button>
-                            <button
-                              onClick={() => setEditingId(null)}
-                              className="min-w-[36px] min-h-[36px] flex items-center justify-center bg-dark-800 hover:bg-dark-700 text-slate-300 rounded transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                              title="Cancelar"
-                            >
-                              <X size={13} />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                            <h3
-                              className="font-bold text-xs sm:text-sm text-white truncate group-hover:text-cyan-300 transition"
-                              title={p.name}
-                            >
-                              {p.name}
-                            </h3>
-                            <button
-                              onClick={() => startRenaming(p)}
-                              className="opacity-0 group-hover:opacity-100 focus:opacity-100 min-w-[32px] min-h-[32px] flex items-center justify-center text-slate-400 hover:text-white rounded transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                              title="Renombrar proyecto"
-                            >
-                              <Pencil size={11} />
-                            </button>
-                          </div>
-                        )}
+                    {/* Miniatura 16:9 */}
+                    <div
+                      className="flex aspect-video w-[72px] shrink-0 items-center justify-center rounded border border-border-subtle bg-raised text-text-3"
+                      title={`Relación de aspecto ${p.aspectRatio}`}
+                      aria-hidden="true"
+                    >
+                      {renderAspectIcon(p.aspectRatio)}
+                    </div>
 
-                        {isActive && (
-                          <span className="shrink-0 px-2 py-0.5 bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 rounded-full text-[10px] font-bold flex items-center gap-1">
-                            <Sparkles size={9} />
-                            En Edición
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Badges bar */}
-                      <div className="flex flex-wrap items-center gap-1.5 text-slate-400 text-[11px] mb-2.5">
-                        {renderAspectBadge(p.aspectRatio)}
-
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-850 border border-dark-800 text-slate-300 font-mono text-[10px]">
-                          <Clock size={10} />
-                          {formatDuration(p.duration)}
-                        </span>
-
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-850 border border-dark-800 text-slate-300 text-[10px]">
-                          <Layers size={10} />
-                          {p.tracksCount} {p.tracksCount === 1 ? 'pista' : 'pistas'}
-                        </span>
-
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-dark-850 border border-dark-800 text-slate-300 text-[10px]">
-                          <Film size={10} />
-                          {p.clipsCount} {p.clipsCount === 1 ? 'clip' : 'clips'}
-                        </span>
-                      </div>
-
-                      {/* Last Modified Date */}
-                      <p className="text-[10px] text-slate-500 flex items-center gap-1">
-                        <span>Modificado:</span>
-                        <span className="text-slate-400 font-medium">{formatDate(p.updatedAt)}</span>
+                    {/* Nombre + metadatos */}
+                    <div className="min-w-0 flex-1">
+                      {isEditing ? (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="text"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitRename(p.id);
+                              if (e.key === 'Escape') setEditingId(null);
+                            }}
+                            autoFocus
+                            aria-label="Nombre del proyecto"
+                          />
+                          <IconButton
+                            size="sm"
+                            aria-label="Guardar"
+                            title="Guardar"
+                            onClick={() => commitRename(p.id)}
+                          >
+                            <Check size={14} aria-hidden="true" />
+                          </IconButton>
+                          <IconButton
+                            size="sm"
+                            aria-label="Cancelar"
+                            title="Cancelar"
+                            onClick={() => setEditingId(null)}
+                          >
+                            <X size={14} aria-hidden="true" />
+                          </IconButton>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 min-w-0">
+                          <h3
+                            className="truncate text-body font-medium text-text-1"
+                            title={p.name}
+                          >
+                            {p.name}
+                          </h3>
+                          {isActive && (
+                            <Badge variant="accent">Abierto</Badge>
+                          )}
+                        </div>
+                      )}
+                      <p className="tabular mt-0.5 truncate font-mono text-timecode text-text-2">
+                        {p.tracksCount} {p.tracksCount === 1 ? 'pista' : 'pistas'}
+                        {' · '}
+                        {p.clipsCount} {p.clipsCount === 1 ? 'clip' : 'clips'}
+                        {' · '}
+                        {formatDuration(p.duration)}
+                        {' · '}
+                        {formatDate(p.updatedAt)}
                       </p>
                     </div>
 
-                    {/* Card Actions Bottom Bar */}
-                    <div className="px-3.5 py-2.5 bg-dark-900 border-t border-dark-800/80 flex items-center justify-between gap-1">
-                      {/* Left: Load / Switch button */}
-                      {isActive ? (
-                        <div className="flex items-center gap-1.5 text-[11px] font-medium text-cyan-400 px-2 py-1">
-                          <Check size={13} />
-                          <span>Abierto</span>
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => handleLoadProject(p.id)}
-                          disabled={loading}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 min-h-[36px] bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-sm active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                          title="Cargar y abrir proyecto"
-                        >
-                          <FolderOpen size={13} />
-                          <span>Cargar</span>
-                        </button>
-                      )}
-
-                      {/* Right icons: Duplicate, Export, Delete */}
-                      <div className="flex items-center gap-1">
-                        {/* Duplicate button */}
-                        <button
-                          onClick={() => handleDuplicate(p.id)}
-                          disabled={loading}
-                          data-testid={`project-duplicate-button-${p.id}`}
-                          className="min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded-md transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                          title="Duplicar proyecto"
-                          aria-label={`Duplicar proyecto ${p.name}`}
-                        >
-                          <Copy size={13} />
-                        </button>
-
-                        {/* Export Menu trigger */}
-                        <div className="relative">
-                          <button
-                            onClick={(e) => {
-                              const trigger = e.currentTarget;
-                              if (exportMenuId === p.id) {
-                                setExportMenuId(null);
-                                return;
-                              }
-                              exportMenuTriggerRef.current = trigger;
-                              updateExportMenuPosition();
-                              setExportMenuId(p.id);
-                            }}
-                            aria-haspopup="menu"
-                            aria-expanded={exportMenuId === p.id}
-                            aria-label={`Exportar ${p.name}`}
-                            data-testid={`project-export-button-${p.id}`}
-                            className="min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center text-slate-400 hover:text-slate-200 hover:bg-dark-800 rounded-md transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                            title="Exportar archivo de proyecto"
-                          >
-                            <Download size={13} />
-                          </button>
-                        </div>
-
-                        {/* Delete button */}
-                        <button
-                          onClick={() => setDeleteTarget(p)}
-                          disabled={loading}
-                          className="min-w-[36px] min-h-[36px] p-1.5 flex items-center justify-center text-slate-400 hover:text-red-400 hover:bg-red-500/10 rounded-md transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-                          title="Eliminar proyecto"
-                          aria-label={`Eliminar proyecto ${p.name}`}
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </div>
+                    {/* Acciones en menú */}
+                    <IconButton
+                      ref={(el) => {
+                        if (el) triggerRefs.current.set(p.id, el);
+                        else triggerRefs.current.delete(p.id);
+                      }}
+                      size="sm"
+                      aria-label={`Acciones de ${p.name}`}
+                      title={`Acciones de ${p.name}`}
+                      aria-haspopup="menu"
+                      aria-expanded={rowMenuId === p.id}
+                      active={rowMenuId === p.id}
+                      onClick={() => openRowMenu(p)}
+                    >
+                      <MoreVertical size={16} aria-hidden="true" />
+                    </IconButton>
                   </div>
                 );
               })}
@@ -639,37 +543,41 @@ export const ProjectsModal: React.FC = () => {
           )}
         </div>
 
-        {/* Delete Confirmation Modal / Backdrop */}
+        {/* Confirmación de borrado */}
         {deleteTarget && (
-          <div className="absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-dark-900 border border-red-500/40 rounded-xl p-5 max-w-sm w-full shadow-2xl space-y-4 animate-scaleUp">
+          <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <div className="bg-raised border border-border rounded-lg p-4 max-w-sm w-full shadow-overlay">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-red-500/20 text-red-400 flex items-center justify-center shrink-0">
-                  <AlertTriangle size={20} />
+                <div className="w-9 h-9 rounded bg-danger/15 text-danger flex items-center justify-center shrink-0">
+                  <AlertTriangle size={18} aria-hidden="true" />
                 </div>
-                <div>
-                  <h4 className="text-sm font-bold text-white">¿Eliminar Proyecto?</h4>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Estás a punto de eliminar <span className="text-white font-semibold">"{deleteTarget.name}"</span>. Esta acción no se puede deshacer.
+                <div className="min-w-0">
+                  <h4 className="text-body font-medium text-text-1">¿Eliminar proyecto?</h4>
+                  <p className="text-body-sm text-text-2 mt-0.5">
+                    «{deleteTarget.name}» se borrará para siempre. No se puede deshacer.
                   </p>
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2">
-                <button
+              <div className="flex justify-end gap-2 pt-3">
+                <Button
+                  variant="secondary"
+                  size="sm"
                   onClick={() => setDeleteTarget(null)}
                   disabled={loading}
-                  className="px-3.5 py-1.5 min-h-[44px] bg-dark-800 hover:bg-dark-750 text-slate-300 rounded-lg text-xs font-medium transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                  className="min-h-[44px] sm:min-h-0"
                 >
                   Cancelar
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
                   onClick={confirmDelete}
                   disabled={loading}
-                  className="px-3.5 py-1.5 min-h-[44px] bg-red-600 hover:bg-red-500 text-white rounded-lg text-xs font-bold transition shadow-md shadow-red-500/20 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                  className="min-h-[44px] sm:min-h-0"
                 >
-                  {loading ? 'Eliminando...' : 'Sí, Eliminar'}
-                </button>
+                  {loading ? 'Eliminando…' : 'Eliminar'}
+                </Button>
               </div>
             </div>
           </div>
@@ -677,58 +585,62 @@ export const ProjectsModal: React.FC = () => {
       </div>
 
       {/*
-        UI-02: the per-project export menu used to live inside the card, whose
-        `overflow: hidden` clipped 100 % of it (the backup of a project was
-        impossible). It is rendered in a portal with `position: fixed`.
+        Acciones de la fila en un Menu del sistema (portal, sin recortes):
+        abrir, renombrar, duplicar, exportar y eliminar.
       */}
-      {exportMenuId &&
-        typeof document !== 'undefined' &&
-        createPortal(
+      <Menu
+        ancla={menuAncla}
+        abierto={menuProject !== null}
+        onCerrar={() => setRowMenuId(null)}
+        ariaLabel={menuProject ? `Acciones de ${menuProject.name}` : 'Acciones del proyecto'}
+      >
+        {menuProject && (
           <>
-            <div
-              className="fixed inset-0 z-[80]"
-              onClick={() => setExportMenuId(null)}
-              aria-hidden="true"
-              data-testid="project-export-backdrop"
-            />
-            <div
-              ref={exportMenuRef}
-              role="menu"
-              aria-label="Exportar proyecto"
-              data-testid="project-export-menu"
-              style={{
-                top: `${exportMenuPosition?.top ?? 0}px`,
-                left: `${exportMenuPosition?.left ?? 0}px`,
-                maxHeight: exportMenuPosition ? `${exportMenuPosition.maxHeight}px` : undefined,
-              }}
-              className="fixed z-[90] min-w-[160px] overflow-y-auto bg-dark-850 border border-dark-750 rounded-lg shadow-xl py-1 animate-scaleUp"
-              onKeyDown={(e) => {
-                if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                  e.preventDefault();
-                  moveFocusWithin(exportMenuRef.current, '[role="menuitem"]', e.key === 'ArrowDown' ? 'next' : 'prev');
-                }
-              }}
+            {menuProject.id !== currentProjectId && (
+              <MenuItem
+                icon={<FolderOpen size={14} aria-hidden="true" />}
+                onClick={() => handleLoadProject(menuProject.id)}
+              >
+                Abrir proyecto
+              </MenuItem>
+            )}
+            <MenuItem
+              icon={<Pencil size={14} aria-hidden="true" />}
+              onClick={() => startRenaming(menuProject)}
             >
-              <button
-                role="menuitem"
-                onClick={() => handleExport(exportMenuId, 'hydra')}
-                className="w-full px-3 py-2 min-h-[44px] text-left text-[11px] text-slate-200 hover:bg-dark-750 hover:text-white flex items-center justify-between focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-              >
-                <span>Archivo .hydra</span>
-                <span className="text-[9px] font-mono text-cyan-400">Nativo</span>
-              </button>
-              <button
-                role="menuitem"
-                onClick={() => handleExport(exportMenuId, 'json')}
-                className="w-full px-3 py-2 min-h-[44px] text-left text-[11px] text-slate-200 hover:bg-dark-750 hover:text-white flex items-center justify-between focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-              >
-                <span>Archivo .json</span>
-                <span className="text-[9px] font-mono text-slate-400">JSON</span>
-              </button>
-            </div>
-          </>,
-          document.body
+              Renombrar
+            </MenuItem>
+            <MenuItem
+              icon={<Copy size={14} aria-hidden="true" />}
+              data-testid={`project-duplicate-button-${menuProject.id}`}
+              onClick={() => handleDuplicate(menuProject.id)}
+            >
+              Duplicar proyecto
+            </MenuItem>
+            <MenuItem
+              icon={<Download size={14} aria-hidden="true" />}
+              data-testid={`project-export-button-${menuProject.id}`}
+              onClick={() => handleExport(menuProject.id, 'hydra')}
+            >
+              Exportar (.hydra)
+            </MenuItem>
+            <MenuItem
+              icon={<Download size={14} aria-hidden="true" />}
+              onClick={() => handleExport(menuProject.id, 'json')}
+            >
+              Exportar (.json)
+            </MenuItem>
+            <MenuSeparador />
+            <MenuItem
+              danger
+              icon={<Trash2 size={14} aria-hidden="true" />}
+              onClick={() => setDeleteTarget(menuProject)}
+            >
+              Eliminar proyecto
+            </MenuItem>
+          </>
         )}
+      </Menu>
     </div>
   );
 };
