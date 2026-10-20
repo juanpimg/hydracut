@@ -367,6 +367,66 @@ export function formatTimelineTime(seconds: number): string {
   return `${pad(m)}:${pad(s)}`;
 }
 
+/* ------------------------------------------------------------------ */
+/* F7 — Internal clipboard (copy / paste / duplicate)                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * One entry of the internal clipboard (F7).
+ *
+ * The clipboard holds a DEEP COPY of the copied clip: editing the original
+ * afterwards must not change what is going to be pasted. The `offset` keeps
+ * the relative position of the group (the second pasted clip keeps the
+ * distance it had from the first one).
+ */
+export interface ClipboardEntry {
+  /** Deep copy of the copied clip (never the live object). */
+  clip: Clip;
+  /** Offset (seconds) of the clip relative to the first copied clip. */
+  offset: number;
+}
+
+/**
+ * Deep copy of a clip.
+ *
+ * `JSON` round-trip is enough here: a clip is plain data (no functions, no
+ * class instances) and it may carry nested objects (`textStyle`, `words`,
+ * `transition`) that must NOT be shared with the live clip.
+ */
+export function deepCopyClip(clip: Clip): Clip {
+  return JSON.parse(JSON.stringify(clip)) as Clip;
+}
+
+/** Id of a new clip (unique enough for the timeline). */
+function createClipId(): string {
+  return 'clip_' + Math.random().toString(36).substring(2, 9);
+}
+
+/**
+ * True when two clips of the same group overlap each other.
+ *
+ * The pasted group comes from the clipboard, so it may carry clips that were
+ * living on DIFFERENT tracks (and therefore overlapped). Pasting them on a
+ * single track would create an illegal overlap, so the paste is refused.
+ */
+export function hasInternalOverlap(clips: Clip[]): boolean {
+  for (let i = 0; i < clips.length; i++) {
+    for (let j = i + 1; j < clips.length; j++) {
+      if (
+        intervalsOverlap(
+          clips[i].start,
+          clipEnd(clips[i]),
+          clips[j].start,
+          clipEnd(clips[j])
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * Persistence failure surfaced to the user (S-08).
  *
@@ -508,6 +568,45 @@ export interface ProjectState {
    * Changes the overlap policy of the project (F1).
    */
   setOverlapPolicy: (policy: OverlapPolicy) => void;
+
+  /* ---------------------------------------------------------------- */
+  /* F7 — internal clipboard                                            */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Internal clipboard (F7).
+   *
+   * It holds DEEP COPIES of the copied clips, so editing the originals
+   * afterwards does not change what will be pasted.
+   */
+  clipboard: ClipboardEntry[];
+
+  /**
+   * Copies the given clips into the internal clipboard (F7).
+   * Returns the number of clips actually copied (0 when none exists).
+   */
+  copyClips: (clipIds: string[]) => number;
+
+  /**
+   * Pastes the clipboard into the timeline (F7).
+   *
+   * - `trackId`: destination track. When it is omitted the original track of
+   *   the copied clips is used.
+   * - `atTime`: where the first pasted clip lands. When it is omitted the
+   *   playhead is used (and, when the playhead sits inside the copied
+   *   region, the paste lands right after that region).
+   *
+   * The paste honours the overlap policy of the project (F1) and the track
+   * type compatibility (a video clip never lands on an audio track).
+   * It returns the ids of the new clips (empty when the paste was refused).
+   */
+  pasteClips: (trackId?: string, atTime?: number) => string[];
+
+  /**
+   * Duplicates the given clips (F7): each copy is placed right after its
+   * original. Returns the ids of the new clips.
+   */
+  duplicateClips: (clipIds: string[]) => string[];
 
   // Undo / Redo
   undo: () => void;
@@ -690,6 +789,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   lastError: null,
   storageError: null,
   lastSavedAt: null,
+  // F7: the internal clipboard starts empty.
+  clipboard: [],
 
   clearLastError: () => set({ lastError: null }),
   clearStorageError: () => set({ storageError: null }),
@@ -1328,6 +1429,227 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     });
   },
 
+  /* ------------------------------------------------------------------ */
+  /* F7 — internal clipboard                                             */
+  /* ------------------------------------------------------------------ */
+
+  copyClips: (clipIds) => {
+    const { project } = get();
+    const ids = Array.from(new Set(clipIds ?? []));
+    const sources = ids
+      .map((id) => project.clips.find((c) => c.id === id))
+      .filter((c): c is Clip => Boolean(c));
+    if (sources.length === 0) return 0;
+
+    // The group keeps its relative layout: the first copied clip is the
+    // anchor (offset 0) and the others keep their distance to it.
+    const anchor = Math.min(...sources.map((c) => c.start));
+    const entries: ClipboardEntry[] = sources.map((source) => ({
+      clip: deepCopyClip(source),
+      offset: source.start - anchor,
+    }));
+
+    set({ clipboard: entries });
+    return entries.length;
+  },
+
+  pasteClips: (trackId, atTime) => {
+    const { project, clipboard, currentTime } = get();
+    if (clipboard.length === 0) return [];
+
+    /* --- Destination track ------------------------------------------ */
+    const requested = trackId ? project.tracks.find((t) => t.id === trackId) : undefined;
+    const firstType = clipboard[0].clip.type;
+    const sourceTrack = project.tracks.find((t) => t.id === clipboard[0].clip.trackId);
+    const fallback =
+      sourceTrack ?? project.tracks.find((t) => isTrackTypeCompatible(t.type, firstType));
+    const track = requested ?? fallback;
+    if (!track) {
+      const message = 'No hay ninguna pista donde pegar los clips copiados.';
+      console.warn(message);
+      set({ lastError: message });
+      return [];
+    }
+    if (track.isLocked) {
+      const message = `La pista "${track.name}" está bloqueada: desbloquéala para poder pegar clips.`;
+      console.warn(message);
+      set({ lastError: message });
+      return [];
+    }
+
+    /* --- Track type compatibility (S-12/B-04) ------------------------ */
+    const incompatible = clipboard.find((entry) => !isTrackTypeCompatible(track.type, entry.clip.type));
+    if (incompatible) {
+      const clipKind =
+        incompatible.clip.type === 'audio' ? 'audio' : incompatible.clip.type === 'text' ? 'texto' : 'vídeo';
+      const trackKind = track.type === 'audio' ? 'audio' : track.type === 'text' ? 'texto' : 'vídeo';
+      const message = `No se puede pegar un clip de ${clipKind} en la pista "${track.name}" (${trackKind}).`;
+      console.warn(message);
+      set({ lastError: message });
+      return [];
+    }
+
+    /* --- Where the group lands -------------------------------------- */
+    const sourceStart = Math.min(...clipboard.map((entry) => entry.clip.start));
+    const sourceEnd = Math.max(...clipboard.map((entry) => entry.clip.start + entry.clip.duration));
+    const span = Math.max(...clipboard.map((entry) => entry.offset + entry.clip.duration));
+
+    let anchor: number;
+    if (atTime !== undefined && Number.isFinite(atTime)) {
+      anchor = Math.max(0, atTime);
+    } else {
+      anchor = currentTime;
+      // The playhead sits INSIDE the copied region: the paste lands right
+      // after it, otherwise the copy would collide with its own source (and
+      // the `block` policy would refuse the paste).
+      if (anchor >= sourceStart - OVERLAP_EPSILON && anchor < sourceEnd - OVERLAP_EPSILON) {
+        anchor = sourceEnd;
+      }
+    }
+
+    /* --- The new clips (new ids, deep copies) ------------------------ */
+    const newClips: Clip[] = clipboard.map((entry) => ({
+      ...deepCopyClip(entry.clip),
+      id: createClipId(),
+      trackId: track.id,
+      start: anchor + entry.offset,
+    }));
+
+    if (hasInternalOverlap(newClips)) {
+      const message =
+        'Los clips copiados se solapan entre sí: pégalos de uno en uno para no crear un solape ilegal.';
+      console.warn(message);
+      set({ lastError: message });
+      return [];
+    }
+
+    /* --- Overlap policy (F1) ----------------------------------------- */
+    const policy: OverlapPolicy = project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
+    let working = project.clips;
+    const removed: Clip[] = [];
+
+    if (policy === 'overwrite') {
+      for (const clip of newClips) {
+        const result = applyOverwriteInsert(working, track.id, clip.start, clip.duration);
+        working = result.clips;
+        removed.push(...result.removed);
+      }
+    } else if (policy === 'ripple') {
+      // The group is inserted as a block: the clips that follow move to the
+      // right so the whole group has room.
+      working = applyRippleInsert(working, track.id, anchor, span).clips;
+    } else {
+      const conflicts = findOverlappingClips(working, track.id, anchor, span);
+      if (conflicts.length > 0) {
+        const conflict = conflicts[0];
+        const message =
+          `No se puede pegar aquí: se solapa con «${conflict.name}» ` +
+          `(${formatTimelineTime(conflict.start)}–${formatTimelineTime(clipEnd(conflict))}). ` +
+          `Mueve el cabezal de reproducción o cambia la política de solapamiento a «Sobrescribir» o «Ripple» en el Inspector.`;
+        console.warn(message);
+        set({ lastError: message });
+        return [];
+      }
+    }
+
+    /* --- Commit ------------------------------------------------------- */
+    get().pushHistory();
+    set((state) => {
+      const updated: Project = {
+        ...state.project,
+        clips: [...working, ...newClips],
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      // The pasted clips are selected so the user can move them right away.
+      return { project: updated, selectedClipId: newClips[0].id, lastError: null };
+    });
+    for (const clip of removed) {
+      runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(clip.id));
+    }
+    get().recalculateDuration();
+    return newClips.map((clip) => clip.id);
+  },
+
+  duplicateClips: (clipIds) => {
+    const { project } = get();
+    const ids = Array.from(new Set(clipIds ?? []));
+    const sources = ids
+      .map((id) => project.clips.find((c) => c.id === id))
+      .filter((c): c is Clip => Boolean(c));
+    if (sources.length === 0) return [];
+
+    const policy: OverlapPolicy = project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
+    let working = project.clips;
+    const newClips: Clip[] = [];
+    const removed: Clip[] = [];
+
+    // Ordered by track and time so two copies never collide with each other.
+    const ordered = [...sources].sort((a, b) =>
+      a.trackId === b.trackId ? a.start - b.start : a.trackId.localeCompare(b.trackId)
+    );
+
+    for (const source of ordered) {
+      const track = project.tracks.find((t) => t.id === source.trackId);
+      if (!track) continue;
+      if (track.isLocked) {
+        const message = `La pista "${track.name}" está bloqueada: desbloquéala para poder duplicar clips.`;
+        console.warn(message);
+        set({ lastError: message });
+        return [];
+      }
+
+      // The copy goes right after its original.
+      let start = source.start + source.duration;
+      if (policy === 'overwrite') {
+        const result = applyOverwriteInsert(working, track.id, start, source.duration);
+        working = result.clips;
+        removed.push(...result.removed);
+      } else if (policy === 'ripple') {
+        working = applyRippleInsert(working, track.id, start, source.duration).clips;
+      } else {
+        // `block`: the copy is pushed to the right until it finds a free spot
+        // (the timeline never ends up with two clips on top of each other).
+        let guard = 0;
+        while (guard++ < 1000) {
+          const conflicts = findOverlappingClips(
+            [...working, ...newClips],
+            track.id,
+            start,
+            source.duration
+          );
+          if (conflicts.length === 0) break;
+          start = Math.max(...conflicts.map((conflict) => clipEnd(conflict)));
+        }
+      }
+
+      newClips.push({
+        ...deepCopyClip(source),
+        id: createClipId(),
+        trackId: track.id,
+        start,
+      });
+    }
+
+    if (newClips.length === 0) return [];
+
+    get().pushHistory();
+    set((state) => {
+      const updated: Project = {
+        ...state.project,
+        clips: [...working, ...newClips],
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, selectedClipId: newClips[0].id, lastError: null };
+    });
+    for (const clip of removed) {
+      runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(clip.id));
+    }
+    get().recalculateDuration();
+    return newClips.map((clip) => clip.id);
+  },
+
   addTextClip: (text = 'Título Nuevo', startTime) => {
     const { project, currentTime } = get();
     let textTrack = project.tracks.find((t) => t.type === 'text');
@@ -1806,6 +2128,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       lastError: null,
       // The new project is not on the disk yet.
       lastSavedAt: null,
+      // F7: the clipboard of the previous project is meaningless now.
+      clipboard: [],
     });
     persistProject(get().project);
   },
@@ -1837,6 +2161,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       lastError: null,
       // The loaded project is not on the disk yet (it is written right after).
       lastSavedAt: null,
+      // F7: the clipboard of the previous project is meaningless now.
+      clipboard: [],
     });
     get().recalculateDuration();
     persistProject(loadedProject);
