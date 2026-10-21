@@ -26,6 +26,14 @@ interface MediaItemCardProps {
  * papelera —recuperable—, no un menú con confirmación: el borrado en un clic
  * es el contrato que espera la suite de navegador (KI-05) y el copy vigente
  * («Mover a la papelera (se puede restaurar)»).
+ *
+ * El nombre manda sobre las acciones: las acciones viven en una capa
+ * superpuesta que solo aparece al hover/foco (ancho reservado cero, el texto
+ * usa todo el ancho y «Audio Chime Acústico» cabe en 2 líneas). Solo en
+ * puntero grueso (`pointer: coarse`, táctil real) siguen fijas en la fila a
+ * 44 px —`hover: none` no sirve como señal (el Chrome sin cabeza de la
+ * suite informa `hover: none` con viewport de escritorio). Nada importante
+ * queda recortado.
  */
 export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular }) => {
   const addClipFromMedia = useProjectStore((s) => s.addClipFromMedia);
@@ -83,7 +91,7 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
           handleAdd();
         }
       }}
-      className="flex w-full max-w-full cursor-pointer select-none items-center gap-2 rounded-md border border-border-subtle bg-panel px-2 py-1.5 text-left transition hover:border-border hover:bg-raised"
+      className="group relative flex w-full max-w-full cursor-pointer select-none items-center gap-2 rounded-md border border-border-subtle bg-panel px-2 py-1.5 text-left transition hover:border-border hover:bg-raised"
     >
       {/* Miniatura 16:9 fija (64×36): nunca lleva acciones encima. La
           duración vive aquí como insignia de esquina (monoespaciado): en la
@@ -172,14 +180,18 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
         )}
       </div>
 
-      {/* La ÚNICA acción de añadir + la papelera, siempre visibles (también sin hover). */}
-      <div className="flex shrink-0 items-center gap-1">
+      {/* La ÚNICA acción de añadir + la papelera: capa superpuesta a la
+          derecha que solo se muestra al hover/foco (no reserva ancho: el
+          nombre usa toda la fila y llega a 2 líneas). Con puntero grueso
+          (`pointer: coarse`) siguen fijas en la fila a 44 px. El clic por JS
+          de la suite (KI-05) funciona igual oculta o visible. */}
+      <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-1 rounded border border-border-subtle bg-panel px-1 py-0.5 opacity-0 shadow-overlay transition group-hover:opacity-100 group-focus-within:opacity-100 focus-within:opacity-100 [@media(pointer:coarse)]:static [@media(pointer:coarse)]:translate-y-0 [@media(pointer:coarse)]:border-transparent [@media(pointer:coarse)]:bg-transparent [@media(pointer:coarse)]:px-0 [@media(pointer:coarse)]:py-0 [@media(pointer:coarse)]:opacity-100 [@media(pointer:coarse)]:shadow-none">
         <IconButton
           size="sm"
           aria-label={`Añadir ${item.name} a la línea de tiempo`}
           title="Añadir a la línea de tiempo"
           onClick={(e) => handleAdd(e)}
-          className="[@media(hover:none)]:h-11 [@media(hover:none)]:w-11"
+          className="[@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
         >
           <Plus size={16} />
         </IconButton>
@@ -188,7 +200,7 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
           aria-label={`Mover ${item.name} a la papelera`}
           title="Mover a la papelera (se puede restaurar)"
           onClick={handleRemove}
-          className="[@media(hover:none)]:h-11 [@media(hover:none)]:w-11"
+          className="[@media(pointer:coarse)]:h-11 [@media(pointer:coarse)]:w-11"
         >
           <Trash2 size={16} />
         </IconButton>

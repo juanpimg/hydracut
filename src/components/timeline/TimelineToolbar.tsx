@@ -92,7 +92,10 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
 
   return (
     <div className="h-9 w-full max-w-full min-w-0 shrink-0 bg-raised border-b border-border-subtle px-2 flex items-center justify-between gap-1 select-none overflow-x-auto overflow-y-hidden no-scrollbar">
-      {/* Izquierda: Dividir · Eliminar · Imán | + Pista · Seleccionar todo */}
+      {/* Izquierda: Dividir · Eliminar · Imán | + Pista · Seleccionar todo.
+          Bajo 560 px las etiquetas se ocultan (quedan icono + `aria-label` +
+          `title`): así la lectura compacta del zoom siempre cabe en 320 px
+          sin recortes ni scroll. */}
       <div className="flex items-center gap-1 shrink-0" role="group" aria-label="Herramientas de la línea de tiempo">
         {/* F1 · Un solo nombre para dividir: «Dividir» (la «Cuchilla» duplicada se eliminó). */}
         <Button
@@ -103,7 +106,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           aria-label="Dividir en el cabezal (S)"
           title={canSplit ? 'Dividir en el cabezal (S)' : 'Sin clip bajo el cabezal'}
         >
-          Dividir
+          <span className="hidden min-[560px]:inline">Dividir</span>
         </Button>
 
         {/* F1 · Sin rojo aquí: el rojo destructivo vive en el menú donde se borra de verdad. */}
@@ -116,7 +119,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           aria-label="Eliminar clip (Supr)"
           title="Eliminar clip (Supr)"
         >
-          Eliminar
+          <span className="hidden min-[560px]:inline">Eliminar</span>
         </Button>
 
         {/* F1 · Imán latched: estado activo persistente (accent-soft + icono de acento). */}
@@ -130,7 +133,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           title="Ajuste magnético"
           className={snapEnabled ? 'bg-accent-soft text-accent hover:text-accent' : ''}
         >
-          Imán
+          <span className="hidden min-[560px]:inline">Imán</span>
         </Button>
 
         <div aria-hidden="true" className="h-4 w-px bg-border-subtle mx-1 shrink-0" />
@@ -146,7 +149,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           aria-label="Añadir pista"
           data-testid="add-track-button"
         >
-          Pista
+          <span className="hidden min-[560px]:inline">Pista</span>
         </Button>
 
         {/* F5 · «Seleccionar todo» vive en la barra, no flotando sobre las pistas.
@@ -199,11 +202,13 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           />
         </div>
 
-        {/* Lectura compacta del zoom donde no cabe el deslizador. */}
+        {/* Lectura compacta del zoom donde no cabe el deslizador: completa
+            («100 %») y con ancho propio (`shrink-0` + `min-w` para «400 %»):
+            nunca se comprime a un número recortado. */}
         <span
           aria-hidden="true"
           title={`Zoom ${Math.round((zoom / 60) * 100)} %`}
-          className="min-[560px]:hidden font-mono text-timecode tabular text-text-2 whitespace-nowrap px-1"
+          className="min-[560px]:hidden font-mono text-timecode tabular text-text-2 whitespace-nowrap px-1 shrink-0 min-w-[3.25rem] text-center"
         >
           {Math.round((zoom / 60) * 100)} %
         </span>

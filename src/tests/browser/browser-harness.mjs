@@ -254,24 +254,21 @@ export async function startDevServer({
   );
 
   let output = '';
-  let boundUrl = url;
-  const parseBoundUrl = (chunk) => {
-    // Vite colours its output, so the raw text contains ANSI escapes between
-    // "Local" and the URL. Strip them before matching.
-    const plain = chunk.replace(/\[[0-9;]*m/g, '');
-    const m = plain.match(/Local:\s*(https?:\/\/[^\s]+)/);
-    if (m) {
-      const parsed = m[1].replace(/\/+$/, '');
-      boundUrl = `${parsed}/`;
+  // La URL que Vite atendio NO se deduce de su salida (puede llegar
+  // troceada entre chunks): se sondean los puertos candidatos y se usa el
+  // primero que sirva ESTA app. Determinista y sin depender del texto.
+  const findOurPort = async () => {
+    for (let p = port; p < port + 40; p++) {
+      const candidate = `http://${host}:${p}/`;
+      if (await isOurAppServed(candidate, 800)) return candidate;
     }
+    return null;
   };
   child.stdout?.on('data', (d) => {
     output += d.toString();
-    parseBoundUrl(d.toString());
   });
   child.stderr?.on('data', (d) => {
     output += d.toString();
-    parseBoundUrl(d.toString());
   });
 
   let exited = false;
@@ -292,18 +289,22 @@ export async function startDevServer({
   };
 
   const deadline = Date.now() + timeoutMs;
+  let boundUrl = url;
   while (Date.now() < deadline) {
-    if (await isOurAppServed(boundUrl, 1000)) break;
+    const found = await findOurPort();
+    if (found) {
+      boundUrl = found;
+      break;
+    }
     if (exited) {
-      // Vite failed to start. If a server on the requested port is serving
-      // OUR app (a race with another harness run), reuse it; otherwise it is
-      // a real failure.
+      // Vite fallo al arrancar. Si en el puerto pedido hay nuestra app
+      // (carrera con otra ejecucion del harness), se reutiliza.
       if (await isOurAppServed(url, 1000)) {
         return { url, reused: true, stop: async () => {} };
       }
       killGroup('SIGKILL');
       throw new Error(
-        `El servidor de desarrollo terminó antes de arrancar:\n${output.slice(-2000)}`
+        `El servidor de desarrollo termino antes de arrancar:\n${output.slice(-2000)}`
       );
     }
     await delay(250);
@@ -312,10 +313,9 @@ export async function startDevServer({
   if (!(await isOurAppServed(boundUrl, 1000))) {
     killGroup('SIGKILL');
     throw new Error(
-      `El servidor de desarrollo no respondió en ${boundUrl}:\n${output.slice(-2000)}`
+      `El servidor de desarrollo no respondio en ${boundUrl}:\n${output.slice(-2000)}`
     );
   }
-
   const stop = async () => {
     if (exited) return;
     killGroup('SIGTERM');
