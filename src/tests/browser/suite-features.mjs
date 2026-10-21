@@ -1446,7 +1446,7 @@ async function caseStorage({ browser, report, baseUrl }) {
         const file = new File([blob], name, { type: blob.type || 'video/webm' });
         const transfer = new DataTransfer();
         transfer.items.add(file);
-        const target = document.querySelector('[role="button"][aria-label*="pulsa para añadir"]');
+        const target = document.querySelector('[role="button"][aria-label*="añadir a la línea de tiempo"]');
         if (!target) return { ok: false, reason: 'no se encontró la zona de medios' };
         target.dispatchEvent(
           new DragEvent('drop', { dataTransfer: transfer, bubbles: true, cancelable: true })

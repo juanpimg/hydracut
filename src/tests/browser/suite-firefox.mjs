@@ -170,7 +170,7 @@ export async function run({ report, baseUrl = BASE_URL }) {
     /* ---- 2. video AND audio onto the timeline (the bug needs audio) ---- */
     const cards = await safeEvaluate(page, () =>
       Array.from(
-        document.querySelectorAll('[role="button"][aria-label*="pulsa para añadir"]')
+        document.querySelectorAll('[role="button"][aria-label*="añadir a la línea de tiempo"]')
       ).map((c) => c.getAttribute('aria-label') || '')
     );
     const audioCardIndex = cards ? cards.findIndex((label) => /audio/i.test(label)) : -1;
@@ -179,7 +179,7 @@ export async function run({ report, baseUrl = BASE_URL }) {
       for (const index of [0, audioCardIndex]) {
         await safeEvaluate(page, (i) => {
           const list = Array.from(
-            document.querySelectorAll('[role="button"][aria-label*="pulsa para añadir"]')
+            document.querySelectorAll('[role="button"][aria-label*="añadir a la línea de tiempo"]')
           );
           if (list[i]) list[i].click();
         }, index);

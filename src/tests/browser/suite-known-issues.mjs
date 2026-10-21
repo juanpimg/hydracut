@@ -363,7 +363,7 @@ async function ki05UndoMedia({ browser, report, baseUrl }) {
     // ("Eliminar …" / "Mover … a la papelera") so the check does not depend
     // on the wording of the button.
     const deleted = await safeEvaluate(page, () => {
-      const card = document.querySelector('[role="button"][aria-label*="pulsa para añadir"]');
+      const card = document.querySelector('[role="button"][aria-label*="añadir a la línea de tiempo"]');
       const del = card
         ? card.querySelector(
             'button[aria-label*="papelera"], button[aria-label^="Eliminar"], button[title*="papelera"], button[title^="Eliminar"]'
@@ -465,7 +465,7 @@ async function ki06SampleGeneration({ browser, report, baseUrl }) {
     const started = Date.now();
     await evaluateWithRetry(page, () => {
       const btn = Array.from(document.querySelectorAll('button')).find((b) =>
-        (b.textContent || '').includes('Generar Clips de Prueba')
+        (b.textContent || '').includes('Generar clips de prueba')
       );
       if (btn) btn.click();
       return Boolean(btn);
@@ -484,7 +484,7 @@ async function ki06SampleGeneration({ browser, report, baseUrl }) {
           progressbars: document.querySelectorAll('[role="progressbar"]').length,
           hasCancel: Boolean(cancel),
           busy: Array.from(buttons).some((b) =>
-            /Generando clips de muestra/i.test(b.textContent || '')
+            /Generando clips/i.test(b.textContent || '')
           ),
         };
       });
@@ -563,7 +563,7 @@ async function ki07StreamTrack({ browser, report, baseUrl }) {
       const poolBefore = (await readMediaPoolCount(page)) ?? 0;
       await evaluateWithRetry(page, () => {
         const btn = Array.from(document.querySelectorAll('button')).find((b) =>
-          (b.textContent || '').includes('Generar Clips de Prueba')
+          (b.textContent || '').includes('Generar clips de prueba')
         );
         if (btn) btn.click();
         return Boolean(btn);

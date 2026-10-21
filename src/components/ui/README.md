@@ -10,7 +10,7 @@ y todo operable por teclado con foco visible.
 | `Button` | `variant: ghost\|secondary\|primary\|danger`, `size: sm(28)\|md(32)\|lg(36)`, `icon`, `loading`; reenvía `ref` | Sin gradientes ni brillos; radio 4; `icon` sin hijos exige `aria-label` en el uso |
 | `IconButton` | `aria-label` (obligatorio), `title` (tooltip nativo), `size: sm\|md` (28/32), `active` | Un icono solo nunca se explica: siempre `aria-label` + `title` |
 | `SegmentedControl` | `options` (1–4), `value`, `onChange`, `ariaLabel`, `name` | Sustituye a los grupos de botones llenos; la activa es `accent-soft` + `text-accent`, nunca relleno sólido |
-| `Slider` | `label`, `value`, `min`, `max`, `step`, `unit`, `onChange` | Deslizador + número editable + unidad editan el MISMO valor; `aria-valuetext` con unidad |
+| `Slider` | `label`, `value`, `min`, `max`, `step`, `unit`, `onChange`, `testid`, `ariaLabel`, `title` | Deslizador + número editable + unidad editan el MISMO valor; `aria-valuetext` con unidad; `testid` nombra al deslizador y `${testid}-numero` al campo |
 | `Toggle` | `pressed`, `onChange`, `label` | Único `rounded-full` legítimo del sistema (pastilla diminuta); activo persistente `accent-soft` + acento |
 | `Checkbox` | `checked`, `onChange`, `label` | Caja de 16 px, acento al marcar, nada fuera del token |
 | `Select` / `Input` | Props nativas; reenvían `ref` | 32 px, `bg-raised`, borde 1 px, foco en acento |

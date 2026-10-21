@@ -19,8 +19,9 @@ interface MediaItemCardProps {
 }
 
 /**
- * Fila del bin (U3): miniatura 16:9 fija + nombre en 2 líneas + metadatos +
- * UNA acción de añadir. La fila entera añade al pulsar; el borrado es un
+ * Fila del bin (U3): miniatura 16:9 fija (con la duración como insignia de
+ * esquina, nunca recortada) + nombre en 2 líneas + tamaño + UNA acción de
+ * añadir. La fila entera añade al pulsar; el borrado es un
  * icono discreto en la fila (nunca sobre la miniatura) que mueve a la
  * papelera —recuperable—, no un menú con confirmación: el borrado en un clic
  * es el contrato que espera la suite de navegador (KI-05) y el copy vigente
@@ -67,7 +68,6 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
   const isMissing = item.status === 'missing';
   const hasError = item.status === 'error';
   const isUnavailable = isMissing || hasError;
-  const hasMetadata = item.duration > 0 || item.size > 0;
 
   return (
     <div
@@ -85,8 +85,10 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
       }}
       className="flex w-full max-w-full cursor-pointer select-none items-center gap-2 rounded-md border border-border-subtle bg-panel px-2 py-1.5 text-left transition hover:border-border hover:bg-raised"
     >
-      {/* Miniatura 16:9 fija (64×36): nunca lleva acciones encima. */}
-      <div className="flex h-9 w-16 shrink-0 items-center justify-center overflow-hidden rounded border border-border-subtle bg-app">
+      {/* Miniatura 16:9 fija (64×36): nunca lleva acciones encima. La
+          duración vive aquí como insignia de esquina (monoespaciado): en la
+          fila ya no se recorta con ellipsis. */}
+      <div className="relative flex h-9 w-16 shrink-0 items-center justify-center overflow-hidden rounded border border-border-subtle bg-app">
         {item.thumbnailUrl ? (
           <img
             src={item.thumbnailUrl}
@@ -97,9 +99,17 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
         ) : (
           getIcon()
         )}
+        {item.duration > 0 && (
+          <span
+            title={`Duración: ${formatDuration(item.duration)}`}
+            className="absolute right-0.5 bottom-0.5 rounded bg-black/70 px-1 font-mono text-timecode text-text-1"
+          >
+            {formatDuration(item.duration)}
+          </span>
+        )}
       </div>
 
-      {/* Nombre (hasta 2 líneas, completo en `title`) + metadatos + estado. */}
+      {/* Nombre (hasta 2 líneas, completo en `title`) + tamaño + estado. */}
       <div className="min-w-0 flex-1">
         <p
           className="line-clamp-2 break-words text-body font-medium leading-snug text-text-1"
@@ -107,18 +117,14 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
         >
           {item.name}
         </p>
-        {hasMetadata && (
-          <p className="mt-0.5 truncate text-body-sm text-text-2">
-            {item.duration > 0 && formatDuration(item.duration)}
-            {item.size > 0 && (
-              <span
-                data-testid={`media-size-${item.id}`}
-                title="Espacio que ocupa en este navegador"
-              >
-                {item.duration > 0 ? ' · ' : ''}
-                {formatStorageBytes(item.size)}
-              </span>
-            )}
+        {item.size > 0 && (
+          <p className="mt-0.5 whitespace-nowrap text-body-sm text-text-2">
+            <span
+              data-testid={`media-size-${item.id}`}
+              title="Espacio que ocupa en este navegador"
+            >
+              {formatStorageBytes(item.size)}
+            </span>
           </p>
         )}
 

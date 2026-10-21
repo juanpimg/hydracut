@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { 
-  Play, 
-  Pause, 
-  SkipBack, 
-  Scissors, 
+import {
+  Play,
+  Pause,
+  SkipBack,
+  Scissors,
   Maximize2,
+  Minimize2,
   Volume2,
   VolumeX
 } from 'lucide-react';
@@ -17,6 +18,8 @@ import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
 import { formatTimecode } from '../../core/utils/time';
 import { useIsCompactHeight } from '../../hooks/useIsMobile';
 import { canSplitAtTime } from '../timeline/TimelineToolbar';
+import { IconButton } from '../ui/IconButton';
+import { Button } from '../ui/Button';
 
 /**
  * Mobile/desktop parity helpers (pure logic, unit-tested in
@@ -62,6 +65,12 @@ export function clampMasterVolume(vol: number): number {
   return Math.max(0, Math.min(vol, 1));
 }
 
+/**
+ * Timecode discreto: etiqueta monoespaciada sin pastilla ni brillo (paridad
+ * con el transporte del escritorio). Escribe el texto en el DOM directamente
+ * desde el `masterClock`: el transporte nunca provoca un re-render por
+ * fotograma.
+ */
 const MobileTimecodeDisplay: React.FC<{ fps: number; duration: number }> = ({ fps, duration }) => {
   const currentSpanRef = useRef<HTMLSpanElement>(null);
   const fpsRef = useRef(fps);
@@ -80,10 +89,16 @@ const MobileTimecodeDisplay: React.FC<{ fps: number; duration: number }> = ({ fp
   }, [fps]);
 
   return (
-    <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md px-2 py-0.5 rounded-full text-[10px] font-mono text-cyan-300 font-bold border border-cyan-500/20 shadow pointer-events-none flex items-center gap-1 z-10">
-      <span ref={currentSpanRef}>{formatTimecode(masterClock.getTime(), fps)}</span>
-      <span className="text-slate-500">/</span>
-      <span className="text-slate-400">{formatTimecode(duration, fps)}</span>
+    <div className="flex min-w-0 flex-1 items-center gap-1.5 font-mono text-timecode tabular">
+      <span ref={currentSpanRef} className="whitespace-nowrap text-text-1">
+        {formatTimecode(masterClock.getTime(), fps)}
+      </span>
+      <span aria-hidden="true" className="hidden text-text-3 min-[400px]:inline">
+        /
+      </span>
+      <span className="hidden whitespace-nowrap text-text-2 min-[400px]:inline">
+        {formatTimecode(duration, fps)}
+      </span>
     </div>
   );
 };
@@ -105,6 +120,7 @@ export const MobilePreviewPlayer: React.FC = () => {
   const fps = useProjectStore((s) => s.project.fps);
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const [canSplit, setCanSplit] = useState(false);
+  const [aPantallaCompleta, setAPantallaCompleta] = useState(false);
 
   /**
    * Master volume: the SAME shared preview preference the desktop
@@ -345,6 +361,13 @@ export const MobilePreviewPlayer: React.FC = () => {
     };
   }, [clips]);
 
+  // Estado de la pantalla completa (para alternar el icono).
+  useEffect(() => {
+    const alCambiar = () => setAPantallaCompleta(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', alCambiar);
+    return () => document.removeEventListener('fullscreenchange', alCambiar);
+  }, []);
+
   const getAspectClass = () => {
     switch (aspectRatio) {
       case '16:9':
@@ -411,7 +434,7 @@ export const MobilePreviewPlayer: React.FC = () => {
   return (
     <div
       ref={containerRef}
-      className="relative flex-1 bg-dark-950 flex flex-col items-center justify-center p-2 overflow-hidden select-none min-h-[180px] max-h-[46vh]"
+      className="relative flex-1 bg-app flex flex-col items-center justify-center px-2 py-1 overflow-hidden select-none min-h-0"
     >
       {/* Video Canvas Container.
           The width is `min(100%, <project width>)` instead of the intrinsic
@@ -419,10 +442,10 @@ export const MobilePreviewPlayer: React.FC = () => {
           store is re-fitted for the display (KI-02). */}
       <div
         style={{ width: `min(100%, ${resolution.width}px)` }}
-        className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-dark-800 ${getAspectClass()} ${
+        className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-border-subtle ${getAspectClass()} ${
           // Landscape / short viewports: the preview must keep >= 150px of
           // visible height (PROJECT.md #12, ORIGINAL_REQUEST R4).
-          isCompact ? 'min-h-[150px]' : ''
+          isCompact ? 'min-h-[150px]' : 'min-h-0'
         }`}
       >
         <canvas
@@ -434,38 +457,32 @@ export const MobilePreviewPlayer: React.FC = () => {
           aria-label={buildPreviewAriaLabel(clips.length)}
         />
 
-        {/* Floating Timecode Pill */}
-        <MobileTimecodeDisplay fps={fps} duration={duration} />
-
-        {/* Resolution Badge (parity with the desktop PreviewPlayer) */}
-        <div className="absolute bottom-2 left-2 z-10 bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-mono text-slate-400 pointer-events-none border border-white/5">
+        {/* Insignia de resolución: etiqueta discreta, sin pastilla ni borde
+            (paridad con el visor del escritorio). */}
+        <span className="absolute bottom-2 left-2 pointer-events-none text-caption text-text-2 z-10">
           {formatResolutionBadge(resolution.width, resolution.height, aspectRatio)}
-        </div>
+        </span>
 
-        {/* Empty-state guide (parity with the desktop PreviewPlayer) */}
-        {clips.length === 0 && (
-          <div className="absolute inset-0 z-[5] flex flex-col items-center justify-center text-center p-4 gap-1.5 bg-black/40 pointer-events-none">
-            <p className="text-sm font-bold text-white">Timeline vacío</p>
-            <p className="text-[11px] text-slate-400 max-w-[32ch]">
-              Importa videos o genera clips de prueba para verlos aquí.
-            </p>
-          </div>
-        )}
+        {/* F5 · Sin mensaje de vacío aquí: la línea de tiempo es la que posee
+            el estado vacío. El visor queda en silencio (paridad con el
+            escritorio) para no duplicar el mensaje. */}
 
-        {/* Fullscreen Button */}
-        <button
+        {/* Pantalla completa: botón discreto en la esquina del visor
+            (paridad con el escritorio), con objetivo táctil de 44 px. */}
+        <IconButton
+          size="sm"
           onClick={handleFullscreen}
-          className="absolute top-2 right-2 min-w-[44px] min-h-[44px] flex items-center justify-center bg-black/60 backdrop-blur-md rounded-full text-slate-300 hover:text-white border border-white/10 active:scale-95 transition"
-          title="Pantalla Completa"
           aria-label="Pantalla completa"
+          title="Pantalla completa"
+          className="absolute right-2 top-2 z-10 min-h-[44px] min-w-[44px] bg-black/60 text-text-2 hover:text-text-1"
         >
-          <Maximize2 size={15} />
-        </button>
+          {aPantallaCompleta ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </IconButton>
 
-        {/* Floating Quick Play Overlay (Center tap) */}
+        {/* Atajo central de reproducir/pausar (un toque en el lienzo). */}
         <button
           onClick={handleTogglePlay}
-          className={`absolute inset-0 m-auto w-14 h-14 rounded-full bg-black/50 hover:bg-black/70 backdrop-blur-sm flex items-center justify-center text-white border border-white/20 shadow-lg active:scale-90 transition focus:outline-none ${
+          className={`absolute inset-0 m-auto w-14 h-14 rounded-md bg-black/50 flex items-center justify-center text-white border border-white/20 active:scale-90 transition focus:outline-none ${
             isPlaying ? 'opacity-0 hover:opacity-100 focus:opacity-100' : 'opacity-100'
           }`}
           title={isPlaying ? "Pausar" : "Reproducir"}
@@ -475,110 +492,113 @@ export const MobilePreviewPlayer: React.FC = () => {
         </button>
       </div>
 
-      {/* Floating Bottom Minimal Controls Bar.
-          In the compact (landscape) shell the bar is overlaid on the bottom of
-          the preview: in a 320px tall viewport the flow layout left the
-          canvas with only 128px of visible height (the requirement is 150px).
-          Row 1: transport. Row 2: frame stepping + master volume (parity with
-          the desktop PlayerControls). Both rows live inside this container so
-          the compact overlay covers them together without stealing canvas
-          height. */}
+      {/*
+        Transporte compacto: UNA fila de transporte (timecode discreto +
+        inicio · −1f · reproducir · +1f) y UNA fila de volumen general.
+        Todo el transporte cabe en ≤ 120 px. En apaisado la columna se
+        superpone al borde inferior del visor para no robarle altura al
+        lienzo (el requisito son 150 px visibles).
+      */}
       <div
-        className={`w-full max-w-sm flex flex-col px-3 pt-2 gap-2 ${
+        className={`w-full max-w-sm flex flex-col px-1 pt-1 gap-0.5 ${
           isCompact
-            ? 'absolute bottom-0 left-0 right-0 mx-auto bg-gradient-to-t from-black/90 via-black/55 to-transparent z-20'
+            ? 'absolute bottom-0 left-0 right-0 mx-auto bg-black/70 z-20'
             : ''
         }`}
       >
-      <div className="w-full flex items-center justify-between gap-2">
-        <button
-          onClick={handleToStart}
-          className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white rounded-lg active:scale-90 transition"
-          title="Ir al inicio"
-          aria-label="Ir al inicio"
-        >
-          <SkipBack size={17} />
-        </button>
+        {/* Fila 1: timecode + transporte (44 px). */}
+        <div className="w-full min-h-[44px] flex items-center gap-1">
+          <MobileTimecodeDisplay fps={fps} duration={duration} />
 
-        {/* Play/Pause Button */}
-        <button
-          onClick={handleTogglePlay}
-          aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
-          className={`flex items-center gap-1.5 px-5 min-h-[44px] rounded-full font-bold text-xs shadow-md active:scale-95 transition ${
-            isPlaying 
-              ? 'bg-amber-500 text-dark-950 shadow-amber-500/20' 
-              : 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-cyan-500/20'
-          }`}
-        >
-          {isPlaying ? <Pause size={15} /> : <Play size={15} className="fill-white" />}
-          <span>{isPlaying ? 'Pausar' : 'Reproducir'}</span>
-        </button>
+          <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Transporte">
+            <IconButton
+              size="sm"
+              onClick={handleToStart}
+              aria-label="Ir al inicio"
+              title="Ir al inicio"
+              className="min-h-[44px] min-w-[44px]"
+            >
+              <SkipBack size={16} />
+            </IconButton>
 
-        {/* Quick Split Button (UI-27: disabled when there is nothing to split) */}
-        <button
-          onClick={splitAtPlayhead}
-          disabled={!canSplit}
-          aria-disabled={!canSplit}
-          className={`flex items-center gap-1 px-3 min-h-[44px] text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg text-xs font-medium active:scale-90 transition disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 ${
-            canSplit ? '' : 'text-slate-500'
-          }`}
-          title={
-            canSplit
-              ? 'Cortar clip aquí'
-              : 'Cortar clip aquí (no disponible: coloca el cabezal dentro de un clip)'
-          }
-          aria-label="Dividir clip en el cabezal"
-        >
-          <Scissors size={15} className={canSplit ? 'text-cyan-400' : ''} />
-          <span>Dividir</span>
-        </button>
-      </div>
+            <IconButton
+              size="sm"
+              onClick={handleStepBack}
+              aria-label="Retroceder 1 fotograma"
+              title="Retroceder 1 fotograma"
+              className="min-h-[44px] min-w-[44px]"
+            >
+              <span className="font-mono text-[11px] font-bold">-1f</span>
+            </IconButton>
 
-      {/* Row 2: frame stepping (±1 fotograma, same logic as desktop) + master
-          volume (same audio path as desktop). All targets ≥ 44 px. */}
-      <div className="w-full flex items-center gap-2" role="group" aria-label="Precisión de fotograma y volumen maestro">
-        <button
-          onClick={handleStepBack}
-          className="min-w-[44px] min-h-[44px] shrink-0 flex items-center justify-center text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg active:scale-90 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Retroceder 1 cuadro (←)"
-          aria-label="Retroceder 1 fotograma"
-        >
-          <span className="text-xs font-mono font-bold">-1f</span>
-        </button>
+            <IconButton
+              size="sm"
+              onClick={handleTogglePlay}
+              aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+              title={isPlaying ? 'Pausar' : 'Reproducir'}
+              aria-pressed={isPlaying}
+              className="min-h-[44px] min-w-[44px]"
+            >
+              {/* El acento vive solo en el icono, nunca en un relleno. */}
+              <span className="text-accent flex items-center justify-center">
+                {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+              </span>
+            </IconButton>
 
-        <button
-          onClick={handleStepForward}
-          className="min-w-[44px] min-h-[44px] shrink-0 flex items-center justify-center text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg active:scale-90 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title="Avanzar 1 cuadro (→)"
-          aria-label="Avanzar 1 fotograma"
-        >
-          <span className="text-xs font-mono font-bold">+1f</span>
-        </button>
+            <IconButton
+              size="sm"
+              onClick={handleStepForward}
+              aria-label="Avanzar 1 fotograma"
+              title="Avanzar 1 fotograma"
+              className="min-h-[44px] min-w-[44px]"
+            >
+              <span className="font-mono text-[11px] font-bold">+1f</span>
+            </IconButton>
+          </div>
+        </div>
 
-        <button
-          onClick={handleToggleMasterMute}
-          className="min-w-[44px] min-h-[44px] shrink-0 flex items-center justify-center text-slate-300 hover:text-white bg-dark-850 border border-dark-750 rounded-lg active:scale-90 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-          title={isMasterMuted ? 'Activar sonido' : 'Silenciar'}
-          aria-label={isMasterMuted ? 'Activar sonido maestro' : 'Silenciar sonido maestro'}
-        >
-          {isMasterMuted || masterVolume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
-        </button>
+        {/* Fila 2: dividir + volumen general (44 px). */}
+        <div className="w-full min-h-[44px] flex items-center gap-2">
+          {/* UI-27: deshabilitado cuando no hay nada que dividir, con motivo. */}
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<Scissors size={14} aria-hidden="true" />}
+            onClick={splitAtPlayhead}
+            disabled={!canSplit}
+            aria-label="Dividir clip en el cabezal"
+            title={canSplit ? 'Dividir en el cabezal' : 'Sin clip bajo el cabezal'}
+            className="min-h-[44px] shrink-0"
+          >
+            Dividir
+          </Button>
 
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={isMasterMuted ? 0 : masterVolume}
-          onChange={handleMasterVolumeChange}
-          aria-label="Volumen maestro"
-          title="Volumen general"
-          className="flex-1 min-w-0 min-h-[44px] bg-dark-750 accent-cyan-400 rounded cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
-        />
-        <span aria-hidden="true" className="shrink-0 w-10 text-right font-mono text-[11px] text-slate-400">
-          {Math.round((isMasterMuted ? 0 : masterVolume) * 100)}%
-        </span>
-      </div>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5" role="group" aria-label="Volumen general">
+            <IconButton
+              size="sm"
+              onClick={handleToggleMasterMute}
+              aria-label={isMasterMuted ? 'Activar sonido general' : 'Silenciar sonido general'}
+              title={isMasterMuted ? 'Activar sonido' : 'Silenciar'}
+              className="min-h-[44px] min-w-[44px] shrink-0"
+            >
+              {isMasterMuted || masterVolume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+            </IconButton>
+
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={isMasterMuted ? 0 : masterVolume}
+              onChange={handleMasterVolumeChange}
+              aria-label="Volumen general"
+              className="flex-1 min-w-0 min-h-[44px] accent-accent cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            />
+            <span aria-hidden="true" className="shrink-0 w-10 text-right font-mono text-[11px] text-text-2">
+              {Math.round((isMasterMuted ? 0 : masterVolume) * 100)}%
+            </span>
+          </div>
+        </div>
       </div>
     </div>
   );

@@ -14,7 +14,7 @@ import {
   assertTransitionOptionsParity,
 } from '../../core/utils/transitionOptions';
 import { useLiveAnnouncement } from '../layout/liveRegion';
-import { Sparkles, Gauge, Volume2, Eye, Music, FolderPlus } from 'lucide-react';
+import { Gauge, Volume2, Eye, Music, FolderPlus, Sparkles } from 'lucide-react';
 
 /**
  * F3 / B-10: the export modal is loaded ON DEMAND (it brings the exporter and
@@ -40,12 +40,12 @@ const MediaBin = lazy(() => import('../media/MediaBin'));
 
 const MediaBinSheetFallback: React.FC = () => (
   <div aria-hidden="true" className="h-full min-h-[240px]">
-    <div className="h-9 w-full rounded-xl bg-dark-850 animate-pulse mb-3" />
+    <div className="h-9 w-full rounded-md bg-raised mb-3" />
     <div className="grid grid-cols-2 gap-3">
-      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
-      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
-      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
-      <div className="aspect-video rounded-xl bg-dark-850 animate-pulse" />
+      <div className="aspect-video rounded-md bg-raised" />
+      <div className="aspect-video rounded-md bg-raised" />
+      <div className="aspect-video rounded-md bg-raised" />
+      <div className="aspect-video rounded-md bg-raised" />
     </div>
   </div>
 );
@@ -102,6 +102,12 @@ export function transitionDurationMax(clipDuration: number): number {
   return Math.min(5, Math.max(0.2, clipDuration / 2));
 }
 
+/**
+ * Estructura móvil (DESIGN.md): barra de la app de 48 px · VISOR 38 % ·
+ * LÍNEA DE TIEMPO 30 % · tira de herramientas contextual. Nunca paneles
+ * laterales: el inspector es una hoja inferior. Superficies planas con
+ * hairlines de 1 px; el acento solo donde significa algo (opción activa).
+ */
 export const MobileCapCutLayout: React.FC = () => {
   const [activeSheet, setActiveSheet] = useState<MobileSheetType>(null);
   const isCompact = useIsCompactHeight(500);
@@ -143,37 +149,37 @@ export const MobileCapCutLayout: React.FC = () => {
   const getSheetTitle = (): string => {
     switch (activeSheet) {
       case 'media':
-        return 'Biblioteca de Medios';
+        return 'Medios';
       case 'audio':
         return 'Audio';
       case 'text':
-        return 'Capas de Texto';
+        return 'Texto';
       case 'speed':
-        return 'Velocidad de Reproducción';
+        return 'Velocidad';
       case 'volume':
-        return 'Volumen de Audio';
+        return 'Volumen';
       case 'transition':
-        return 'Animaciones y Transiciones';
+        return 'Fundidos';
       case 'opacity':
-        return 'Opacidad y Transparencia';
+        return 'Opacidad';
       case 'inspector':
-        return 'Propiedades del Clip';
+        return 'Inspector';
       default:
         return '';
     }
   };
 
   return (
-    <div className="flex flex-col h-[100dvh] w-screen overflow-hidden bg-dark-950 text-slate-100 select-none">
-      {/* 1. TOP HEADER (compact ~32px in landscape / height <= 500px, 48px in portrait) */}
-      <div className={isCompact ? "h-8 shrink-0 overflow-hidden [&>header]:!h-8 [&>header]:!min-h-0 [&>header]:!py-0 [&>header]:!pt-0 [&_button]:!min-h-0 [&_button]:!h-6 [&_a]:!h-6 [&_input]:!h-6" : "shrink-0"}>
+    <div className="flex flex-col h-[100dvh] w-screen overflow-hidden bg-app text-text-1 select-none">
+      {/* 1. BARRA DE LA APP (48 px; 32 px en apaisado, la cabecera se compacta sola) */}
+      <div className="shrink-0">
         <MobileHeader />
       </div>
 
-      {/* 2. VIDEO PREVIEW MONITOR (Canvas + Floating Controls, ensuring canvas >= 150px and > 120px) */}
-      <div className={isCompact 
-        ? "flex-1 min-h-[140px] flex flex-col overflow-hidden [&>div]:!min-h-0 [&>div]:!max-h-none [&>div]:!p-1 [&_.max-w-sm]:!pt-0.5 [&_.max-w-sm]:!gap-1 [&_.max-w-sm_button]:!min-h-0 [&_.max-w-sm_button]:!h-7 [&_.max-w-sm_button]:!py-0.5 [&_.max-w-sm_input]:!min-h-0 [&_.max-w-sm_input]:!h-6" 
-        : "flex-1 min-h-[180px] max-h-[46dvh] flex flex-col overflow-hidden"
+      {/* 2. VISOR (38 % en vertical; flexible con mínimo en apaisado) */}
+      <div className={isCompact
+        ? "flex-1 min-h-[140px] flex flex-col overflow-hidden"
+        : "min-h-0 flex-[38] flex flex-col overflow-hidden"
       }>
         {/*
           F3: the preview player is loaded on demand. The fallback keeps the
@@ -184,7 +190,7 @@ export const MobileCapCutLayout: React.FC = () => {
           fallback={
             <div
               style={{ width: `min(100%, ${resolution.width}px)` }}
-              className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-dark-800 ${previewAspectClass}`}
+              className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-border-subtle ${previewAspectClass}`}
             />
           }
         >
@@ -192,20 +198,20 @@ export const MobileCapCutLayout: React.FC = () => {
         </Suspense>
       </div>
 
-      {/* 3. MULTITRACK TOUCH TIMELINE (compact ~80px in landscape / height <= 500px) */}
-      <div className={isCompact 
-        ? "h-20 min-h-[76px] max-h-[84px] shrink-0 flex flex-col bg-dark-950 border-t border-dark-850 overflow-hidden" 
-        : "flex-1 min-h-[170px] max-h-[38dvh] flex flex-col bg-dark-950 border-t border-dark-850 overflow-hidden"
+      {/* 3. LÍNEA DE TIEMPO TÁCTIL (30 % en vertical; 76 px en apaisado) */}
+      <div className={isCompact
+        ? "h-[76px] shrink-0 flex flex-col overflow-hidden"
+        : "min-h-0 flex-[30] flex flex-col overflow-hidden"
       }>
         <Timeline />
       </div>
 
-      {/* 4. CAPCUT BOTTOM ACTION TOOLBAR (compact ~40px in landscape / height <= 500px) */}
-      <div className={isCompact ? "h-10 shrink-0 overflow-hidden [&>nav]:!h-10 [&>nav]:!min-h-0 [&>nav]:!py-0 [&>nav]:!pb-0 [&_button]:!h-8 [&_button]:!py-0" : "shrink-0"}>
+      {/* 4. TIRA DE HERRAMIENTAS CONTEXTUAL (la tira se dimensiona sola) */}
+      <div className="shrink-0">
         <MobileBottomBar onOpenSheet={(sheet) => setActiveSheet(sheet)} />
       </div>
 
-      {/* 5. MODULAR BOTTOM SHEETS (Slide-up Drawers) */}
+      {/* 5. HOJAS INFERIORES MODULARES */}
       <MobileBottomSheet
         isOpen={!!activeSheet}
         onClose={() => setActiveSheet(null)}
@@ -225,8 +231,8 @@ export const MobileCapCutLayout: React.FC = () => {
         {activeSheet === 'audio' && (
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-2">
-              <p className="text-xs text-slate-400">
-                Archivos de audio de tu biblioteca. Toca uno para insertarlo en el cabezal.
+              <p className="text-body-sm text-text-2">
+                Archivos de audio. Selecciona uno para insertarlo en el cabezal.
               </p>
             </div>
 
@@ -235,25 +241,25 @@ export const MobileCapCutLayout: React.FC = () => {
                 if (!hasAudioTrack) addTrack('audio');
                 setActiveSheet(null);
               }}
-              className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 rounded-xl bg-emerald-600/20 border border-emerald-500/40 text-emerald-300 font-semibold text-sm active:scale-[0.99] transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+              className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 rounded bg-raised border border-border text-text-1 font-semibold text-body active:scale-[0.99] transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
             >
-              <Music size={16} />
+              <Music size={16} aria-hidden="true" />
               <span>{hasAudioTrack ? 'Ir a la pista de audio' : 'Crear pista de audio'}</span>
             </button>
 
             {audioMedia.length === 0 ? (
               <div className="py-8 px-4 flex flex-col items-center justify-center text-center gap-2">
-                <Music size={32} className="text-slate-600" />
-                <p className="text-sm font-semibold text-slate-200">No hay audio importado</p>
-                <p className="text-xs text-slate-400 max-w-[30ch]">
-                  Importa un archivo de audio (mp3, wav…) desde la biblioteca de medios.
+                <Music size={32} aria-hidden="true" className="text-text-3" />
+                <p className="text-body font-semibold text-text-1">No hay audio importado</p>
+                <p className="text-body-sm text-text-2 max-w-[30ch]">
+                  Importa un archivo de audio (mp3, wav…) desde Medios.
                 </p>
                 <button
                   onClick={() => setActiveSheet('media')}
-                  className="mt-2 px-4 min-h-[44px] rounded-lg bg-dark-850 hover:bg-dark-800 border border-dark-750 text-slate-200 text-xs font-semibold flex items-center gap-2 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                  className="mt-2 px-4 min-h-[44px] rounded bg-raised hover:bg-overlay border border-border text-text-1 text-body-sm font-semibold flex items-center gap-2 active:scale-95 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
                 >
-                  <FolderPlus size={14} />
-                  <span>Abrir biblioteca de medios</span>
+                  <FolderPlus size={14} aria-hidden="true" />
+                  <span>Abrir medios</span>
                 </button>
               </div>
             ) : (
@@ -269,46 +275,46 @@ export const MobileCapCutLayout: React.FC = () => {
         {/* Text Sheet */}
         {activeSheet === 'text' && (
           <div className="space-y-4">
-            <p className="text-xs text-slate-400">
-              Selecciona un estilo de texto para insertar en la posición actual del cabezal:
+            <p className="text-body-sm text-text-2">
+              Elige un estilo: se inserta en el cabezal.
             </p>
 
             <div className="grid grid-cols-2 gap-3">
               <button
                 onClick={() => {
-                  addTextClip('Título Principal');
+                  addTextClip('Título');
                   setActiveSheet(null);
                 }}
-                className="p-3 bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/50 rounded-xl flex flex-col items-center gap-2 text-center transition group active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                className="p-3 bg-raised hover:bg-overlay border border-border rounded-lg flex flex-col items-center gap-2 text-center transition group active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               >
-                <div className="w-10 h-10 rounded-lg bg-cyan-500/20 text-cyan-400 flex items-center justify-center font-black text-lg">
+                <div className="w-10 h-10 rounded bg-panel border border-border-subtle text-text-1 flex items-center justify-center font-black text-lg">
                   T
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-white group-hover:text-cyan-400">Título Grande</h4>
-                  <p className="text-[10px] text-slate-400">Aperturas y destacados</p>
+                  <h4 className="text-body-sm font-bold text-text-1">Título</h4>
+                  <p className="text-caption text-text-2">Aperturas y destacados</p>
                 </div>
               </button>
 
               <button
                 onClick={() => {
-                  addTextClip('Subtítulo o descripción');
+                  addTextClip('Subtítulo');
                   setActiveSheet(null);
                 }}
-                className="p-3 bg-dark-850 hover:bg-dark-800 border border-dark-750 hover:border-cyan-500/50 rounded-xl flex flex-col items-center gap-2 text-center transition group active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                className="p-3 bg-raised hover:bg-overlay border border-border rounded-lg flex flex-col items-center gap-2 text-center transition group active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               >
-                <div className="w-10 h-10 rounded-lg bg-purple-500/20 text-purple-400 flex items-center justify-center font-bold text-base">
+                <div className="w-10 h-10 rounded bg-panel border border-border-subtle text-text-1 flex items-center justify-center font-bold text-base">
                   Aa
                 </div>
                 <div>
-                  <h4 className="text-xs font-bold text-white group-hover:text-purple-400">Subtítulo / Rótulo</h4>
-                  <p className="text-[10px] text-slate-400">Explicaciones o créditos</p>
+                  <h4 className="text-body-sm font-bold text-text-1">Subtítulo</h4>
+                  <p className="text-caption text-text-2">Explicaciones o créditos</p>
                 </div>
               </button>
             </div>
 
             {selectedClip && selectedClip.type === 'text' && (
-              <div className="mt-4 pt-4 border-t border-dark-800">
+              <div className="mt-4 pt-4 border-t border-border-subtle">
                 <ClipInspector />
               </div>
             )}
@@ -326,12 +332,12 @@ export const MobileCapCutLayout: React.FC = () => {
         {/* Speed Sheet */}
         {activeSheet === 'speed' && selectedClip && (
           <div className="space-y-4 py-2">
-            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+            <div className="flex items-center justify-between text-body-sm font-medium text-text-2">
               <span className="flex items-center gap-1.5">
-                <Gauge size={14} className="text-amber-400" />
-                <span>Velocidad actual:</span>
+                <Gauge size={14} aria-hidden="true" />
+                <span>Velocidad:</span>
               </span>
-              <span className="font-mono text-amber-400 font-bold text-sm">
+              <span className="font-mono text-text-1 font-bold text-body">
                 {(selectedClip.speed || 1).toFixed(1)}x
               </span>
             </div>
@@ -343,10 +349,10 @@ export const MobileCapCutLayout: React.FC = () => {
                   key={preset}
                   onClick={() => updateClip(selectedClip.id, { speed: preset })}
                   aria-pressed={(selectedClip.speed || 1) === preset}
-                  className={`min-h-[44px] px-1 rounded-lg text-xs font-bold transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
+                  className={`min-h-[44px] px-1 rounded text-body-sm font-bold transition active:scale-95 border focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
                     (selectedClip.speed || 1) === preset
-                      ? 'bg-amber-500 text-dark-950 shadow-md shadow-amber-500/20'
-                      : 'bg-dark-850 text-slate-300 hover:bg-dark-800 border border-dark-750'
+                      ? 'bg-accent-soft border-accent text-accent'
+                      : 'bg-raised text-text-2 hover:bg-overlay border-border'
                   }`}
                 >
                   {preset}x
@@ -354,7 +360,7 @@ export const MobileCapCutLayout: React.FC = () => {
               ))}
             </div>
 
-            <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+            <div className="flex justify-between text-caption text-text-3 font-mono">
               <span>{MOBILE_SPEED_MIN}x</span>
               <span>1x (Normal)</span>
               <span>{MOBILE_SPEED_MAX.toFixed(1)}x</span>
@@ -367,7 +373,7 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.speed || 1}
               onChange={(e) => updateClip(selectedClip.id, { speed: parseFloat(e.target.value) })}
-              className="w-full min-h-[44px] bg-dark-750 accent-amber-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="w-full min-h-[44px] accent-accent rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               aria-label="Velocidad del clip"
             />
           </div>
@@ -376,12 +382,12 @@ export const MobileCapCutLayout: React.FC = () => {
         {/* Volume Sheet */}
         {activeSheet === 'volume' && selectedClip && (
           <div className="space-y-4 py-2">
-            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+            <div className="flex items-center justify-between text-body-sm font-medium text-text-2">
               <span className="flex items-center gap-1.5">
-                <Volume2 size={14} className="text-emerald-400" />
-                <span>Nivel de Ganancia:</span>
+                <Volume2 size={14} aria-hidden="true" />
+                <span>Volumen:</span>
               </span>
-              <span className="font-mono text-emerald-400 font-bold text-sm">
+              <span className="font-mono text-text-1 font-bold text-body">
                 {Math.round((selectedClip.volume ?? 1) * 100)}%
               </span>
             </div>
@@ -393,11 +399,11 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.volume ?? 1}
               onChange={(e) => updateClip(selectedClip.id, { volume: parseFloat(e.target.value) })}
-              className="w-full min-h-[44px] bg-dark-750 accent-emerald-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="w-full min-h-[44px] accent-accent rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               aria-label="Volumen del clip"
             />
 
-            <div className="flex justify-between text-[11px] text-slate-500 font-mono">
+            <div className="flex justify-between text-caption text-text-3 font-mono">
               <span>0% (Silencio)</span>
               <span>100% (Normal)</span>
               <span>200% (Amplificado)</span>
@@ -411,12 +417,12 @@ export const MobileCapCutLayout: React.FC = () => {
             {/* Fade In */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                  <Sparkles size={13} className="text-blue-400" />
-                  <span>Efecto de Entrada (Fade In):</span>
+                <label className="text-body-sm font-bold text-text-1 flex items-center gap-1.5">
+                  <Sparkles size={13} aria-hidden="true" />
+                  <span>Fundido de entrada:</span>
                 </label>
-                <span className="text-[11px] font-mono text-slate-400">
-                  {(selectedClip.transition?.fadeInDuration ?? 0).toFixed(1)}s
+                <span className="text-caption font-mono text-text-2">
+                  {(selectedClip.transition?.fadeInDuration ?? 0).toFixed(1)} s
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -434,10 +440,10 @@ export const MobileCapCutLayout: React.FC = () => {
                       })
                     }
                     aria-pressed={(selectedClip.transition?.fadeInType || 'none') === t.id}
-                    className={`py-2 px-1 min-h-[44px] text-center rounded-lg text-xs font-medium border transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
+                    className={`py-2 px-1 min-h-[44px] text-center rounded text-body-sm font-medium border transition active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
                       (selectedClip.transition?.fadeInType || 'none') === t.id
-                        ? 'bg-blue-600/30 border-blue-400 text-blue-200 font-bold'
-                        : 'bg-dark-850 border-dark-750 text-slate-400 hover:text-white'
+                        ? 'bg-accent-soft border-accent text-accent font-bold'
+                        : 'bg-raised border-border text-text-2 hover:text-text-1'
                     }`}
                   >
                     {t.label}
@@ -445,7 +451,7 @@ export const MobileCapCutLayout: React.FC = () => {
                 ))}
               </div>
               {/* Transition duration (parity with the desktop inspector) */}
-              <label className="text-[11px] text-slate-400 block mt-2 mb-1" htmlFor="mobile-fade-in-duration">
+              <label className="text-caption text-text-2 block mt-2 mb-1" htmlFor="mobile-fade-in-duration">
                 Duración de entrada:
               </label>
               <input
@@ -467,19 +473,19 @@ export const MobileCapCutLayout: React.FC = () => {
                     },
                   })
                 }
-                className="w-full min-h-[44px] bg-dark-750 accent-blue-500 rounded cursor-pointer disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                className="w-full min-h-[44px] accent-accent rounded cursor-pointer disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               />
             </div>
 
             {/* Fade Out */}
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                  <Sparkles size={13} className="text-amber-400" />
-                  <span>Efecto de Salida (Fade Out):</span>
+                <label className="text-body-sm font-bold text-text-1 flex items-center gap-1.5">
+                  <Sparkles size={13} aria-hidden="true" />
+                  <span>Fundido de salida:</span>
                 </label>
-                <span className="text-[11px] font-mono text-slate-400">
-                  {(selectedClip.transition?.fadeOutDuration ?? 0).toFixed(1)}s
+                <span className="text-caption font-mono text-text-2">
+                  {(selectedClip.transition?.fadeOutDuration ?? 0).toFixed(1)} s
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -497,10 +503,10 @@ export const MobileCapCutLayout: React.FC = () => {
                       })
                     }
                     aria-pressed={(selectedClip.transition?.fadeOutType || 'none') === t.id}
-                    className={`py-2 px-1 min-h-[44px] text-center rounded-lg text-xs font-medium border transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none ${
+                    className={`py-2 px-1 min-h-[44px] text-center rounded text-body-sm font-medium border transition active:scale-95 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
                       (selectedClip.transition?.fadeOutType || 'none') === t.id
-                        ? 'bg-amber-600/30 border-amber-400 text-amber-200 font-bold'
-                        : 'bg-dark-850 border-dark-750 text-slate-400 hover:text-white'
+                        ? 'bg-accent-soft border-accent text-accent font-bold'
+                        : 'bg-raised border-border text-text-2 hover:text-text-1'
                     }`}
                   >
                     {t.label}
@@ -508,7 +514,7 @@ export const MobileCapCutLayout: React.FC = () => {
                 ))}
               </div>
               {/* Transition duration (parity with the desktop inspector) */}
-              <label className="text-[11px] text-slate-400 block mt-2 mb-1" htmlFor="mobile-fade-out-duration">
+              <label className="text-caption text-text-2 block mt-2 mb-1" htmlFor="mobile-fade-out-duration">
                 Duración de salida:
               </label>
               <input
@@ -530,7 +536,7 @@ export const MobileCapCutLayout: React.FC = () => {
                     },
                   })
                 }
-                className="w-full min-h-[44px] bg-dark-750 accent-amber-500 rounded cursor-pointer disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:outline-none"
+                className="w-full min-h-[44px] accent-accent rounded cursor-pointer disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               />
             </div>
           </div>
@@ -539,12 +545,12 @@ export const MobileCapCutLayout: React.FC = () => {
         {/* Opacity Sheet */}
         {activeSheet === 'opacity' && selectedClip && (
           <div className="space-y-4 py-2">
-            <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+            <div className="flex items-center justify-between text-body-sm font-medium text-text-2">
               <span className="flex items-center gap-1.5">
-                <Eye size={14} className="text-purple-400" />
+                <Eye size={14} aria-hidden="true" />
                 <span>Opacidad:</span>
               </span>
-              <span className="font-mono text-purple-400 font-bold text-sm">
+              <span className="font-mono text-text-1 font-bold text-body">
                 {Math.round((selectedClip.opacity ?? 1) * 100)}%
               </span>
             </div>
@@ -556,7 +562,7 @@ export const MobileCapCutLayout: React.FC = () => {
               step="0.05"
               value={selectedClip.opacity ?? 1}
               onChange={(e) => updateClip(selectedClip.id, { opacity: parseFloat(e.target.value) })}
-              className="w-full min-h-[44px] bg-dark-750 accent-purple-500 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-cyan-400"
+              className="w-full min-h-[44px] accent-accent rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               aria-label="Opacidad del clip"
             />
           </div>
@@ -571,15 +577,15 @@ export const MobileCapCutLayout: React.FC = () => {
             activeSheet === 'inspector') &&
           !selectedClip && (
             <div className="py-8 px-4 flex flex-col items-center justify-center text-center gap-2">
-              <p className="text-sm font-semibold text-slate-200">Ningún clip seleccionado</p>
-              <p className="text-xs text-slate-400 max-w-[26ch]">
-                Toca un clip del timeline para ajustar sus propiedades, o cierra este panel.
+              <p className="text-body font-semibold text-text-1">Ningún clip seleccionado</p>
+              <p className="text-body-sm text-text-2 max-w-[26ch]">
+                Selecciona un clip para ajustar sus propiedades.
               </p>
               <button
                 onClick={() => setActiveSheet(null)}
-                className="mt-2 px-4 min-h-[44px] rounded-lg bg-dark-850 hover:bg-dark-800 border border-dark-750 text-slate-200 text-xs font-semibold active:scale-95 transition focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+                className="mt-2 px-4 min-h-[44px] rounded bg-raised hover:bg-overlay border border-border text-text-1 text-body-sm font-semibold active:scale-95 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
               >
-                Cerrar panel
+                Cerrar
               </button>
             </div>
           )}

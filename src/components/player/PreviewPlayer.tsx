@@ -260,15 +260,9 @@ export const PreviewPlayer: React.FC = () => {
           {resolution.width}x{resolution.height} ({aspectRatio})
         </span>
 
-        {/* Estado vacío: titular + secundario (el lienzo no lleva acciones). */}
-        {clips.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-6 gap-1 pointer-events-none">
-            <p className="text-title text-text-1">Sin clips</p>
-            <p className="text-body-sm text-text-2 max-w-[32ch]">
-              Añade un clip para empezar a editar.
-            </p>
-          </div>
-        )}
+        {/* F5 · Sin mensaje de vacío aquí: la línea de tiempo es la que posee
+            el estado vacío (ahí está la acción «Añade un medio»). El visor
+            queda en silencio para no duplicar el mensaje. */}
 
         {/* Pantalla completa: botón discreto en la esquina del visor. */}
         <IconButton

@@ -5,6 +5,8 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
 import { formatDuration, pixelsToTime } from '../../core/utils/time';
 import { Badge } from '../ui/Badge';
+import { Button } from '../ui/Button';
+import { IconButton } from '../ui/IconButton';
 
 interface ClipItemProps {
   clip: Clip;
@@ -248,7 +250,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const duplicateClips = useProjectStore((s) => s.duplicateClips);
   const hasClipboard = useProjectStore((s) => s.clipboard.length > 0);
 
-  const { activeTool, setActiveTab } = useUIStore();
+  const { activeTool } = useUIStore();
   const clipRef = useRef<HTMLDivElement>(null);
   /** Abort controller of the pointer gesture in progress (if any). */
   const gestureRef = useRef<AbortController | null>(null);
@@ -285,11 +287,12 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
   const widthPx = Math.max(28, clip.duration * zoom);
   const showHandles = isInSelection || widthPx < 40 || zoom > 80;
   /**
-   * F7: the visible Spanish labels of the clipboard actions need room.
-   * In a short clip only the icons are shown (the `title` / `aria-label`
-   * keep the Spanish name in every case).
+   * F7: la fila de portapapeles necesita ~240 px para las tres etiquetas en
+   * español (botones de 28 px + texto). En un clip más estrecho solo se
+   * muestran los iconos (el `title` / `aria-label` conserva el nombre en
+   * español en todos los casos); la pastilla recorta lo que no quepa.
    */
-  const showClipboardLabels = widthPx >= 150;
+  const showClipboardLabels = widthPx >= 250;
 
   const media = mediaPool.find((m) => m.id === clip.mediaId);
 
@@ -330,13 +333,13 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
       return;
     }
 
-    // Otherwise select the clip and open the inspector.
+    // Otherwise select the clip (the Inspector is a permanent right
+    // panel: no tab needs opening).
     // F6: Ctrl/Cmd + clic toggles the clip inside the selection and
     // Shift + clic selects the range between the primary selection and it.
     const additive = e.ctrlKey || e.metaKey;
     const range = e.shiftKey;
     selectClip(clip.id, { additive, range });
-    setActiveTab('inspector');
   };
 
   // Unmount safety net: the window listeners of a gesture in progress are
@@ -423,7 +426,6 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         // The long press TOGGLES the clip and cancels the drag gesture.
         endGesture(controller);
         selectClip(clip.id, { additive: true });
-        setActiveTab('inspector');
       }, LONG_PRESS_MS);
     }
 
@@ -890,18 +892,17 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
         </span>
       </div>
 
-      {/* F7: clipboard actions of the selected clip (copy / paste / duplicate).
-
-          They are a real ACTION ROW (not a right-click menu): they are
-          visible as soon as the clip is selected, they work with a finger
-          (the mobile layout uses the very same timeline) and they carry
-          their Spanish label. The row is NOT clipped by the clip box
-          (`overflow-visible` while the clip is selected) so it stays
-          reachable even in a very short clip. */}
-      {isSelected && (() => {
-        // The action row covers the WHOLE selection when the clip is part
-        // of it (identical to the Ctrl+C / Ctrl+D shortcuts), else only
-        // the clicked clip.
+      {/* F7: acciones de portapapeles del clip (copiar / pegar / duplicar).
+          Fila de 28 px DENTRO del clip (`inset-x-1`, nunca centrada flotando
+          fuera): la pastilla recorta (`max-w-full` + `overflow-hidden`) lo que
+          no quepa en un clip corto en vez de derramarse por los bordes. Con
+          sitio (≥ 250 px) muestra las etiquetas en español que exige la
+          suite («Copiar»/«Pegar»/«Duplicar» exactos); sin sitio, solo iconos.
+          Se revela al seleccionar, al hover o al entrar por teclado
+          (`focus-within`); oculta queda fuera del orden de tabulación. */}
+      {(() => {
+        // La fila cubre TODA la selección cuando el clip forma parte de
+        // ella (igual que Ctrl+C / Ctrl+D); si no, solo este clip.
         const scopeIds = resolveActionScopeIds(clip.id, selectedClipIds);
         const scopeCount = scopeIds.length;
         const copyScopeLabel =
@@ -915,42 +916,81 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
           aria-label="Acciones de portapapeles del clip"
           onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
-          className="absolute bottom-0.5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-0.5 px-1 py-0.5 rounded-md bg-app/95 border border-border shadow-md"
+          className={`absolute inset-x-1 bottom-0.5 z-30 ${
+            isSelected ? 'flex' : 'hidden group-focus-within:flex group-hover:flex'
+          } ${showClipboardLabels ? 'justify-center' : 'justify-start'}`}
         >
-          <button
-            type="button"
-            title={copyScopeLabel}
-            aria-label={copyScopeLabel}
-            data-testid="clip-copy-button"
-            onClick={() => copyClips(resolveActionScopeIds(clip.id, selectedClipIds))}
-            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-text-2 hover:text-text-1 hover:bg-raised focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
-          >
-            <Copy size={12} className="shrink-0" />
-            {showClipboardLabels && <span className="text-[9px] font-semibold">{scopeCount > 1 ? copyScopeLabel : 'Copiar'}</span>}
-          </button>
-          <button
-            type="button"
-            title="Pegar"
-            aria-label="Pegar"
-            data-testid="clip-paste-button"
-            disabled={!hasClipboard}
-            onClick={() => pasteClips(clip.trackId)}
-            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-text-2 hover:text-text-1 hover:bg-raised disabled:opacity-30 disabled:hover:bg-transparent focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
-          >
-            <ClipboardPaste size={12} className="shrink-0" />
-            {showClipboardLabels && <span className="text-[9px] font-semibold">Pegar</span>}
-          </button>
-          <button
-            type="button"
-            title={duplicateScopeLabel}
-            aria-label={duplicateScopeLabel}
-            data-testid="clip-duplicate-button"
-            onClick={() => duplicateClips(resolveActionScopeIds(clip.id, selectedClipIds))}
-            className="flex items-center gap-1 min-h-[26px] px-1 rounded text-text-2 hover:text-text-1 hover:bg-raised focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
-          >
-            <CopyPlus size={12} className="shrink-0" />
-            {showClipboardLabels && <span className="text-[9px] font-semibold">{scopeCount > 1 ? duplicateScopeLabel : 'Duplicar'}</span>}
-          </button>
+          <div className="flex max-w-full items-center gap-0.5 overflow-hidden rounded border border-border bg-app/95 px-0.5 py-0.5">
+            {showClipboardLabels ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title={copyScopeLabel}
+                  aria-label={copyScopeLabel}
+                  data-testid="clip-copy-button"
+                  onClick={() => copyClips(resolveActionScopeIds(clip.id, selectedClipIds))}
+                  >
+                  <Copy size={12} className="shrink-0" aria-hidden="true" />
+                  Copiar
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title="Pegar"
+                  aria-label="Pegar"
+                  data-testid="clip-paste-button"
+                  disabled={!hasClipboard}
+                  onClick={() => pasteClips(clip.trackId)}
+                  >
+                  <ClipboardPaste size={12} className="shrink-0" aria-hidden="true" />
+                  Pegar
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title={duplicateScopeLabel}
+                  aria-label={duplicateScopeLabel}
+                  data-testid="clip-duplicate-button"
+                  onClick={() => duplicateClips(resolveActionScopeIds(clip.id, selectedClipIds))}
+                  >
+                  <CopyPlus size={12} className="shrink-0" aria-hidden="true" />
+                  Duplicar
+                </Button>
+              </>
+            ) : (
+              <>
+                <IconButton
+                  size="sm"
+                  title={copyScopeLabel}
+                  aria-label={copyScopeLabel}
+                  data-testid="clip-copy-button"
+                  onClick={() => copyClips(resolveActionScopeIds(clip.id, selectedClipIds))}
+                >
+                  <Copy size={12} aria-hidden="true" />
+                </IconButton>
+                <IconButton
+                  size="sm"
+                  title="Pegar"
+                  aria-label="Pegar"
+                  data-testid="clip-paste-button"
+                  disabled={!hasClipboard}
+                  onClick={() => pasteClips(clip.trackId)}
+                >
+                  <ClipboardPaste size={12} aria-hidden="true" />
+                </IconButton>
+                <IconButton
+                  size="sm"
+                  title={duplicateScopeLabel}
+                  aria-label={duplicateScopeLabel}
+                  data-testid="clip-duplicate-button"
+                  onClick={() => duplicateClips(resolveActionScopeIds(clip.id, selectedClipIds))}
+                >
+                  <CopyPlus size={12} aria-hidden="true" />
+                </IconButton>
+              </>
+            )}
+          </div>
         </div>
         );
       })()}

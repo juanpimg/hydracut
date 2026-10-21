@@ -837,15 +837,15 @@ export const ExportModal: React.FC = () => {
                 <button type="button" tabIndex={-1} data-testid="export-format-webm" aria-pressed={exportFormat === 'webm'} onClick={() => setExportFormat('webm')}>WebM</button>
               </div>
 
-              {/* F10: preajustes en filas compactas (etiqueta + especs) */}
+              {/* F10: preajustes en dos líneas (etiqueta + especs completa y
+                  legible: la espec nunca se recorta con ellipsis) */}
               <div>
-                <div className="flex items-center justify-between">
-                  <span className="text-body-sm text-text-2">Preajuste:</span>
-                  <span className="text-body-sm text-text-3">{activePreset ? activePreset.label : 'Personalizado'}</span>
-                </div>
+                <span className="text-body-sm text-text-2">Preajuste:</span>
                 {/*
-                  F10: preajustes en filas compactas (etiqueta + especs), en
-                  dos columnas para que el diálogo quepa sin scroll.
+                  F10: preajustes en dos líneas (etiqueta + especs), en
+                  dos columnas para que el diálogo quepa sin scroll. El
+                  estado activo vive en el propio botón (`accent-soft` +
+                  texto de acento): no hay etiqueta flotante duplicada.
                 */}
                 <div className="grid grid-cols-2 gap-1" data-testid="export-presets">
                   {EXPORT_PRESETS.map((preset) => {
@@ -858,14 +858,14 @@ export const ExportModal: React.FC = () => {
                         aria-pressed={isActive}
                         title={`${preset.label} — ${preset.hint}`}
                         onClick={() => applyPreset(preset)}
-                        className={`flex h-7 items-center justify-between gap-2 rounded border px-2 text-body-sm transition select-none ${
+                        className={`flex min-h-7 flex-col items-start justify-center gap-0 rounded border px-2 py-1 text-left transition select-none ${
                           isActive
                             ? 'border-accent bg-accent-soft text-accent font-medium'
                             : 'border-border-subtle bg-panel text-text-1 hover:border-border'
                         }`}
                       >
-                        <span className="shrink-0 truncate">{preset.label}</span>
-                        <span className="tabular min-w-0 truncate font-mono text-timecode text-text-3">
+                        <span className="text-body-sm leading-tight">{preset.label}</span>
+                        <span className="tabular font-mono text-timecode whitespace-nowrap text-text-3">
                           {preset.hint}
                         </span>
                       </button>

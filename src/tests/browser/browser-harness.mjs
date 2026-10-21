@@ -165,7 +165,7 @@ export const CHROME_ARGS = [
 ];
 
 export const WELCOME_SELECTOR = '[data-testid="welcome-modal"]';
-export const EXPORT_DIALOG_SELECTOR = 'div[role="dialog"][aria-label="Exportar video"]';
+export const EXPORT_DIALOG_SELECTOR = 'div[role="dialog"][aria-label="Exportar vídeo"], div[role="dialog"][aria-label="Exportar video"]';
 export const EXPORT_BUTTON_TESTID_SELECTOR = '[data-testid="export-open-button"]';
 export const EXPORT_BUTTON_LABEL_SELECTOR = 'button[aria-label="Abrir modal de exportación de vídeo"]';
 /** Selector histórico (sin acento y con MP4): se mantiene como último recurso. */
@@ -173,7 +173,7 @@ export const EXPORT_BUTTON_LEGACY_SELECTOR = 'button[aria-label="Abrir modal de 
 /** El harness prefiere el testid: no depende de ninguna cadena legible. */
 export const EXPORT_BUTTON_SELECTOR = EXPORT_BUTTON_TESTID_SELECTOR;
 export const EXPORT_CLOSE_SELECTOR = 'button[aria-label="Cerrar modal de exportación"]';
-export const MEDIA_POOL_LABEL = 'Panel de Medios';
+export const MEDIA_POOL_LABEL = 'Medios';
 
 /* ------------------------------------------------------------------ *
  * Dev server
@@ -193,6 +193,27 @@ export async function isServerUp(url = BASE_URL, timeoutMs = 1500) {
 }
 
 /**
+ * Returns true when the server on `url` is serving **THIS** app.
+ *
+ * Reusing "any server that answers" is a trap: another worktree (or another
+ * project) can be listening on the same port and serving a different
+ * document. The harness would then boot the wrong app and every check would
+ * fail with a misleading "the app did not mount".
+ *
+ * The marker is the document title, which is unique to HydraCut Studio.
+ */
+export async function isOurAppServed(url = BASE_URL, timeoutMs = 1500) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return false;
+    const html = await res.text();
+    return /HydraCut/i.test(html) && /id="root"/.test(html);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Boots the Vite dev server, or reuses the one already listening on
  * 127.0.0.1:5199. Always returns a `stop()` that is safe to call.
  *
@@ -206,7 +227,10 @@ export async function startDevServer({
   port = DEV_PORT,
   timeoutMs = 90_000,
 } = {}) {
-  if (await isServerUp(url)) {
+  // Only reuse a server that is actually serving THIS app. A foreign server
+  // on the same port would be booted instead of ours and every check would
+  // fail with a misleading "the app did not mount".
+  if (await isOurAppServed(url)) {
     return {
       url,
       reused: true,
@@ -214,9 +238,13 @@ export async function startDevServer({
     };
   }
 
+  // No `--strictPort`: if the preferred port belongs to a foreign process,
+  // Vite hops to the next free one and PRINTS the URL it actually bound to.
+  // We parse that URL and use it, so a foreign server can never be booted
+  // by mistake.
   const child = spawn(
     'npm',
-    ['run', 'dev', '--', '--host', host, '--port', String(port), '--strictPort'],
+    ['run', 'dev', '--', '--host', host, '--port', String(port)],
     {
       cwd: PROJECT_ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -226,11 +254,24 @@ export async function startDevServer({
   );
 
   let output = '';
+  let boundUrl = url;
+  const parseBoundUrl = (chunk) => {
+    // Vite colours its output, so the raw text contains ANSI escapes between
+    // "Local" and the URL. Strip them before matching.
+    const plain = chunk.replace(/\[[0-9;]*m/g, '');
+    const m = plain.match(/Local:\s*(https?:\/\/[^\s]+)/);
+    if (m) {
+      const parsed = m[1].replace(/\/+$/, '');
+      boundUrl = `${parsed}/`;
+    }
+  };
   child.stdout?.on('data', (d) => {
     output += d.toString();
+    parseBoundUrl(d.toString());
   });
   child.stderr?.on('data', (d) => {
     output += d.toString();
+    parseBoundUrl(d.toString());
   });
 
   let exited = false;
@@ -252,11 +293,12 @@ export async function startDevServer({
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await isServerUp(url, 1000)) break;
+    if (await isOurAppServed(boundUrl, 1000)) break;
     if (exited) {
-      // Either the port was taken by another process (then it serves the very
-      // same app and can be reused) or Vite failed to start.
-      if (await isServerUp(url, 1000)) {
+      // Vite failed to start. If a server on the requested port is serving
+      // OUR app (a race with another harness run), reuse it; otherwise it is
+      // a real failure.
+      if (await isOurAppServed(url, 1000)) {
         return { url, reused: true, stop: async () => {} };
       }
       killGroup('SIGKILL');
@@ -267,9 +309,11 @@ export async function startDevServer({
     await delay(250);
   }
 
-  if (!(await isServerUp(url, 1000))) {
+  if (!(await isOurAppServed(boundUrl, 1000))) {
     killGroup('SIGKILL');
-    throw new Error(`El servidor de desarrollo no respondió en ${url}:\n${output.slice(-2000)}`);
+    throw new Error(
+      `El servidor de desarrollo no respondió en ${boundUrl}:\n${output.slice(-2000)}`
+    );
   }
 
   const stop = async () => {
@@ -291,7 +335,7 @@ export async function startDevServer({
     }
   };
 
-  return { url, reused: false, stop };
+  return { url: boundUrl, reused: false, stop };
 }
 
 /* ------------------------------------------------------------------ *
@@ -631,11 +675,11 @@ export function timecodeToSeconds(tc) {
   return h * 3600 + m * 60 + s + f / 30;
 }
 
-/** Reads the "Panel de Medios (N)" counter. Returns the number or null. */
+/** Reads the "Medios (N)" counter (case-insensitive: the caption is uppercased by CSS). Returns the number or null. */
 export async function readMediaPoolCount(page) {
   const value = await safeEvaluate(page, (label) => {
     const m = document.body.innerText.match(
-      new RegExp(label + '\\s*\\((\\d+)\\)')
+      new RegExp(label + '\\s*\\((\\d+)\\)', 'i')
     );
     return m ? Number(m[1]) : null;
   }, MEDIA_POOL_LABEL);
@@ -830,7 +874,7 @@ export async function clickButtonByText(page, text, { exact = false } = {}) {
   return true;
 }
 
-/** Waits until the "Panel de Medios (N)" counter reaches at least `min`. */
+/** Waits until the "Medios (N)" counter reaches at least `min`. */
 export async function waitForMediaPool(page, min = 1, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   let last = null;
@@ -905,7 +949,7 @@ export async function waitForNetworkQuiescence(
 }
 
 /**
- * Clicks "Generar Clips de Prueba (1-Click)" and waits for the media pool to
+ * Clicks "Generar clips de prueba" and waits for the media pool to
  * grow. If the page is hot-reloaded in the middle of the generation the click
  * is retried (the Vite dev server reloads whenever a source file changes).
  * Returns { elapsedMs, mediaCount, attempts }.
@@ -916,7 +960,7 @@ export async function generateSampleMedia(page, { timeoutMs = 120_000, retries =
     const navBefore = navCounter(page);
     const started = Date.now();
     try {
-      await clickButtonByText(page, 'Generar Clips de Prueba');
+      await clickButtonByText(page, 'Generar clips de prueba');
     } catch (err) {
       lastError = err;
       await delay(500);
@@ -982,7 +1026,7 @@ export async function addFirstMediaToTimeline(page, { attempts = 4 } = {}) {
         try {
           const cards = Array.from(document.querySelectorAll('[role="button"]'));
           const card = document.querySelector(
-            '[role="button"][aria-label*="pulsa para añadir"]'
+            '[role="button"][aria-label*="añadir a la línea de tiempo"]'
           );
           if (!card) {
             return {

@@ -149,8 +149,12 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           Pista
         </Button>
 
-        {/* F5 · «Seleccionar todo» vive en la barra, no flotando sobre las pistas. */}
-        {selectAllSlot}
+        {/* F5 · «Seleccionar todo» vive en la barra, no flotando sobre las pistas.
+            Secundario por prioridad: oculto bajo 720 px para que la barra no
+            recorte ninguna etiqueta en estrecho (sigue en Ctrl+A). */}
+        {selectAllSlot && (
+          <div className="hidden min-[720px]:contents">{selectAllSlot}</div>
+        )}
       </div>
 
       {/* Derecha: zoom */}
@@ -164,6 +168,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
             data-testid="fit-to-screen-btn"
             aria-label="Ajustar a la pantalla"
             title="Ajustar a la pantalla"
+            className="hidden min-[640px]:inline-flex"
           >
             Ajustar
           </Button>
@@ -179,18 +184,29 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           <ZoomOut size={15} />
         </IconButton>
 
-        {/* F1 · Deslizador con lectura numérica, no un range desnudo. */}
-        <div className="hidden min-[560px]:block w-36 shrink-0">
+        {/* F1 · Deslizador con lectura numérica, no un range desnudo. La
+            lectura es el factor de zoom en % (60 px/s = 100 %, el zoom por
+            defecto): «60 px/s» no le dice nada al usuario. */}
+        <div className="hidden min-[560px]:block w-44 shrink-0">
           <Slider
             label="Zoom"
-            value={Math.round(zoom)}
-            min={10}
-            max={250}
-            step={1}
-            unit="px/s"
-            onChange={(value) => setZoom(value)}
+            value={Math.round((zoom / 60) * 100)}
+            min={20}
+            max={400}
+            step={5}
+            unit="%"
+            onChange={(value) => setZoom(Math.round((value / 100) * 60))}
           />
         </div>
+
+        {/* Lectura compacta del zoom donde no cabe el deslizador. */}
+        <span
+          aria-hidden="true"
+          title={`Zoom ${Math.round((zoom / 60) * 100)} %`}
+          className="min-[560px]:hidden font-mono text-timecode tabular text-text-2 whitespace-nowrap px-1"
+        >
+          {Math.round((zoom / 60) * 100)} %
+        </span>
 
         <IconButton
           size="sm"

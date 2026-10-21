@@ -1,6 +1,7 @@
 import React, { useEffect, useId } from 'react';
-import { X } from 'lucide-react';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { IconButton } from '../ui/IconButton';
+import { X } from 'lucide-react';
 
 interface MobileBottomSheetProps {
   isOpen: boolean;
@@ -9,6 +10,11 @@ interface MobileBottomSheetProps {
   children: React.ReactNode;
 }
 
+/**
+ * Hoja inferior del móvil (nunca paneles laterales): superficie plana
+ * `overlay` con radio 8, sin gradientes ni desenfoques. Atrapa el foco y lo
+ * devuelve al cerrar; `Esc` la cierra.
+ */
 export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
   isOpen,
   onClose,
@@ -46,34 +52,35 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
       className="fixed inset-0 z-50 flex flex-col justify-end focus:outline-none"
     >
       {/* Backdrop */}
-      <div 
-        className="fixed inset-0 bg-black/70 transition-opacity animate-fadeIn"
+      <div
+        className="fixed inset-0 bg-black/70 transition-opacity"
         onClick={onClose}
       />
 
       {/* Sheet Content */}
-      <div 
+      <div
         data-sheet-content="true"
-        className="relative bg-dark-900 border-t border-dark-750 rounded-t-2xl shadow-2xl flex flex-col max-h-[60dvh] h-[52dvh] z-10 overflow-hidden pb-[env(safe-area-inset-bottom)] animate-slideUp"
+        className="relative bg-overlay border-t border-border rounded-t-lg shadow-overlay flex flex-col max-h-[60dvh] h-[52dvh] z-10 overflow-hidden pb-[env(safe-area-inset-bottom)]"
       >
-        {/* Drag handle pill */}
+        {/* Drag handle */}
         <div className="w-full flex justify-center pt-2 pb-1">
-          <div className="w-10 h-1 bg-dark-700 rounded-full" />
+          <div className="w-10 h-1 bg-border rounded-sm" />
         </div>
 
         {/* Sheet Header */}
-        <div className="flex items-center justify-between px-4 py-2 border-b border-dark-800 shrink-0">
-          <h3 id={titleId} className="text-sm font-bold text-white tracking-wide">
+        <div className="flex items-center justify-between px-4 py-1 border-b border-border-subtle shrink-0">
+          <h3 id={titleId} className="text-title text-text-1">
             {title}
           </h3>
-          <button
+          <IconButton
+            size="md"
             onClick={onClose}
-            className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white bg-dark-850 hover:bg-dark-800 rounded-full transition active:scale-95 focus-visible:ring-2 focus-visible:ring-cyan-400 focus-visible:outline-none"
+            aria-label="Cerrar"
             title="Cerrar"
-            aria-label="Cerrar panel"
+            className="min-h-[44px] min-w-[44px]"
           >
             <X size={17} />
-          </button>
+          </IconButton>
         </div>
 
         {/* Sheet Scrollable Body */}

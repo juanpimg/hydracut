@@ -94,8 +94,24 @@ describe('ClipItem — la fila de acciones usa el alcance de la selección', () 
     expect(source).toContain('Duplicar ${scopeCount} clips');
   });
 
-  it('los botones mantienen el tamaño táctil mínimo (min-h-[26px])', () => {
-    expect(clipItemSource()).toContain('min-h-[26px]');
+  it('los botones usan la primitiva densa de 28 px, con foco por teclado y etiqueta', () => {
+    const clip = clipItemSource();
+    // La primitiva densa mide 28 px (h-7): el suelo de filas densas de
+    // DESIGN.md (28/32/36 en escritorio; 44 px solo en superficies táctiles).
+    expect(SRC('components/ui/IconButton.tsx')).toContain("sm: 'h-7 w-7'");
+    expect(SRC('components/ui/Button.tsx')).toContain("sm: 'h-7");
+    // El clip usa esas primitivas en su tamaño denso, no botones ad-hoc.
+    expect(clip).toContain('<IconButton');
+    expect(clip).toContain('<Button');
+    expect(clip).toContain('size="sm"');
+    expect(clip).not.toContain('min-h-[26px]');
+    // Cada acción conserva su nombre en español en todos los anchos…
+    expect(clip).toContain('aria-label={copyScopeLabel}');
+    expect(clip).toContain('aria-label="Pegar"');
+    expect(clip).toContain('aria-label={duplicateScopeLabel}');
+    // …y es un botón nativo (enfocable por teclado), no un div con onClick.
+    expect(SRC('components/ui/IconButton.tsx')).toContain('<button');
+    expect(SRC('components/ui/Button.tsx')).toContain('<button');
   });
 
   it('reutiliza la suscripción existente a selectedClipIds (sin segunda suscripción)', () => {

@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Section } from '../ui/Section';
+import { Slider } from '../ui/Slider';
 import { Badge } from '../ui/Badge';
 import { Clip, AudioFadeCurve, ClipColorFilters, LyricAnimationPreset, OverlapPolicy, TrackRole, TransitionType } from '../../types/project';
 import {
@@ -192,18 +193,6 @@ function commonValue<T>(clips: Clip[], read: (clip: Clip) => T): T | null {
   if (clips.length === 0) return null;
   const first = read(clips[0]);
   return clips.every((clip) => read(clip) === first) ? first : null;
-}
-
-/**
- * Etiqueta en español del paneo (-1 = izquierda, 0 = centro, 1 = derecha).
- */
-function formatPanValue(pan: number): string {
-  if (!Number.isFinite(pan)) return 'Centro';
-  if (pan <= -0.995) return 'Izquierda';
-  if (pan >= 0.995) return 'Derecha';
-  if (Math.abs(pan) < 0.005) return 'Centro';
-  const pct = Math.round(Math.abs(pan) * 100);
-  return pan < 0 ? `Izquierda ${pct}%` : `Derecha ${pct}%`;
 }
 
 /**
@@ -988,49 +977,39 @@ export const ClipInspector: React.FC = () => {
             </p>
           )}
 
-          {/* Scale */}
-          <div>
-            <div className="flex justify-between text-xs text-text-2 mb-1">
-              <span>Escala:</span>
-              <span className="font-mono text-text-1">{Math.round(effScale * 100)}%</span>
-            </div>
-            <input
-              type="range"
-              min="0.2"
-              max="2.5"
-              step="0.05"
-              value={effScale}
-              aria-label={selectedKeyframe ? `Escala del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Escala del clip'}
-              onChange={(e) =>
-                selectedKeyframe
-                  ? updateKeyframe(clip.id, selectedKeyframe.t, { scale: parseFloat(e.target.value) })
-                  : updateClip(clip.id, { scale: parseFloat(e.target.value) })
-              }
-              className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
-            />
-          </div>
+          {/* Escala (primitiva Slider: deslizador + número editan lo mismo) */}
+          <Slider
+            label="Escala:"
+            value={Math.round(effScale * 100)}
+            min={20}
+            max={250}
+            step={5}
+            unit="%"
+            testid="clip-scale"
+            ariaLabel={selectedKeyframe ? `Escala del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Escala del clip'}
+            onChange={(v) =>
+              selectedKeyframe
+                ? updateKeyframe(clip.id, selectedKeyframe.t, { scale: v / 100 })
+                : updateClip(clip.id, { scale: v / 100 })
+            }
+          />
 
-          {/* Opacity */}
-          <div>
-            <div className="flex justify-between text-xs text-text-2 mb-1">
-              <span>Opacidad:</span>
-              <span className="font-mono text-text-1">{Math.round(effOpacity * 100)}%</span>
-            </div>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={effOpacity}
-              aria-label={selectedKeyframe ? `Opacidad del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Opacidad del clip'}
-              onChange={(e) =>
-                selectedKeyframe
-                  ? updateKeyframe(clip.id, selectedKeyframe.t, { opacity: parseFloat(e.target.value) })
-                  : updateClip(clip.id, { opacity: parseFloat(e.target.value) })
-              }
-              className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
-            />
-          </div>
+          {/* Opacidad (primitiva Slider) */}
+          <Slider
+            label="Opacidad:"
+            value={Math.round(effOpacity * 100)}
+            min={0}
+            max={100}
+            step={5}
+            unit="%"
+            testid="clip-opacity"
+            ariaLabel={selectedKeyframe ? `Opacidad del keyframe de ${selectedKeyframe.t.toFixed(2)} segundos` : 'Opacidad del clip'}
+            onChange={(v) =>
+              selectedKeyframe
+                ? updateKeyframe(clip.id, selectedKeyframe.t, { opacity: v / 100 })
+                : updateClip(clip.id, { opacity: v / 100 })
+            }
+          />
 
           {/* Position X / Y */}
           <div className="grid grid-cols-2 gap-2">
@@ -1079,9 +1058,13 @@ export const ClipInspector: React.FC = () => {
         </Section>
       )}
 
-      {/* F8 · KEYFRAMES DE ANIMACIÓN */}
+      {/* F8 · KEYFRAMES DE ANIMACIÓN.
+          Arranca colapsada pero MONTADA (regla U7a: máx. 5 secciones
+          expandidas; las avanzadas —keyframes y fundidos— arrancan
+          cerradas y «Fundido de cruce» y «Audio» quedan abiertas porque
+          la suite exige sus avisos visibles). */}
       {(isVideoOrImage || isText) && (
-        <Section titulo="Keyframes de animación">
+        <Section titulo="Keyframes de animación" abiertaPorDefecto={false}>
           <div data-testid="keyframe-section" className="space-y-2 rounded border border-border-subtle bg-raised p-2.5">
             <p className="text-[10px] leading-snug text-text-3">
               Anima la posición, la escala y la opacidad a lo largo del clip con
@@ -1254,33 +1237,29 @@ export const ClipInspector: React.FC = () => {
               </select>
             </div>
 
-            {/* Individual filters */}
+            {/* Filtros individuales (primitiva Slider, en porcentaje: el
+                campo numérico muestra el mismo % que antes mostraba la
+                etiqueta, y el `data-testid` lo lee la suite). */}
             {COLOR_SLIDERS.map((slider) => {
               const value = clip.filters?.[slider.key] ?? slider.neutral;
               return (
-                <div key={slider.key}>
-                  <div className="flex justify-between text-[11px] text-text-2 mb-1">
-                    <label htmlFor={`clip-color-${slider.key}-${clip.id}`}>{slider.label}:</label>
-                    <span className="font-mono text-text-2">{slider.format(value)}</span>
-                  </div>
-                  <input
-                    id={`clip-color-${slider.key}-${clip.id}`}
-                    data-testid={`clip-color-${slider.key}`}
-                    type="range"
-                    min={slider.min}
-                    max={slider.max}
-                    step={slider.step}
-                    value={value}
-                    disabled={!colorFiltersEnabled}
-                    aria-label={slider.ariaLabel}
-                    onChange={(e) => {
-                      const next: ClipColorFilters = { ...(clip.filters ?? {}) };
-                      next[slider.key] = parseFloat(e.target.value);
-                      updateClip(clip.id, { filters: next });
-                    }}
-                    className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
-                  />
-                </div>
+                <Slider
+                  key={slider.key}
+                  label={`${slider.label}:`}
+                  value={Math.round(value * 100)}
+                  min={Math.round(slider.min * 100)}
+                  max={Math.round(slider.max * 100)}
+                  step={1}
+                  unit="%"
+                  testid={`clip-color-${slider.key}`}
+                  ariaLabel={slider.ariaLabel}
+                  disabled={!colorFiltersEnabled}
+                  onChange={(v) => {
+                    const next: ClipColorFilters = { ...(clip.filters ?? {}) };
+                    next[slider.key] = v / 100;
+                    updateClip(clip.id, { filters: next });
+                  }}
+                />
               );
             })}
 
@@ -1314,34 +1293,31 @@ export const ClipInspector: React.FC = () => {
       {hasAudio && (
         <Section titulo="Audio">
 
-          {/* Volume */}
-          <div>
-            <div className="flex justify-between text-xs text-text-2 mb-1">
-              <span>Volumen:</span>
-              <span className="font-mono text-text-1">{Math.round((clip.volume ?? 1) * 100)}%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="range"
-                min="0"
-                max="2"
-                step="0.05"
-                value={clip.volume ?? 1}
-                aria-label="Volumen del clip"
-                onChange={(e) => updateClip(clip.id, { volume: parseFloat(e.target.value) })}
-                className="flex-1 h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
+          {/* Volumen (primitiva Slider) + silencio */}
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <Slider
+                label="Volumen:"
+                value={Math.round((clip.volume ?? 1) * 100)}
+                min={0}
+                max={200}
+                step={5}
+                unit="%"
+                testid="clip-volume"
+                ariaLabel="Volumen del clip"
+                onChange={(v) => updateClip(clip.id, { volume: v / 100 })}
               />
-              <button
-                onClick={() => updateClip(clip.id, { muted: !clip.muted })}
-                aria-label={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
-                className={`p-1.5 rounded transition focus-visible:outline-none ${
-                  clip.muted ? 'bg-danger/10 text-danger border border-danger/50' : 'bg-raised text-text-2 hover:text-white'
-                }`}
-                title={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
-              >
-                {clip.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-              </button>
             </div>
+            <button
+              onClick={() => updateClip(clip.id, { muted: !clip.muted })}
+              aria-label={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
+              className={`shrink-0 p-1.5 rounded transition focus-visible:outline-none ${
+                clip.muted ? 'bg-danger/10 text-danger border border-danger/50' : 'bg-raised text-text-2 hover:text-white'
+              }`}
+              title={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
+            >
+              {clip.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+            </button>
           </div>
 
           {/* FUNDIDOS DE AUDIO */}
@@ -1492,30 +1468,22 @@ export const ClipInspector: React.FC = () => {
                 pista (la música baja cuando entra la voz).
               </p>
 
-              {/* Paneo */}
+              {/* Paneo (primitiva Slider) */}
               <div>
-                <div className="flex justify-between text-xs text-text-2 mb-1">
-                  <label htmlFor={`audio-pan-${clip.id}`}>Paneo:</label>
-                  <span className="font-mono text-text-1">
-                    {formatPanValue(clip.audioEffects?.pan ?? 0)}
-                  </span>
-                </div>
-                <input
-                  id={`audio-pan-${clip.id}`}
-                  type="range"
-                  min="-1"
-                  max="1"
-                  step="0.01"
+                <Slider
+                  label="Paneo:"
                   value={clip.audioEffects?.pan ?? 0}
+                  min={-1}
+                  max={1}
+                  step={0.01}
+                  testid="clip-audio-pan"
+                  ariaLabel="Paneo estéreo del clip"
                   disabled={!panEnabled}
-                  data-testid="clip-audio-pan"
-                  aria-label="Paneo estéreo del clip"
-                  onChange={(e) =>
+                  onChange={(v) =>
                     updateClip(clip.id, {
-                      audioEffects: { ...(clip.audioEffects ?? {}), pan: parseFloat(e.target.value) },
+                      audioEffects: { ...(clip.audioEffects ?? {}), pan: v },
                     })
                   }
-                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                 />
                 <p className="text-[10px] leading-snug text-text-3 mt-1">
                   −1 = izquierda, 0 = centro, +1 = derecha.
@@ -1531,42 +1499,34 @@ export const ClipInspector: React.FC = () => {
                 </p>
               )}
 
-              {/* EQ de 3 bandas */}
+              {/* EQ de 3 bandas (primitiva Slider, en dB como antes) */}
               {EQ_SLIDERS.map((slider) => {
                 const value = clip.audioEffects?.eq?.[slider.key] ?? 0;
                 return (
-                  <div key={slider.key}>
-                    <div className="flex justify-between text-xs text-text-2 mb-1">
-                      <label htmlFor={`audio-eq-${slider.key}-${clip.id}`}>{slider.label}:</label>
-                      <span className="font-mono text-text-1">
-                        {value > 0 ? `+${value.toFixed(1)} dB` : `${value.toFixed(1)} dB`}
-                      </span>
-                    </div>
-                    <input
-                      id={`audio-eq-${slider.key}-${clip.id}`}
-                      type="range"
-                      min={EQ_DB_MIN}
-                      max={EQ_DB_MAX}
-                      step="0.5"
-                      value={value}
-                      disabled={!eqEnabled}
-                      data-testid={`clip-audio-eq-${slider.key}`}
-                      aria-label={slider.ariaLabel}
-                      title={slider.hint}
-                      onChange={(e) =>
-                        updateClip(clip.id, {
-                          audioEffects: {
-                            ...(clip.audioEffects ?? {}),
-                            eq: {
-                              ...(clip.audioEffects?.eq ?? {}),
-                              [slider.key]: parseFloat(e.target.value),
-                            },
+                  <Slider
+                    key={slider.key}
+                    label={`${slider.label}:`}
+                    value={value}
+                    min={EQ_DB_MIN}
+                    max={EQ_DB_MAX}
+                    step={0.5}
+                    unit="dB"
+                    testid={`clip-audio-eq-${slider.key}`}
+                    ariaLabel={slider.ariaLabel}
+                    title={slider.hint}
+                    disabled={!eqEnabled}
+                    onChange={(v) =>
+                      updateClip(clip.id, {
+                        audioEffects: {
+                          ...(clip.audioEffects ?? {}),
+                          eq: {
+                            ...(clip.audioEffects?.eq ?? {}),
+                            [slider.key]: v,
                           },
-                        })
-                      }
-                      className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
-                    />
-                  </div>
+                        },
+                      })
+                    }
+                  />
                 );
               })}
               {biquadSupport === false && (
@@ -1728,8 +1688,9 @@ export const ClipInspector: React.FC = () => {
         </Section>
       )}
 
-      {/* TRANSITIONS & FADES */}
-      <Section titulo="Fundidos">
+      {/* FUNDIDOS de entrada/salida (arranca colapsado pero montado: ver
+          la regla en «Keyframes de animación»). */}
+      <Section titulo="Fundidos" abiertaPorDefecto={false}>
 
         {/* Fade In */}
         <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">

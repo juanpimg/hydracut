@@ -16,6 +16,20 @@ export interface SliderProps {
   onChange: (value: number) => void;
   /** Deshabilita el deslizador y el campo. */
   disabled?: boolean;
+  /**
+   * `data-testid` del deslizador (lo lee la suite de navegador). El campo
+   * numérico expone `${testid}-numero`, así que un mismo `testid` nombra a
+   * los dos controles sin colisionar.
+   */
+  testid?: string;
+  /**
+   * Nombre accesible del deslizador. Por defecto, `label`: se distingue
+   * porque la etiqueta visible lleva dos puntos («Paneo:») y el lector
+   * necesita el nombre sin ellos («Paneo estéreo del clip»).
+   */
+  ariaLabel?: string;
+  /** Consejo nativo (`title`) del deslizador. */
+  title?: string;
 }
 
 /** Limita el valor al rango [min, max]. */
@@ -39,6 +53,9 @@ export function Slider({
   unit = '',
   onChange,
   disabled = false,
+  testid,
+  ariaLabel,
+  title,
 }: SliderProps) {
   // El campo muestra texto libre mientras se edita; solo se confirma al salir.
   const [texto, setTexto] = useState<string | null>(null);
@@ -54,8 +71,9 @@ export function Slider({
     onChange(clampSlider(Number(evento.target.value), min, max));
   };
 
-  const idCampo = `slider-${label}`;
+  const idCampo = testid ? `${testid}-campo` : `slider-${label}`;
   const textoValor = unit ? `${value} ${unit}` : `${value}`;
+  const nombreAccesible = ariaLabel ?? label;
 
   return (
     <div className="flex items-center gap-2">
@@ -67,8 +85,10 @@ export function Slider({
       </label>
       <input
         type="range"
-        aria-label={label}
+        data-testid={testid}
+        aria-label={nombreAccesible}
         aria-valuetext={textoValor}
+        title={title}
         min={min}
         max={max}
         step={step}
@@ -82,7 +102,8 @@ export function Slider({
           id={idCampo}
           type="text"
           inputMode="decimal"
-          aria-label={`${label} (valor numérico)`}
+          data-testid={testid ? `${testid}-numero` : undefined}
+          aria-label={`${nombreAccesible} (valor numérico)`}
           value={texto ?? String(value)}
           disabled={disabled}
           onChange={(evento) => setTexto(evento.target.value)}

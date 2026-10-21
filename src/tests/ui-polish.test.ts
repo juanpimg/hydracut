@@ -424,3 +424,188 @@ describe('5 · formateadores puros del resultado del export', () => {
     expect(modal).toContain('formatBitrate(');
   });
 });
+/**
+ * U7a · Pulido final F1–F5 + F7 (remate del rediseño U0–U6).
+ *
+ * Se añade a `ui-polish.test.ts` sin tocar las secciones anteriores: cada
+ * test falla sin su cambio (primitiva sin `testid`, secciones desmontadas,
+ * fila recortada con ellipsis, etiqueta flotante duplicada, rellenos de
+ * acento sólidos o `setActiveTab` muerto). Sin jsdom: cableado sobre la
+ * fuente, como el resto del fichero.
+ */
+
+describe('U7a · F1 — el Slider reenvía `testid` y el Inspector lo usa', () => {
+  it('la primitiva acepta `testid`/`ariaLabel`/`title` y los reenvía al deslizador', () => {
+    const slider = sourceOf('../components/ui/Slider.tsx');
+    expect(slider).toContain('testid?: string');
+    expect(slider).toContain('ariaLabel?: string');
+    expect(slider).toContain('data-testid={testid}');
+    expect(slider).toContain('aria-label={nombreAccesible}');
+  });
+
+  it('el campo numérico expone `${testid}-numero` (mismo valor, sin colisión)', () => {
+    const slider = sourceOf('../components/ui/Slider.tsx');
+    expect(slider).toContain('testid}-numero');
+  });
+
+  it('el Inspector usa la primitiva con los `data-testid` exactos de la suite', () => {
+    const inspector = sourceOf('../components/inspector/ClipInspector.tsx');
+    for (const id of [
+      'testid="clip-volume"',
+      'testid="clip-scale"',
+      'testid="clip-opacity"',
+      'testid="clip-audio-pan"',
+      'testid={`clip-audio-eq-${slider.key}`}',
+      'testid={`clip-color-${slider.key}`}',
+    ]) {
+      expect(inspector).toContain(id);
+    }
+    // Seis usos de <Slider cubren los 13 deslizadores (2 + 6 + 1 + 1 + 3).
+    expect(inspector.match(/<Slider/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
+  });
+
+  it('los nativos con `testid` escrito a mano desaparecen (diseño único)', () => {
+    const inspector = sourceOf('../components/inspector/ClipInspector.tsx');
+    expect(inspector).not.toContain('clip-color-${slider.key}-${clip.id}');
+    expect(inspector).not.toContain('audio-pan-${clip.id}');
+    expect(inspector).not.toContain('audio-eq-${slider.key}-${clip.id}');
+  });
+
+  it('las etiquetas que afirma la suite se conservan', () => {
+    const inspector = sourceOf('../components/inspector/ClipInspector.tsx');
+    // Literales con dos puntos (los que la suite lee por `closest('div')`).
+    for (const etiqueta of [
+      'Paneo:',
+      'Volumen:',
+      'Escala:',
+      'Opacidad:',
+      'Ducking: bajar cuando entra la voz',
+      'Paneo estéreo del clip',
+      'Brillo del clip',
+      'Contraste del clip',
+      'Saturación del clip',
+      'Temperatura del clip',
+      'Blanco y negro del clip',
+      'Sepia del clip',
+    ]) {
+      expect(inspector).toContain(etiqueta);
+    }
+    // EQ y color componen «Etiqueta:» como `${slider.label}:`; la suite lee
+    // «Graves:»/«Medios:»/«Agudos:» del DOM resultante.
+    expect(inspector).toContain('label={`${slider.label}:`}');
+    for (const banda of ["'Graves'", "'Medios'", "'Agudos'"]) {
+      expect(inspector).toContain(banda);
+    }
+  });
+});
+
+describe('U7a · F2 — secciones montadas pero colapsadas (máx. 5 abiertas)', () => {
+  it('Section monta el contenido colapsado con `hidden` (no lo desmonta)', () => {
+    const section = sourceOf('../components/ui/Section.tsx');
+    expect(section).toContain('hidden={!abierta}');
+    expect(section).not.toContain('{abierta &&');
+  });
+
+  it('el Inspector arranca con 5 expandidas: Keyframes y Fundidos cerrados', () => {
+    const inspector = sourceOf('../components/inspector/ClipInspector.tsx');
+    const cerradas = Array.from(
+      inspector.matchAll(/<Section titulo="([^"]+)" abiertaPorDefecto=\{false\}/g)
+    ).map((m) => m[1]);
+    // Exactamente las dos avanzadas/contextuales; el resto (incluidos
+    // Audio y Fundido de cruce, cuyos avisos exige visibles la suite)
+    // arranca abierto: 7 − 2 = 5 en un clip de vídeo.
+    expect(cerradas.sort()).toEqual(['Fundidos', 'Keyframes de animación']);
+    expect(inspector).not.toMatch(/<Section titulo="Audio" abiertaPorDefecto/);
+    expect(inspector).not.toMatch(/<Section titulo="Fundido de cruce" abiertaPorDefecto/);
+  });
+});
+
+describe('U7a · F3 — acciones del clip dentro del clip (28 px)', () => {
+  it('la fila vive dentro (`inset-x-1`) y recorta lo que no quepa', () => {
+    const clip = sourceOf('../components/timeline/ClipItem.tsx');
+    expect(clip).toContain('inset-x-1 bottom-0.5');
+    expect(clip).toContain('max-w-full');
+    expect(clip).toContain('overflow-hidden');
+    // La caja flotante centrada que se derramaba ya no existe.
+    expect(clip).not.toContain('-translate-x-1/2');
+  });
+
+  it('botones de 28 px con etiquetas exactas y `aria-label`s', () => {
+    const clip = sourceOf('../components/timeline/ClipItem.tsx');
+    expect(clip).toContain('data-testid="clip-clipboard-actions"');
+    expect(clip).toContain('data-testid="clip-copy-button"');
+    expect(clip).toContain('data-testid="clip-paste-button"');
+    expect(clip).toContain('data-testid="clip-duplicate-button"');
+    for (const palabra of ['Copiar', 'Pegar', 'Duplicar']) {
+      expect(clip).toMatch(new RegExp(`>\\s*${palabra}\\s*<`));
+    }
+    // Primitivas de 28 px (sm), no botones ad-hoc de 26 px.
+    expect(clip).not.toContain('min-h-[26px]');
+  });
+
+  it('la fila se revela al seleccionar, al hover o por teclado', () => {
+    const clip = sourceOf('../components/timeline/ClipItem.tsx');
+    expect(clip).toContain('group-hover:flex');
+    expect(clip).toContain('group-focus-within:flex');
+  });
+});
+
+describe('U7a · F4 — la tarjeta no recorta la duración con ellipsis', () => {
+  it('la duración vive en la miniatura (insignia) y el nombre usa 2 líneas', () => {
+    const tarjeta = sourceOf('../components/media/MediaItemCard.tsx');
+    expect(tarjeta).toContain('line-clamp-2');
+    expect(tarjeta).toContain('absolute right-0.5 bottom-0.5');
+    expect(tarjeta).toContain('formatDuration(item.duration)');
+  });
+
+  it('ninguna fila de metadatos usa `truncate`/ellipsis', () => {
+    const tarjeta = sourceOf('../components/media/MediaItemCard.tsx');
+    expect(tarjeta).not.toContain('truncate');
+    expect(tarjeta).toContain('whitespace-nowrap');
+    expect(tarjeta).toContain('media-size-');
+  });
+
+  it('los `aria-label` que lee la suite se conservan', () => {
+    const tarjeta = sourceOf('../components/media/MediaItemCard.tsx');
+    expect(tarjeta).toContain('pulsa para añadir a la línea de tiempo');
+    expect(tarjeta).toContain('a la papelera');
+  });
+});
+
+describe('U7a · F5 — diálogo de exportar sin duplicados ni acento sólido', () => {
+  it('sin etiqueta flotante que duplique el preajuste activo', () => {
+    const modal = sourceOf('../components/export/ExportModal.tsx');
+    expect(modal).not.toContain('activePreset.label');
+    expect(modal).not.toContain('Personalizado');
+    // El estado activo sigue viviendo en el propio botón.
+    expect(modal).toContain('export-preset-${preset.id}');
+    expect(modal).toContain('aria-pressed={isActive}');
+  });
+
+  it('la espec del preajuste es legible (dos líneas, sin `truncate`)', () => {
+    const modal = sourceOf('../components/export/ExportModal.tsx');
+    const bloque = modal.slice(
+      modal.indexOf('data-testid="export-presets"'),
+      modal.indexOf('data-testid="export-presets"') + 2000
+    );
+    expect(bloque).toContain('{preset.hint}');
+    expect(bloque).not.toContain('truncate');
+  });
+
+  it('los seleccionados usan `accent-soft`; el único sólido es Exportar', () => {
+    const modal = sourceOf('../components/export/ExportModal.tsx');
+    expect(modal).toContain('bg-accent-soft');
+    expect(modal).not.toContain('bg-accent-fill');
+    expect(modal).toContain('variant="primary"');
+  });
+});
+
+describe('U7a · F7 — ClipItem sin `setActiveTab` muerto', () => {
+  it('no queda ninguna llamada ni el import sin uso', () => {
+    const clip = sourceOf('../components/timeline/ClipItem.tsx');
+    expect(clip).not.toContain('setActiveTab');
+    expect(clip).toContain('const { activeTool } = useUIStore();');
+    // La selección sigue intacta.
+    expect(clip).toContain('selectClip(clip.id');
+  });
+});

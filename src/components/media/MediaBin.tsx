@@ -413,25 +413,8 @@ export const MediaBin: React.FC = () => {
     <div className="flex h-full select-none flex-col overflow-hidden bg-panel">
       {/* F2 — cabecera: «Medios» + conteo en caption, sin envoltorio. */}
       <div className="flex h-10 shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3">
-        <h2 className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-caption text-text-1">
-          {/*
-            El `uppercase` va SOLO en el tramo visible: el tramo sr-only debe
-            conservar «Panel de Medios (N)» con sus mayúsculas exactas, porque
-            `innerText` aplica el text-transform heredado y la suite de
-            navegador busca esa cadena con una expresión sensible a mayúsculas.
-          */}
-          <span className="uppercase">
-            Medios <span className="font-normal text-text-3">({mediaPool.length})</span>
-          </span>
-          {/*
-            Compatibilidad con la suite de navegador: `readMediaPoolCount`
-            busca «Panel de Medios (N)» en el texto visible. Este tramo no se
-            ve (sr-only) ni lo anuncia el lector (aria-hidden), pero sigue en
-            `innerText`, así que el contador de la suite no se rompe.
-          */}
-          <span className="sr-only" aria-hidden="true">
-            Panel de Medios ({mediaPool.length})
-          </span>
+        <h2 className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-caption uppercase text-text-1">
+          Medios <span className="font-normal text-text-3">({mediaPool.length})</span>
         </h2>
 
         <Button
@@ -643,14 +626,6 @@ export const MediaBin: React.FC = () => {
           className="w-full"
         >
           {isGeneratingSamples ? 'Generando clips…' : 'Generar clips de prueba'}
-          {/*
-            Compatibilidad con la suite de navegador: busca un botón cuyo texto
-            contenga «Generar Clips de Prueba». Este tramo no se ve ni lo
-            anuncia el lector (`hidden`), pero sigue en `textContent`.
-          */}
-          <span className="hidden" aria-hidden="true">
-            Generar Clips de Prueba (1-Click)
-          </span>
         </Button>
       </div>
 

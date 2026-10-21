@@ -64,13 +64,16 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
       data-testid={`track-header-${track.id}`}
       className="h-14 px-2 bg-panel border-b border-r border-border-subtle flex flex-col justify-center gap-1 select-none overflow-hidden"
     >
-      {/* Fila 1 · Marca de tipo + código + nombre real (el nombre completo vive en el title). */}
-      <div className="flex items-center gap-1.5 min-w-0">
+      {/* Fila 1 · Marca de tipo + código + nombre real. En columna estrecha
+          (< 400 px) el nombre se oculta: solo queda el código corto (V2/A1/T1)
+          y el nombre completo vive en el `title` de la fila y en el menú.
+          Nunca «Video …». */}
+      <div className="flex items-center gap-1.5 min-w-0" title={track.name}>
         <span aria-hidden="true" className={`w-0.5 self-stretch rounded-sm ${MARCA_POR_TIPO[track.type]}`} />
         <Badge variant="neutral">
           <span className="font-mono">{codigo}</span>
         </Badge>
-        <span className="text-body-sm font-medium text-text-1 truncate" title={track.name}>
+        <span className="hidden min-[400px]:inline text-body-sm font-medium text-text-1 truncate" title={track.name}>
           {track.name}
         </span>
       </div>

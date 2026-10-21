@@ -564,17 +564,33 @@ describe('F7 — los atajos de teclado del portapapeles', () => {
     expect(source).toContain('Duplicar');
   });
 
-  it('las acciones de portapapeles se muestran con su etiqueta (táctiles)', () => {
+  it('las acciones de portapapeles se muestran con su etiqueta (28 px, sin recorte)', () => {
     const source = readFileSync(
       new URL('../components/timeline/ClipItem.tsx', import.meta.url),
       'utf8'
     );
     // The actions are a visible row (not a right-click menu) and they are
-    // rendered as soon as the clip is selected.
-    expect(source).toMatch(/isSelected\s*&&\s*\(/);
+    // revealed on selection, on hover and on keyboard focus.
+    expect(source).toContain('clip-clipboard-actions');
     expect(source).toContain('showClipboardLabels');
-    // A touch target that can really be hit with a finger.
-    expect(source).toMatch(/min-h-\[2\dpx\]/);
+    expect(source).toContain('group-hover:flex');
+    expect(source).toContain('group-focus-within:flex');
+    // With room, the Spanish labels are visible; without room the same
+    // Spanish name survives in `aria-label`/`title` on every action.
+    for (const palabra of ['Copiar', 'Pegar', 'Duplicar']) {
+      expect(source).toContain(palabra);
+    }
+    expect(source).toContain('aria-label={copyScopeLabel}');
+    expect(source).toContain('aria-label="Pegar"');
+    expect(source).toContain('aria-label={duplicateScopeLabel}');
+    // A dense-design target: the sm primitives (28 px), never ad-hoc sizes.
+    expect(source).toContain('size="sm"');
+    expect(source).not.toContain('min-h-[26px]');
+    // The row cannot be clipped away: a selected clip opens its overflow
+    // and the row lives inside its bounds, trimming inward on short clips.
+    expect(source).toContain("isInSelection ? 'overflow-visible' : 'overflow-hidden'");
+    expect(source).toContain('inset-x-1');
+    expect(source).toContain('max-w-full');
   });
 
   it('el rechazo del store se MUESTRA al usuario (no es un no-op silencioso)', () => {

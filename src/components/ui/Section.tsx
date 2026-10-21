@@ -18,6 +18,10 @@ export interface SectionProps {
  * Bloque de construcción del inspector: cabecera `caption` colapsable +
  * botón de reset opcional por sección. Regla: máx. 5 secciones visibles en
  * el inspector (lo impone la ola U1, no este componente).
+ *
+ * La sección colapsada SIGUE MONTADA (contenido con `hidden`, no
+ * desmontado): la suite de navegador lee los controles por `data-testid`
+ * aunque la sección esté cerrada, y desmontar obligaría a abrirlo todo.
  */
 export function Section({
   titulo,
@@ -59,11 +63,12 @@ export function Section({
           </button>
         )}
       </header>
-      {abierta && (
-        <div id={idContenido} className="space-y-2 px-3 pb-3">
-          {children}
-        </div>
-      )}
+      {/* Montada pero colapsada: `hidden` la saca del layout y de la
+          lectura visual, pero los controles siguen en el DOM (la suite los
+          lee por `data-testid` con la sección cerrada). */}
+      <div id={idContenido} hidden={!abierta} className="space-y-2 px-3 pb-3">
+        {children}
+      </div>
     </section>
   );
 }

@@ -42,6 +42,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const mobilePlayerSource: string = readFileSync(join(here, '..', 'components/mobile/MobilePreviewPlayer.tsx'), 'utf8');
 const mobileLayoutSource: string = readFileSync(join(here, '..', 'components/mobile/MobileCapCutLayout.tsx'), 'utf8');
 const desktopControlsSource: string = readFileSync(join(here, '..', 'components/player/PlayerControls.tsx'), 'utf8');
+const desktopPlayerSource: string = readFileSync(join(here, '..', 'components/player/PreviewPlayer.tsx'), 'utf8');
+const timelineSource: string = readFileSync(join(here, '..', 'components/timeline/Timeline.tsx'), 'utf8');
 const desktopInspectorSource: string = readFileSync(join(here, '..', 'components/inspector/ClipInspector.tsx'), 'utf8');
 
 const VALID_TRANSITIONS: readonly TransitionType[] = [
@@ -181,21 +183,32 @@ describe('parity · mobile source wiring (regression guard)', () => {
   it('mobile preview drives the master volume through the same audioEngine call as the desktop', () => {
     expect(desktopControlsSource).toContain('audioEngine.setMasterVolume');
     expect(mobilePlayerSource).toContain('audioEngine.setMasterVolume');
-    expect(mobilePlayerSource).toContain('Volumen maestro');
-    expect(mobilePlayerSource).toContain('Silenciar sonido maestro');
+    expect(mobilePlayerSource).toContain('Volumen general');
+    expect(mobilePlayerSource).toContain('Silenciar sonido general');
   });
 
-  it('mobile preview carries the desktop canvas label, badge and empty-state guide', () => {
+  it('mobile preview carries the desktop canvas label and badge while the timeline owns the empty state', () => {
     // The desktop transition labels now come from the shared
     // TRANSITION_OPTIONS (no hardcoded duplicate): the wiring is asserted
     // here, the offered labels in the transition-sheet test below.
     expect(desktopInspectorSource).toContain('transitionOptions');
     expect(desktopInspectorSource).toContain('FADE_IN_OPTIONS');
+    // Canvas label and resolution badge parity (unchanged by the redesign).
     expect(mobilePlayerSource).toContain('buildPreviewAriaLabel');
     expect(mobilePlayerSource).toContain('role="img"');
     expect(mobilePlayerSource).toContain('formatResolutionBadge');
-    expect(mobilePlayerSource).toContain('Timeline vacío');
-    expect(mobilePlayerSource).toContain('Importa videos o genera clips de prueba');
+    expect(mobilePlayerSource).toContain('Monitor vacío: importa medios para empezar');
+    expect(desktopPlayerSource).toContain('Monitor vacío: importa medios para empezar');
+    // The empty-state guide lives on ONE surface: neither viewer duplicates
+    // it…
+    for (const viewer of [mobilePlayerSource, desktopPlayerSource]) {
+      expect(viewer).not.toContain('timeline-empty-state');
+      expect(viewer).not.toContain('Añade un clip para empezar a editar');
+    }
+    // …while the timeline renders exactly one empty state.
+    const vacios = timelineSource.split('data-testid="timeline-empty-state"').length - 1;
+    expect(vacios).toBe(1);
+    expect(timelineSource).toContain('Sin clips');
   });
 
   it('mobile transition sheet offers fade-white plus duration sliders like the desktop', () => {
