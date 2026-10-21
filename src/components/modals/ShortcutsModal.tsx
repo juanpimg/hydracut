@@ -18,7 +18,13 @@ interface GrupoAtajos {
  * Los atajos reflejan los manejadores REALES, en el mismo orden en que la
  * app los resuelve: portapapeles (`resolveClipboardShortcut` en
  * `layout/MainLayout.tsx` → `copyClips` / `pasteClips` / `duplicateClips`
- * del store) y seleccionar todo (`Ctrl+A` en `timeline/Timeline.tsx` →
+ * del store), borrado (`resolveDeleteKind` en `layout/MainLayout.tsx` →
+ * `deleteSelectedClip` / `rippleDeleteClip` del store), marcadores y
+ * recorte al cabezal (`timeline/Timeline.tsx` → `addMarker` /
+ * `trimClipHeadToPlayhead` / `trimClipTailToPlayhead` del store), ir al
+ * timecode (`timeline/TimelineToolbar.tsx` → `goToTimecode`, con `Ctrl+G`
+ * que enfoca el campo) y áreas seguras (`player/PreviewPlayer.tsx`, tecla
+ * `G`), más seleccionar todo (`Ctrl+A` en `timeline/Timeline.tsx` →
  * `selectAllClips` del store, el mismo atajo que el botón «Seleccionar
  * todo»). Mantener esta lista sincronizada con esos ficheros.
  */
@@ -45,6 +51,10 @@ const GRUPOS: GrupoAtajos[] = [
     atajos: [
       { tecla: 'S', descripcion: 'Dividir el clip en el cabezal (S)' },
       { tecla: 'Supr / Backspace', descripcion: 'Eliminar el clip seleccionado' },
+      { tecla: 'Mayús + Supr / Retroceso', descripcion: 'Eliminar el clip seleccionado y cerrar el hueco' },
+      { tecla: 'M', descripcion: 'Añadir marcador en el cabezal' },
+      { tecla: 'Q', descripcion: 'Recortar el inicio del clip al cabezal' },
+      { tecla: 'W', descripcion: 'Recortar el final del clip al cabezal' },
       { tecla: 'Ctrl + Z', descripcion: 'Deshacer última acción' },
       { tecla: 'Ctrl + Shift + Z', descripcion: 'Rehacer acción' },
       { tecla: 'Ctrl + Y', descripcion: 'Rehacer acción' },
@@ -53,6 +63,8 @@ const GRUPOS: GrupoAtajos[] = [
   {
     titulo: 'Vista y diálogo',
     atajos: [
+      { tecla: 'Ctrl + G', descripcion: 'Ir al timecode' },
+      { tecla: 'G', descripcion: 'Mostrar u ocultar las áreas seguras' },
       { tecla: 'Ctrl + Rueda', descripcion: 'Acercar o alejar la línea de tiempo' },
       { tecla: 'Esc', descripcion: 'Cerrar el diálogo o quitar la selección' },
     ],

@@ -1,11 +1,17 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Maximize2, Minimize2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Frame, Maximize2, Minimize2 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { compositor, computeRenderScale } from '../../core/engine/Compositor';
 import { masterClock } from '../../core/engine/MasterClock';
 import { audioEngine } from '../../core/engine/AudioEngine';
 import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
 import { IconButton } from '../ui/IconButton';
+import {
+  computeSafeAreaLayout,
+  readSafeAreasVisible,
+  toPercentStyle,
+  writeSafeAreasVisible,
+} from '../../core/utils/safeAreas';
 
 export const PreviewPlayer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -217,8 +223,7 @@ export const PreviewPlayer: React.FC = () => {
   };
 
   /** Pantalla completa del visor (solo escritorio; el móvil tiene la suya). */
-  const [aPantallaCompleta, setAPantallaCompleta] = useState(false);
-  useEffect(() => {
+  const [aPantallaCompleta, setAPantallaCompleta] = useState(false);  useEffect(() => {
     const alCambiarPantalla = () => setAPantallaCompleta(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', alCambiarPantalla);
     return () => document.removeEventListener('fullscreenchange', alCambiarPantalla);
@@ -233,6 +238,85 @@ export const PreviewPlayer: React.FC = () => {
     }
   };
 
+  /**
+   * W-G · Áreas seguras (acción 90 % / título 80 % / centro 50 %).
+   *
+   * Overlay solo-DOM sobre el lienzo: no toca el canvas, su nitidez ni la
+   * exportación (el exportador pinta desde el `Compositor`, nunca desde este
+   * DOM). Apagado por defecto; el interruptor persiste en `localStorage`.
+   * Las guías siguen la PROPORCIÓN DEL PROYECTO dentro del letterbox
+   * (`computeSafeAreaLayout`), no la caja del lienzo.
+   */
+  const marcoRef = useRef<HTMLDivElement>(null);
+  const [tamanoMarco, setTamanoMarco] = useState({ ancho: 0, alto: 0 });
+  const [guiasVisibles, setGuiasVisibles] = useState<boolean>(() => readSafeAreasVisible());
+
+  useEffect(() => {
+    const marco = marcoRef.current;
+    if (!marco) return;
+    const medir = () => {
+      const rect = marco.getBoundingClientRect();
+      setTamanoMarco((prev) =>
+        prev.ancho === rect.width && prev.alto === rect.height
+          ? prev
+          : { ancho: rect.width, alto: rect.height }
+      );
+    };
+    medir();
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', medir);
+      return () => window.removeEventListener('resize', medir);
+    }
+    const observador = new ResizeObserver(medir);
+    observador.observe(marco);
+    return () => observador.disconnect();
+  }, []);
+
+  const alternarGuias = useCallback(() => {
+    setGuiasVisibles((v) => {
+      const siguiente = !v;
+      writeSafeAreasVisible(siguiente);
+      return siguiente;
+    });
+  }, []);
+
+  useEffect(() => {
+    const alTeclado = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key !== 'g' && e.key !== 'G') return;
+      const foco = document.activeElement as HTMLElement | null;
+      const etiqueta = foco?.tagName?.toLowerCase() ?? '';
+      if (
+        etiqueta === 'input' ||
+        etiqueta === 'textarea' ||
+        etiqueta === 'select' ||
+        foco?.isContentEditable === true
+      ) {
+        return;
+      }
+      e.preventDefault();
+      alternarGuias();
+    };
+    window.addEventListener('keydown', alTeclado);
+    return () => window.removeEventListener('keydown', alTeclado);
+  }, [alternarGuias]);
+
+  const trazadoGuias = useMemo(() => {
+    if (!guiasVisibles || tamanoMarco.ancho <= 0 || tamanoMarco.alto <= 0) return null;
+    const trazado = computeSafeAreaLayout({
+      containerWidth: tamanoMarco.ancho,
+      containerHeight: tamanoMarco.alto,
+      projectWidth: resolution.width,
+      projectHeight: resolution.height,
+    });
+    return {
+      accion: toPercentStyle(trazado.action, tamanoMarco.ancho, tamanoMarco.alto),
+      titulo: toPercentStyle(trazado.title, tamanoMarco.ancho, tamanoMarco.alto),
+      centro: toPercentStyle(trazado.center, tamanoMarco.ancho, tamanoMarco.alto),
+    };
+  }, [guiasVisibles, tamanoMarco, resolution.width, resolution.height]);
+  const etiquetaGuias = guiasVisibles ? 'Ocultar áreas seguras (G)' : 'Mostrar áreas seguras (G)';
+
   return (
     <div
       ref={containerRef}
@@ -243,6 +327,7 @@ export const PreviewPlayer: React.FC = () => {
           size of the canvas: the layout must not change when the backing
           store is re-fitted for the display (KI-02). */}
       <div
+        ref={marcoRef}
         style={{ width: `min(100%, ${resolution.width}px)` }}
         className={`relative flex items-center justify-center shadow-2xl bg-black rounded-lg overflow-hidden border border-border-subtle ${getAspectClass()}`}
       >
@@ -254,6 +339,34 @@ export const PreviewPlayer: React.FC = () => {
           role="img"
           aria-label={clips.length === 0 ? 'Monitor vacío: importa medios para empezar' : `Monitor: ${clips.length} clips en el timeline`}
         />
+
+        {/* W-G · Áreas seguras: hairlines tenues, sin brillo; solo-DOM (no
+            salen en la exportación). La leyenda dice qué guía es cuál. */}
+        {trazadoGuias && (
+          <div
+            role="img"
+            aria-label="Áreas seguras: acción 90 %, título 80 % y centro 50 %"
+            className="pointer-events-none absolute inset-0"
+          >
+            <div aria-hidden="true" className="absolute border border-white/30" style={trazadoGuias.accion} />
+            <div aria-hidden="true" className="absolute border border-dashed border-white/50" style={trazadoGuias.titulo} />
+            <div aria-hidden="true" className="absolute border border-dotted border-white/30" style={trazadoGuias.centro} />
+            <div aria-hidden="true" className="absolute bottom-2 right-2 flex flex-col gap-0.5 rounded bg-black/60 px-1.5 py-1 text-caption text-text-2">
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-4 border-t border-white/30" />
+                Acción 90 %
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-4 border-t border-dashed border-white/50" />
+                Título 80 %
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-4 border-t border-dotted border-white/30" />
+                Centro 50 %
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Insignia de resolución: etiqueta discreta, sin pastilla ni borde. */}
         <span className="absolute bottom-2 left-2 pointer-events-none text-caption text-text-2">
@@ -273,6 +386,19 @@ export const PreviewPlayer: React.FC = () => {
           className="absolute right-2 top-2 bg-black/60 text-text-2 hover:text-text-1"
         >
           {aPantallaCompleta ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+        </IconButton>
+
+        {/* Áreas seguras: interruptor discreto en la esquina del visor
+            (título = tooltip nativo, como el botón de pantalla completa). */}
+        <IconButton
+          aria-label={etiquetaGuias}
+          title={etiquetaGuias}
+          size="sm"
+          active={guiasVisibles}
+          onClick={alternarGuias}
+          className="absolute left-2 top-2 bg-black/60 text-text-2 hover:text-text-1"
+        >
+          <Frame size={14} />
         </IconButton>
       </div>
     </div>

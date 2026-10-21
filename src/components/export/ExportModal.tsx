@@ -309,6 +309,36 @@ export function resolveExportRange(
 }
 
 /**
+ * Consume el rango pendiente que dejaron los marcadores (`E`/`S` en la barra
+ * de la línea de tiempo o `applyMarkerPairToExportRange` del store).
+ *
+ * Devuelve el estado de rango personalizado que el diálogo debe adoptar, o
+ * `null` cuando no hay nada que consumir (rango incompleto o no ordenado:
+ * el diálogo sigue en «Todo el proyecto»).
+ *
+ * Pura para poder probarse sin DOM.
+ */
+export function consumePendingExportRange(pending: {
+  start: number | null;
+  end: number | null;
+}): ExportRangeState | null {
+  if (pending.start === null || pending.end === null) return null;
+  if (!Number.isFinite(pending.start) || !Number.isFinite(pending.end)) return null;
+  if (pending.end <= pending.start) return null;
+  return { mode: 'custom', start: pending.start, end: pending.end };
+}
+
+/**
+ * Rango del diálogo que sobrevive a cerrar y reabrir el modal.
+ *
+ * El modal se desmonta al cerrarse (`MainLayout` solo lo monta abierto), así
+ * que su `useState` se perdería: el último rango elegido se guarda aquí y se
+ * restaura al abrir, salvo que haya un rango pendiente de marcadores (ese
+ * manda). Pertenece al DIÁLOGO, nunca al proyecto (no se persiste en disco).
+ */
+let rangoPersistidoDelModal: ExportRangeState | null = null;
+
+/**
  * Re-bases the clips into the exported range.
  *
  * The exporter renders the timeline from 0 to `duration`, so a range export
@@ -403,6 +433,10 @@ export function formatBitrate(bytes: number, durationSeconds: number): string {
 export const ExportModal: React.FC = () => {
   const project = useProjectStore((s) => s.project);
   const currentTime = useProjectStore((s) => s.currentTime);
+  // P0-6 · El puente de los marcadores: la línea de tiempo deja aquí el par
+  // E/S (`setExportRangeEndpoint`) y el diálogo lo lee al abrirse.
+  const pendingExportRange = useProjectStore((s) => s.pendingExportRange);
+  const clearPendingExportRange = useProjectStore((s) => s.clearPendingExportRange);
   const { isExportModalOpen, setExportModalOpen } = useUIStore();
 
   const [hasWebCodecs, setHasWebCodecs] = useState<boolean>(true);
@@ -428,13 +462,17 @@ export const ExportModal: React.FC = () => {
   const [exportAspectRatio, setExportAspectRatio] = useState<AspectRatio>(project.aspectRatio);
   /**
    * F10: the export range owned by the modal. The default (`full`) keeps the
-   * previous behaviour: the WHOLE project is exported.
+   * previous behaviour: the WHOLE project is exported. It starts from the
+   * range of the previous opening (P0-6: the dialog unmounts on close, so the
+   * `useState` alone would forget it).
    */
-  const [rangeState, setRangeState] = useState<ExportRangeState>({
-    mode: 'full',
-    start: null,
-    end: null,
-  });
+  const [rangeState, setRangeState] = useState<ExportRangeState>(
+    () => rangoPersistidoDelModal ?? {
+      mode: 'full',
+      start: null,
+      end: null,
+    }
+  );
   const [progressState, setProgressState] = useState<ExportProgress>({
     state: 'idle',
     progress: 0,
@@ -519,6 +557,31 @@ export const ExportModal: React.FC = () => {
   }, [isExportModalOpen, progressState.state, setExportModalOpen]);
 
   /**
+   * P0-6 · Al abrir, el diálogo consume el rango pendiente de los marcadores
+   * (y lo limpia, para no aplicarlo dos veces). El modal se monta abierto y
+   * se desmonta al cerrarse, así que este efecto corre una vez por apertura.
+   */
+  useEffect(() => {
+    const consumido = consumePendingExportRange(
+      useProjectStore.getState().pendingExportRange
+    );
+    if (consumido) {
+      setRangeState(consumido);
+      rangoPersistidoDelModal = consumido;
+      useProjectStore.getState().clearPendingExportRange();
+    }
+    // Solo al abrir: el rango pendiente se lee una vez por apertura.
+  }, []);
+
+  /**
+   * P0-6 · El rango elegido vive en el diálogo aunque se cierre y se reabra
+   * (sin marcadores de por medio).
+   */
+  useEffect(() => {
+    rangoPersistidoDelModal = rangeState;
+  }, [rangeState]);
+
+  /**
    * UI-16: the export progress is announced to the screen readers on the
    * state transitions and on the coarse milestones (never on every frame).
    *
@@ -568,6 +631,8 @@ export const ExportModal: React.FC = () => {
 
   /** F10: the range that will be exported (`null` = the whole project). */
   const range = resolveExportRange(rangeState, project.duration);
+  /** P0-6: hay un rango pendiente de marcadores listo para usarse. */
+  const hayRangoDeMarcadores = consumePendingExportRange(pendingExportRange) !== null;
   /** The custom range is incomplete: the export must be blocked. */
   const rangeIncomplete = rangeState.mode === 'custom' && !isExportRangeValid(rangeState);
   /** Duration (seconds) that is really rendered. */
@@ -623,6 +688,20 @@ export const ExportModal: React.FC = () => {
   const markRangeEnd = () => {
     const time = Math.max(0, Math.min(currentTime, project.duration));
     setRangeState((prev) => ({ ...prev, mode: 'custom', end: time }));
+  };
+
+  /**
+   * P0-6 · Aplica al diálogo el rango pendiente de los marcadores (E/S de la
+   * línea de tiempo). Normalmente ya se consumió al abrir; esta acción cubre
+   * el rango marcado con el diálogo ya abierto.
+   */
+  const aplicarRangoDeMarcadores = () => {
+    const consumido = consumePendingExportRange(
+      useProjectStore.getState().pendingExportRange
+    );
+    if (!consumido) return;
+    setRangeState(consumido);
+    clearPendingExportRange();
   };
 
   const handleStartExport = async () => {
@@ -985,6 +1064,28 @@ export const ExportModal: React.FC = () => {
                 <div hidden aria-hidden="true">
                   <button type="button" tabIndex={-1} data-testid="export-range-full" aria-pressed={rangeState.mode === 'full'} onClick={() => setRangeState((prev) => ({ ...prev, mode: 'full' }))}>Todo el proyecto</button>
                   <button type="button" tabIndex={-1} data-testid="export-range-custom" aria-pressed={rangeState.mode === 'custom'} onClick={() => setRangeState((prev) => ({ ...prev, mode: 'custom' }))}>Rango personalizado</button>
+                </div>
+
+                {/* P0-6 · El rango marcado con E/S en la línea de tiempo llega
+                    aquí: al abrir ya se consumió solo; esta acción lo aplica
+                    cuando se marcó con el diálogo ya abierto. */}
+                <div className="mt-1">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    data-testid="export-range-from-markers"
+                    onClick={aplicarRangoDeMarcadores}
+                    disabled={!hayRangoDeMarcadores}
+                    title={
+                      hayRangoDeMarcadores
+                        ? 'Usar el rango marcado con E y S en la línea de tiempo'
+                        : 'Marca la entrada (E) y la salida (S) de un marcador en la línea de tiempo'
+                    }
+                    className="w-full"
+                  >
+                    Desde marcador
+                  </Button>
                 </div>
 
                 {rangeState.mode === 'custom' && (

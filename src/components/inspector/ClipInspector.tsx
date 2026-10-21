@@ -1,5 +1,6 @@
 import {
   Trash2,
+  FoldHorizontal,
   Volume2,
   VolumeX,
   AlignLeft,
@@ -435,6 +436,9 @@ export const ClipInspector: React.FC = () => {
   const track = useProjectStore((s) => s.project.tracks.find((t) => t.id === clip?.trackId));
   const updateClip = useProjectStore((s) => s.updateClip);
   const removeClip = useProjectStore((s) => s.removeClip);
+  const rippleDeleteClip = useProjectStore((s) => s.rippleDeleteClip);
+  const trimClipHeadToPlayhead = useProjectStore((s) => s.trimClipHeadToPlayhead);
+  const trimClipTailToPlayhead = useProjectStore((s) => s.trimClipTailToPlayhead);
   const mediaPool = useProjectStore((s) => s.project.mediaPool);
   const overlapPolicy = useProjectStore((s) => s.project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY);
   const setOverlapPolicy = useProjectStore((s) => s.setOverlapPolicy);
@@ -652,18 +656,34 @@ export const ClipInspector: React.FC = () => {
             {clip.name}
           </span>
         </div>
-        <button
-          onClick={() => {
-            if (confirm(`¿Eliminar el clip "${clip.name}"? Puedes deshacerlo con Ctrl+Z.`)) {
-              removeClip(clip.id);
-            }
-          }}
-          className="rounded p-1.5 text-danger transition hover:bg-danger/10"
-          title="Eliminar clip (Supr)"
-          aria-label={`Eliminar clip ${clip.name}`}
-        >
-          <Trash2 size={15} />
-        </button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            onClick={() => {
+              if (confirm(`¿Eliminar el clip "${clip.name}"? Puedes deshacerlo con Ctrl+Z.`)) {
+                removeClip(clip.id);
+              }
+            }}
+            className="rounded p-1.5 text-danger transition hover:bg-danger/10"
+            title="Eliminar clip (Supr)"
+            aria-label={`Eliminar clip ${clip.name}`}
+          >
+            <Trash2 size={15} />
+          </button>
+          {/* P0-1 · Ripple delete donde ya vive el borrado: borra Y cierra el
+              hueco en un solo paso deshacible (Mayús+Supr). */}
+          <button
+            onClick={() => {
+              if (confirm(`¿Eliminar "${clip.name}" y cerrar el hueco? Los clips posteriores de la pista se adelantan. Puedes deshacerlo con Ctrl+Z.`)) {
+                rippleDeleteClip(clip.id);
+              }
+            }}
+            className="rounded p-1.5 text-text-2 transition hover:bg-raised hover:text-text-1"
+            title="Eliminar y cerrar hueco (Mayús+Supr)"
+            aria-label={`Eliminar ${clip.name} y cerrar hueco`}
+          >
+            <FoldHorizontal size={15} />
+          </button>
+        </div>
       </div>
 
       {/* Clip Summary Card */}
@@ -679,6 +699,28 @@ export const ClipInspector: React.FC = () => {
         <div className="flex justify-between text-text-2">
           <span>Duración:</span>
           <span className="font-mono text-text-1">{formatDuration(clip.duration)}</span>
+        </div>
+        {/* P0-11 · Recortar al cabezal sin teclado: Q recorta el inicio, W el
+            final (la misma acción deshacible que los atajos). */}
+        <div className="flex gap-1.5 pt-1">
+          <button
+            type="button"
+            onClick={() => trimClipHeadToPlayhead(clip.id)}
+            title="Recortar inicio al cabezal (Q)"
+            aria-label={`Recortar inicio de ${clip.name} al cabezal`}
+            className="flex-1 rounded border border-border bg-panel py-1 text-[11px] font-medium text-text-2 transition hover:text-text-1"
+          >
+            Recortar inicio (Q)
+          </button>
+          <button
+            type="button"
+            onClick={() => trimClipTailToPlayhead(clip.id)}
+            title="Recortar final al cabezal (W)"
+            aria-label={`Recortar final de ${clip.name} al cabezal`}
+            className="flex-1 rounded border border-border bg-panel py-1 text-[11px] font-medium text-text-2 transition hover:text-text-1"
+          >
+            Recortar final (W)
+          </button>
         </div>
       </div>
 

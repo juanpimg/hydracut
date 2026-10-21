@@ -54,6 +54,7 @@ import {
   resolveFfprobePath,
   resolveFfmpegPath,
   delay,
+  EXPORT_DIALOG_SELECTOR,
 } from './browser-harness.mjs';
 
 export const name = 'recent';
@@ -1545,14 +1546,15 @@ async function closeExportModalSafe(page) {
   while (Date.now() < deadline) {
     const state = await safeEvaluate(
       page,
-      () => {
-        const dlg = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+      (sel) => {
+        const dlg = document.querySelector(sel);
         if (!dlg) return 'closed';
         const btn = document.querySelector('button[aria-label="Cerrar modal de exportación"]');
         if (!btn) return 'no-button';
         btn.click();
         return 'clicked';
-      }
+      },
+      EXPORT_DIALOG_SELECTOR
     );
     if (state === 'closed') return true;
     await delay(150);

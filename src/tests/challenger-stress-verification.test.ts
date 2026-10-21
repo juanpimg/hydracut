@@ -678,6 +678,19 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
     let root: ReturnType<typeof ReactDOM.createRoot> | null = null;
 
     /**
+     * Cede la agenda de macrotareas para que el scheduler de React vacíe
+     * cualquier commit pendiente. Es drenaje de COLA (3 turnos), no una espera
+     * de reloj: en una máquina rápida no espera nada y en una cargada sigue
+     * dando las mismas oportunidades de vaciado que un `sleep(60)` sin atar
+     * el resultado a los milisegundos.
+     */
+    const vaciarAgenda = async () => {
+      for (let i = 0; i < 3; i++) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    };
+
+    /**
      * Mounts the REAL `MobileBottomBar` and counts the React *commits* of its
      * subtree through `React.Profiler`.
      *
@@ -785,9 +798,10 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
 
       const { commits, container } = mountBottomBar();
 
-      // Wait for initial mount
-      await new Promise((r) => setTimeout(r, 60));
-      expect(commits.length).toBe(1);
+      // Se espera la CONDICIÓN (el commit inicial) en vez de dormir 60 ms.
+      await vi.waitFor(() => {
+        expect(commits.length).toBe(1);
+      });
 
       // Simulate 600 ticks of 60 FPS playback (10 seconds) through the PUBLIC
       // clock API (`seek()` notifies the time subscribers; the private
@@ -797,7 +811,8 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
         masterClock.seek((tick * (1 / 60)) % 30);
       }
 
-      await new Promise((r) => setTimeout(r, 60));
+      // Drena la agenda para cazar re-renders prohibidos sin depender del reloj.
+      await vaciarAgenda();
 
       // CRUCIAL ASSERTION: the subtree was never re-rendered (zero extra commits).
       expect(commits.length).toBe(1);
@@ -811,10 +826,12 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
       expect(splitButton!.getAttribute('aria-label')).toContain('no disponible');
 
       // Moving the playhead INSIDE the clip flips the button, still without a commit.
+      // La mutación imperativa es síncrona en el `seek()`; el drenaje solo da
+      // oportunidad a commits React espurios antes de afirmar su ausencia.
       masterClock.seek(3.0);
-      await new Promise((r) => setTimeout(r, 20));
       expect(splitButton!.disabled).toBe(false);
       expect(splitButton!.getAttribute('aria-label')).toBe('Dividir en cabezal');
+      await vaciarAgenda();
       expect(commits.length).toBe(1);
     });
 
@@ -849,25 +866,28 @@ describe('Challenger Stress Verification: Video Sync, Compositor & React Render 
 
       const { commits, container } = mountBottomBar();
 
-      await new Promise((r) => setTimeout(r, 60));
-      expect(commits.length).toBe(1);
+      // Se espera la CONDICIÓN (el commit inicial) en vez de dormir 60 ms.
+      await vi.waitFor(() => {
+        expect(commits.length).toBe(1);
+      });
 
       const splitButton = findByLabel(container, 'Dividir en cabezal');
       expect(splitButton).not.toBeNull();
 
-      // Clock tick at t = 1.0s (outside clip): button should be disabled
+      // Clock tick at t = 1.0s (outside clip): button should be disabled.
+      // La mutación imperativa es síncrona en el `seek()`.
       masterClock.seek(1.0);
-      await new Promise((r) => setTimeout(r, 20));
       expect(splitButton!.disabled).toBe(true);
       expect(splitButton!.getAttribute('aria-label')).toContain('no disponible');
 
-      // Clock tick at t = 4.0s (inside clip): button should enable
+      // Clock tick at t = 4.0s (inside clip): button should enable.
       masterClock.seek(4.0);
-      await new Promise((r) => setTimeout(r, 20));
       expect(splitButton!.disabled).toBe(false);
       expect(splitButton!.getAttribute('aria-label')).toBe('Dividir en cabezal');
 
       // All of it happened through DOM mutations: not one single React commit.
+      // El drenaje da oportunidad a commits espurios antes de afirmar su ausencia.
+      await vaciarAgenda();
       expect(commits.length).toBe(1);
     });
   });

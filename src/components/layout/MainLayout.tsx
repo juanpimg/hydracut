@@ -8,7 +8,7 @@ import { Timeline } from '../timeline/Timeline';
 import { WelcomeModal } from '../modals/WelcomeModal';
 import { MobileCapCutLayout } from '../mobile/MobileCapCutLayout';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import { useProjectStore } from '../../store/useProjectStore';
+import { useProjectStore, resolveDeleteKind } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { loadAutosavedProject, rehydrateProjectMedia } from '../../core/storage/projectStorage';
@@ -194,6 +194,7 @@ function readTimelineHeight(): number {
 export const MainLayout: React.FC = () => {
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
+  const rippleDeleteClip = useProjectStore((s) => s.rippleDeleteClip);
   const undo = useProjectStore((s) => s.undo);
   const redo = useProjectStore((s) => s.redo);
   const fps = useProjectStore((s) => s.project.fps);
@@ -284,10 +285,19 @@ export const MainLayout: React.FC = () => {
         return;
       }
 
-      // Delete or Backspace: Delete selected clip
-      if (e.key === 'Delete' || e.key === 'Backspace') {
+      // P0-1 · Supr/Retroceso: el criterio vive en el store
+      // (`resolveDeleteKind`): Mayús+Supr/Retroceso es ripple delete (borra y
+      // cierra el hueco, como en Premiere/Resolve) y Supr solo es el borrado
+      // simple de siempre.
+      const claseBorrado = resolveDeleteKind(e);
+      if (claseBorrado) {
         e.preventDefault();
-        deleteSelectedClip();
+        if (claseBorrado === 'ripple') {
+          const id = useProjectStore.getState().selectedClipId;
+          if (id) rippleDeleteClip(id);
+        } else {
+          deleteSelectedClip();
+        }
         return;
       }
 
@@ -375,7 +385,7 @@ export const MainLayout: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [splitAtPlayhead, deleteSelectedClip, undo, redo, fps]);
+  }, [splitAtPlayhead, deleteSelectedClip, rippleDeleteClip, undo, redo, fps]);
 
   const isMobile = useIsMobile(768);
 

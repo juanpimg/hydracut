@@ -34,6 +34,17 @@
  *   STORAGE-PURGE-TRASH           emptying the trash really deletes the OPFS
  *                                 bytes (two taps)
  *
+ *   MARKER-SHORTCUT-M             M creates a marker that is painted on the
+ *                                 ruler and jumps the playhead when clicked
+ *   RIPPLE-SHORTCUT-SHIFT-DELETE  Shift+Delete closes the gap (the follower
+ *                                 of the same track moves left) and ONE
+ *                                 Ctrl+Z restores it
+ *   MARKER-EXPORT-RANGE           the E/S marker pair reaches the export
+ *                                 dialog and the range summary shows it
+ *                                 (and it survives closing + reopening)
+ *   SAFE-AREA-GUIDES-GEOMETRY     toggling the safe-area guides does NOT move
+ *                                 or rescale the preview canvas
+ *
  * Every case reuses the sample media generated ONCE per browser context (the
  * generation takes ~2,4 s) and runs in its own incognito context.
  *
@@ -68,6 +79,7 @@ import {
   readMp4VideoTrackSize,  readMp4MovieDuration,
   navCount,
   delay,
+  EXPORT_DIALOG_SELECTOR,
 } from './browser-harness.mjs';
 
 export const name = 'features';
@@ -980,8 +992,8 @@ async function caseExport({ browser, report, baseUrl }) {
         });
         await delay(400);
 
-        const presetState = await safeEvaluate(page, () => {
-          const modal = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+        const presetState = await safeEvaluate(page, (sel) => {
+          const modal = document.querySelector(sel);
           const btn = document.querySelector('[data-testid="export-preset-vertical-9x16"]');
           const text = modal ? modal.innerText : '';
           const store = window.__projectStore;
@@ -998,7 +1010,7 @@ async function caseExport({ browser, report, baseUrl }) {
               pressed: b.getAttribute('aria-pressed'),
             })),
           };
-        });
+        }, EXPORT_DIALOG_SELECTOR);
 
         /* --- EXPORT-PRESET-DESELECT ---------------------------------- */
         const bitrateBefore = await safeEvaluate(page, () => {
@@ -1063,8 +1075,8 @@ async function caseExport({ browser, report, baseUrl }) {
         });
         await delay(300);
 
-        const rangeState = await safeEvaluate(page, () => {
-          const modal = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+        const rangeState = await safeEvaluate(page, (sel) => {
+          const modal = document.querySelector(sel);
           const summary = document.querySelector('[data-testid="export-range-summary"]');
           const rows = modal
             ? Array.from(modal.querySelectorAll('div.flex.justify-between')).map((row) => ({
@@ -1083,7 +1095,7 @@ async function caseExport({ browser, report, baseUrl }) {
             rangeText: pick('Rango de exportación'),
             rows,
           };
-        });
+        }, EXPORT_DIALOG_SELECTOR);
 
         // Formato frame-accurate HH:MM:SS:FF (W-17 cambió el formato a
         // Math.floor -> Math.round(seconds*fps) con cuadros).
@@ -1138,11 +1150,11 @@ async function caseExport({ browser, report, baseUrl }) {
             reloadedDuringExport = true;
             break;
           }
-          modalState = await safeEvaluate(page, () => {
-            const modal = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+          modalState = await safeEvaluate(page, (sel) => {
+            const modal = document.querySelector(sel);
             if (!modal) return 'el modal se cerró';
             return modal.innerText.replace(/\s+/g, ' ').slice(0, 220);
-          });
+          }, EXPORT_DIALOG_SELECTOR);
           await delay(400);
         }
         const elapsedMs = Date.now() - started;
@@ -1243,8 +1255,8 @@ async function caseExport({ browser, report, baseUrl }) {
         });
         await delay(300);
 
-        const fractional = await safeEvaluate(page, () => {
-          const modal = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+        const fractional = await safeEvaluate(page, (sel) => {
+          const modal = document.querySelector(sel);
           const summary = document.querySelector('[data-testid="export-range-summary"]');
           const rows = modal
             ? Array.from(modal.querySelectorAll('div.flex.justify-between')).map((row) => ({
@@ -1261,7 +1273,7 @@ async function caseExport({ browser, report, baseUrl }) {
             durationText: pick('Duración de exportación'),
             rangeText: pick('Rango de exportación'),
           };
-        });
+        }, EXPORT_DIALOG_SELECTOR);
 
         // The fix holds when both ends render as HH:MM:SS:FF and match the
         // marked times within ±2 frames (the seek lands within 0,05 s of the
@@ -2127,6 +2139,384 @@ async function caseMultiSelect({ browser, report, baseUrl }) {
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * Los 4 checks de la ola de integración (usados cuando una recarga del dev
+ * server aborta el escenario: entonces se reportan como fallos, nunca se
+ * omiten en silencio).
+ */
+const WAVE_EXPECTED = [
+  { id: 'MARKER-SHORTCUT-M', title: 'M crea un marcador visible en la regla y salta a él' },
+  { id: 'RIPPLE-SHORTCUT-SHIFT-DELETE', title: 'Mayús+Supr cierra el hueco y un Ctrl+Z lo devuelve' },
+  { id: 'MARKER-EXPORT-RANGE', title: 'El par E/S de marcadores llega al diálogo de exportación' },
+  { id: 'SAFE-AREA-GUIDES-GEOMETRY', title: 'Las guías de áreas seguras no tocan la geometría del canvas' },
+];
+
+/* ------------------------------------------------------------------ *
+ * 7. La ola de integración (W-H): marcadores, ripple, rango y guías
+ * ------------------------------------------------------------------ */
+async function caseWave({ browser, report, baseUrl }) {
+  const outcome = await runScenario(async () => {
+    const { context, page } = await bootApp(browser, { width: 1440, height: 900, baseUrl });
+    try {
+      const navBefore = navCount(page);
+      const checks = [];
+      const decide = (id, title, ok, message, details) =>
+        checks.push({ id, title, ok: Boolean(ok), message, details });
+
+      await generateSampleMedia(page);
+      await addFirstMediaToTimeline(page);
+
+      /* --- MARKER-SHORTCUT-M ---------------------------------------- */
+      await seekTo(page, 2);
+      await blurActiveElement(page);
+      await page.keyboard.press('m');
+      await delay(400);
+
+      const markerProbe = await safeEvaluate(page, () => {
+        const store = window.__projectStore;
+        if (!store) return { error: 'la app no expone window.__projectStore' };
+        const markers = store.getState().project.markers ?? [];
+        const layer = document.querySelector('[data-testid="timeline-markers"]');
+        const painted = layer
+          ? Array.from(layer.querySelectorAll('[data-testid^="timeline-marker-"]')).map((el) => {
+              const b = el.getBoundingClientRect();
+              return {
+                testid: el.getAttribute('data-testid'),
+                width: b.width,
+                height: b.height,
+                display: getComputedStyle(el).display,
+              };
+            })
+          : null;
+        return {
+          markers: markers.map((m) => ({ id: m.id, name: m.name, time: m.time })),
+          painted,
+        };
+      });
+
+      const created = markerProbe.markers && markerProbe.markers.length === 1;
+      const markerTime = created ? markerProbe.markers[0].time : null;
+      const timeOk = typeof markerTime === 'number' && Math.abs(markerTime - 2) < 0.05;
+      const paintedOk = Boolean(
+        markerProbe.painted &&
+          markerProbe.painted.length === 1 &&
+          markerProbe.painted[0].width > 0 &&
+          markerProbe.painted[0].height > 0 &&
+          markerProbe.painted[0].display !== 'none'
+      );
+
+      // Saltar al marcador: el clic en el rombo mueve el cabezal a su tiempo.
+      await seekTo(page, 0.5);
+      const jumped = await safeEvaluate(page, (testid) => {
+        const el = testid ? document.querySelector(`[data-testid="${testid}"]`) : null;
+        if (!el) return false;
+        el.click();
+        return true;
+      }, markerProbe.painted && markerProbe.painted[0] ? markerProbe.painted[0].testid : null);
+      await delay(300);
+      const afterJump = await safeEvaluate(page, () => {
+        const store = window.__projectStore;
+        return store ? store.getState().currentTime : null;
+      });
+      const jumpOk = Boolean(
+        jumped &&
+          typeof afterJump === 'number' &&
+          typeof markerTime === 'number' &&
+          Math.abs(afterJump - markerTime) < 0.05
+      );
+
+      decide(
+        'MARKER-SHORTCUT-M',
+        'M crea un marcador visible en la regla y su rombo salta el cabezal a él',
+        created && timeOk && paintedOk && jumpOk,
+        `marcadores=${JSON.stringify(markerProbe.markers)} (uno a 2 s=${timeOk}) | ` +
+        `rombos pintados=${JSON.stringify(markerProbe.painted)} | ` +
+        `clic en el rombo=${jumped}, cabezal tras saltar=${afterJump} (esperado ${markerTime})`,
+        { markerProbe, afterJump }
+      );
+
+      /* --- RIPPLE-SHORTCUT-SHIFT-DELETE ------------------------------ */
+      // Timeline determinista: A en 0–5, B en 10–15 (misma pista, hueco de 5 s).
+      const rippleSetup = await safeEvaluate(page, () => {
+        const store = window.__projectStore;
+        if (!store) return { ok: false, reason: 'la app no expone window.__projectStore' };
+        const video =
+          store.getState().project.mediaPool.find((m) => m.type === 'video') ||
+          store.getState().project.mediaPool.find((m) => m.type === 'image');
+        if (!video) return { ok: false, reason: 'el pool no tiene ningún medio de vídeo/imagen' };
+        // El clip de muestra ya ocupa la pista: se parte de una línea limpia.
+        for (const c of [...store.getState().project.clips]) {
+          store.getState().removeClip(c.id);
+        }
+        const a = store.getState().addClipFromMedia(video, 'track_video_1', 0);
+        if (!a.ok) return { ok: false, reason: `no se pudo colocar A: ${a.reason}` };
+        store.getState().updateClip(a.clipId, { duration: 5 });
+        const b = store.getState().addClipFromMedia(video, 'track_video_1', 30);
+        if (!b.ok) return { ok: false, reason: `no se pudo colocar B: ${b.reason}` };
+        store.getState().updateClip(b.clipId, { start: 10, duration: 5 });
+        return { ok: true, A: a.clipId, B: b.clipId };
+      });
+
+      let rippleOk = false;
+      let rippleMsg = `setup: ${JSON.stringify(rippleSetup)}`;
+      let rippleDetail = { rippleSetup };
+      if (rippleSetup && rippleSetup.ok) {
+        const { A, B } = rippleSetup;
+        await safeEvaluate(page, (id) => {
+          const el = document.querySelector(`[data-clip-id="${id}"]`);
+          if (el) el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }, A);
+        await delay(300);
+        const pastBefore = await safeEvaluate(page, () => {
+          const store = window.__projectStore;
+          return store ? store.getState().past.length : null;
+        });
+        await blurActiveElement(page);
+        await page.keyboard.down('Shift');
+        await page.keyboard.press('Delete');
+        await page.keyboard.up('Shift');
+        await delay(500);
+        const after = await safeEvaluate(page, () => {
+          const store = window.__projectStore;
+          if (!store) return null;
+          const st = store.getState();
+          return {
+            clips: st.project.clips.map((c) => ({ id: c.id, start: c.start, duration: c.duration })),
+            past: st.past.length,
+          };
+        });
+        const bAfter = after ? after.clips.find((c) => c.id === B) : null;
+        const aGone = Boolean(after && !after.clips.some((c) => c.id === A));
+        const closedGap = Boolean(bAfter && Math.abs(bAfter.start - 5) < 0.01);
+        const oneEntry = Boolean(
+          pastBefore !== null && after && after.past - pastBefore === 1
+        );
+
+        await pressCtrl(page, 'KeyZ');
+        await delay(500);
+        const undone = await safeEvaluate(page, () => {
+          const store = window.__projectStore;
+          if (!store) return null;
+          return store.getState().project.clips.map((c) => ({
+            id: c.id,
+            start: c.start,
+            duration: c.duration,
+          }));
+        });
+        const aBack = undone ? undone.find((c) => c.id === A) : null;
+        const bBack = undone ? undone.find((c) => c.id === B) : null;
+        const restored = Boolean(
+          aBack && Math.abs(aBack.start - 0) < 0.01 &&
+            bBack && Math.abs(bBack.start - 10) < 0.01 &&
+            undone.length === 2
+        );
+
+        rippleOk = aGone && closedGap && oneEntry && restored;
+        rippleMsg =
+          `A fuera=${aGone} | B 10 s -> ${bAfter ? bAfter.start : 'n/d'} s (cierra el hueco=${closedGap}) | ` +
+          `entradas de historial +${after && pastBefore !== null ? after.past - pastBefore : 'n/d'} (una=${oneEntry}) | ` +
+          `tras UN Ctrl+Z: A=${aBack ? aBack.start : 'n/d'} s, B=${bBack ? bBack.start : 'n/d'} s (restaurado=${restored})`;
+        rippleDetail = { rippleSetup, after, undone };
+      }
+      decide(
+        'RIPPLE-SHORTCUT-SHIFT-DELETE',
+        'Mayús+Supr cierra el hueco (B se mueve a la izquierda) y un solo Ctrl+Z lo restaura',
+        rippleOk,
+        rippleMsg,
+        rippleDetail
+      );
+
+      /* --- MARKER-EXPORT-RANGE --------------------------------------- */
+      await setFirstClipDuration(page, 3);
+      const pairSetup = await safeEvaluate(page, () => {
+        const store = window.__projectStore;
+        if (!store) return { ok: false, reason: 'la app no expone window.__projectStore' };
+        const m1 = store.getState().addMarker(1);
+        const m2 = store.getState().addMarker(2);
+        if (!m1 || !m2) return { ok: false, reason: 'no se pudieron crear los marcadores' };
+        return { ok: true };
+      });
+
+      let rangeOk = false;
+      let rangeMsg = `marcadores: ${JSON.stringify(pairSetup)}`;
+      let rangeDetail = { pairSetup };
+      if (pairSetup && pairSetup.ok) {
+        // El par E/S real del menú de marcadores (no el store directo).
+        await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="markers-button"]');
+          if (btn) btn.click();
+        });
+        await delay(300);
+        const marked = await safeEvaluate(page, () => {
+          const pick = (kind) =>
+            Array.from(document.querySelectorAll('button')).filter((b) =>
+              (b.getAttribute('aria-label') || '').includes(kind)
+            );
+          const entradas = pick('como entrada de exportación');
+          const salidas = pick('como salida de exportación');
+          if (entradas[0]) entradas[0].click();
+          if (salidas[1]) salidas[1].click();
+          const label = document.querySelector('[data-testid="pending-export-range"]');
+          return {
+            entradas: entradas.length,
+            salidas: salidas.length,
+            pendiente: label ? (label.textContent || '').trim().replace(/\s+/g, ' ') : null,
+          };
+        });
+        await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="markers-button"]');
+          if (btn) btn.click();
+        });
+        await delay(200);
+
+        await openExportModal(page);
+        await delay(300);
+        const first = await safeEvaluate(page, () => {
+          const el = document.querySelector('[data-testid="export-range-summary"]');
+          const store = window.__projectStore;
+          return {
+            summary: el ? (el.textContent || '').trim() : null,
+            pending: store ? store.getState().pendingExportRange : null,
+          };
+        });
+        await closeExportModal(page);
+        await delay(300);
+        // El rango sobrevive a cerrar y reabrir sin los marcadores de por medio.
+        await openExportModal(page);
+        await delay(300);
+        const second = await safeEvaluate(page, () => {
+          const el = document.querySelector('[data-testid="export-range-summary"]');
+          return el ? (el.textContent || '').trim() : null;
+        });
+        await closeExportModal(page).catch(() => {});
+
+        const expected = 'Exportando 00:00:01:00 → 00:00:02:00 (1 s)';
+        rangeOk = Boolean(
+          first.summary === expected &&
+            second === expected &&
+            first.pending &&
+            first.pending.start === null &&
+            first.pending.end === null
+        );
+        rangeMsg =
+          `E/S: entradas=${marked.entradas}, salidas=${marked.salidas}, pendiente="${marked.pendiente}" | ` +
+          `resumen al abrir="${first.summary}" (esperado "${expected}") | ` +
+          `resumen tras reabrir="${second}" | pendiente consumido=${JSON.stringify(first.pending)}`;
+        rangeDetail = { pairSetup, marked, first, second };
+      }
+      decide(
+        'MARKER-EXPORT-RANGE',
+        'El par E/S de marcadores llega al diálogo de exportación y sobrevive a reabrirlo',
+        rangeOk,
+        rangeMsg,
+        rangeDetail
+      );
+
+      /* --- SAFE-AREA-GUIDES-GEOMETRY --------------------------------- */
+      // Las guías son un overlay solo-DOM: el interruptor no debe mover ni
+      // reescalar el canvas (ni sustituirlo). NOTA: la caja del canvas
+      // «respira» ±1,6 px por sí sola (bucle de ajuste KI-02 ↔ flex en
+      // `PreviewPlayer`, fuera del alcance de este worker): la comparación
+      // usa tolerancia y el marco, que sí es estable, igualdad exacta.
+      const CSS_TOL = 2.5;
+      const BACKING_TOL = 4;
+      const boxOf = () =>
+        safeEvaluate(page, () => {
+          const canvas = document.querySelector('div.shadow-2xl canvas');
+          const marco = canvas ? canvas.closest('div.shadow-2xl') : null;
+          if (!canvas || !marco) return null;
+          if (!window.__guidesCanvas) window.__guidesCanvas = canvas;
+          const b = canvas.getBoundingClientRect();
+          const m = marco.getBoundingClientRect();
+          return {
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+            backingWidth: canvas.width,
+            backingHeight: canvas.height,
+            marco: [m.x, m.y, m.width, m.height],
+            mismoNodo: document.querySelector('div.shadow-2xl canvas') === window.__guidesCanvas,
+          };
+        });
+      const guidesShown = () =>
+        safeEvaluate(page, () => {
+          const overlay = document.querySelector('div[role="img"][aria-label*="reas seguras"]');
+          if (!overlay) return false;
+          const b = overlay.getBoundingClientRect();
+          const cs = getComputedStyle(overlay);
+          return cs.display !== 'none' && b.width > 0 && b.height > 0;
+        });
+      const cercaDe = (a, b) =>
+        a && b &&
+        Math.abs(a.x - b.x) <= CSS_TOL &&
+        Math.abs(a.y - b.y) <= CSS_TOL &&
+        Math.abs(a.width - b.width) <= CSS_TOL &&
+        Math.abs(a.height - b.height) <= CSS_TOL &&
+        Math.abs(a.backingWidth - b.backingWidth) <= BACKING_TOL &&
+        Math.abs(a.backingHeight - b.backingHeight) <= BACKING_TOL &&
+        JSON.stringify(a.marco) === JSON.stringify(b.marco);
+      // Nitidez (KI-02): el almacén respalda la caja mostrada (dpr 1 en el
+      // harness: el canvas no se muestra ni borroso ni colapsado).
+      const nitido = (a) =>
+        a &&
+        Math.abs(a.backingWidth - a.width) <= BACKING_TOL &&
+        Math.abs(a.backingHeight - a.height) <= BACKING_TOL;
+
+      const boxBefore = await boxOf();
+      const toggleGuides = await safeEvaluate(page, () => {
+        const btn = document.querySelector('button[aria-label*="reas seguras"]');
+        if (!btn) return false;
+        btn.click();
+        return true;
+      });
+      await delay(400);
+      const overlayOn = await guidesShown();
+      const boxOn = await boxOf();
+      // Varias muestras con las guías puestas: ningún reencuadre nuevo.
+      const muestrasOn = [];
+      for (let i = 0; i < 3; i++) {
+        await delay(500);
+        muestrasOn.push(await boxOf());
+      }
+      await safeEvaluate(page, () => {
+        const btn = document.querySelector('button[aria-label*="reas seguras"]');
+        if (btn) btn.click();
+      });
+      await delay(400);
+      const overlayOff = await guidesShown();
+      const boxOff = await boxOf();
+
+      const muestrasOk = muestrasOn.every((m) => cercaDe(boxBefore, m));
+      decide(
+        'SAFE-AREA-GUIDES-GEOMETRY',
+        'El interruptor de áreas seguras no mueve ni reescala el canvas del visor',
+        Boolean(
+          toggleGuides && overlayOn && !overlayOff &&
+            cercaDe(boxBefore, boxOn) && cercaDe(boxBefore, boxOff) &&
+            muestrasOk &&
+            nitido(boxBefore) && nitido(boxOn) && nitido(boxOff) &&
+            boxOn.mismoNodo && boxOff.mismoNodo
+        ),
+        `interruptor=${toggleGuides} | guías visibles tras activar=${overlayOn}, tras desactivar=${overlayOff} | ` +
+        `caja antes=${JSON.stringify(boxBefore)} | con guías=${JSON.stringify(boxOn)} | ` +
+        `muestras con guías dentro de tolerancia=${muestrasOk} | sin guías=${JSON.stringify(boxOff)}`,
+        { boxBefore, boxOn, muestrasOn, boxOff, overlayOn, overlayOff }
+      );
+
+      return { reloaded: navCount(page) !== navBefore, checks };
+    } finally {
+      await context.close();
+    }
+  }, { expected: WAVE_EXPECTED });
+
+  for (const check of outcome.checks) {
+    report.check(check.id, check.title, check.ok, check.message, check.details);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+
 export async function run(ctx) {
   await caseClipboard(ctx);
   await caseColor(ctx);
@@ -2134,4 +2524,5 @@ export async function run(ctx) {
   await caseExport(ctx);
   await caseStorage(ctx);
   await caseMultiSelect(ctx);
+  await caseWave(ctx);
 }

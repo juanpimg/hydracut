@@ -17,6 +17,7 @@ import { Button } from '../ui/Button';
 import { IconButton } from '../ui/IconButton';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { Tooltip } from '../ui/Tooltip';
+import { HistorialCambios } from './HistoryPanel';
 
 /**
  * Barra de la app (40 px): marca · proyecto · relación de aspecto ·
@@ -137,6 +138,9 @@ export const Header: React.FC = () => {
               <RotateCw size={14} aria-hidden="true" />
             </IconButton>
           </Tooltip>
+          {/* W-G · Historial visible: lista la pila con etiquetas humanas y
+              salta a cualquier punto (solo lectura del `past`/`future`). */}
+          <HistorialCambios />
         </div>
       </div>
 

@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
-import { useProjectStore } from '../../store/useProjectStore';
+import { useProjectStore, resolveDeleteKind } from '../../store/useProjectStore';
+import { useUIStore } from '../../store/useUIStore';
 import { masterClock } from '../../core/engine/MasterClock';
 import { Clip, Track } from '../../types/project';
 import { TimelineToolbar } from './TimelineToolbar';
@@ -290,7 +291,6 @@ export const Timeline: React.FC = () => {
   /* ------------------------------------------------------------------ */
   /* F6 — Ctrl + A selects every clip                                    */
   /* ------------------------------------------------------------------ */
-
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'a' && e.key !== 'A') return;
@@ -309,6 +309,89 @@ export const Timeline: React.FC = () => {
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [selectAllClips]);
+
+  /* ------------------------------------------------------------------ */
+  /* Ronda "Terminar un proyecto" — atajos de edición y navegación       */
+  /*                                                                     */
+  /* - Mayús+Supr / Mayús+Retroceso → ripple delete (borrar y cerrar el  */
+  /*   hueco) sobre la selección primaria.                               */
+  /* - M → añadir marcador en el cabezal.                                */
+  /* - Ctrl+G → enfocar el campo numérico de timecode.                   */
+  /* - Q / W → recortar el inicio / final del clip primario al cabezal.  */
+  /*                                                                     */
+  /* El borrado SIMPLE (Supr) sigue siendo de `MainLayout.tsx`: este     */
+  /* manejador solo actúa con Mayús y detiene la propagación para que el  */
+  /* borrado simple no procese la misma pulsación (el hueco se cierra en */
+  /* vez de quedarse abierto). Como este efecto es de un hijo, se        */
+  /* registra antes que el del layout y `stopImmediatePropagation` gana. */
+  /* ------------------------------------------------------------------ */
+
+  useEffect(() => {
+    const isTextEntry = (element: HTMLElement | null): boolean => {
+      if (!element) return false;
+      const tag = typeof element.tagName === 'string' ? element.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return true;
+      return element.isContentEditable === true;
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Los atajos no secuestran el teclado mientras se escribe.
+      if (isTextEntry(typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null)) {
+        return;
+      }
+      // Ni con un diálogo abierto (el diálogo es dueño del teclado).
+      const ui = useUIStore.getState();
+      if (ui.isExportModalOpen || ui.isProjectsModalOpen || ui.isShortcutsModalOpen || ui.isWelcomeOpen) {
+        return;
+      }
+
+      // P0-1 · Mayús+Supr / Mayús+Retroceso: ripple delete.
+      if (resolveDeleteKind({ key: e.key, shiftKey: e.shiftKey }) === 'ripple') {
+        const id = useProjectStore.getState().selectedClipId;
+        if (!id) return;
+        e.preventDefault();
+        // El borrado simple de MainLayout no debe ver esta pulsación.
+        e.stopImmediatePropagation();
+        useProjectStore.getState().rippleDeleteClip(id);
+        return;
+      }
+
+      // P0-11 · Ctrl+G: enfocar el campo numérico de timecode.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) {
+        if (e.altKey) return;
+        e.preventDefault();
+        if (typeof document !== 'undefined') {
+          document.querySelector<HTMLElement>('[data-testid="goto-timecode"]')?.focus?.();
+        }
+        return;
+      }
+
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const key = e.key.toLowerCase();
+
+      // P0-6 · M: marcador en el cabezal (deshace con un Ctrl+Z).
+      if (key === 'm') {
+        e.preventDefault();
+        useProjectStore.getState().addMarker();
+        return;
+      }
+
+      // P0-11 · Q/W: recortar el clip primario al cabezal.
+      if (key === 'q' || key === 'w') {
+        const id = useProjectStore.getState().selectedClipId;
+        // Sin selección el atajo no hace nada (igual que Dividir sin clip
+        // bajo el cabezal): un no-op silencioso en navegación, el motivo con
+        // clip en el banner vía el store.
+        if (!id) return;
+        e.preventDefault();
+        const store = useProjectStore.getState();
+        if (key === 'q') store.trimClipHeadToPlayhead(id);
+        else store.trimClipTailToPlayhead(id);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // Cursor-anchored Wheel Zoom (Ctrl + Wheel) with non-passive event listener
   useEffect(() => {

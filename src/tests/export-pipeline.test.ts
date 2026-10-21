@@ -1091,12 +1091,28 @@ describe('F11 · la cancelación se respeta durante la exportación', () => {
     installMediaRecorder();
 
     const controller = new AbortController();
+    let abortadoEnVuelo = false;
     const { exportVideo } = await import('../core/export/webcodecsExporter');
     const promise = exportVideo(
-      makeParams({ duration: 5, signal: controller.signal })
+      makeParams({
+        duration: 5,
+        signal: controller.signal,
+        // Determinista (sin reloj): el abort aterriza en el primer informe de
+        // progreso, es decir, con el bucle de fotogramas ya en vuelo. El
+        // `setTimeout(abort, 30)` anterior era una carrera: en una máquina muy
+        // rápida el export completaba antes del abort (falso rojo) y en una
+        // lenta el abort podía llegar tarde por el motivo equivocado.
+        onProgress: (p: { state: string; progress: number; etaSeconds: number }) => {
+          state.progress.push({ state: p.state, progress: p.progress, etaSeconds: p.etaSeconds });
+          if (!abortadoEnVuelo) {
+            abortadoEnVuelo = true;
+            controller.abort();
+          }
+        },
+      })
     );
-    setTimeout(() => controller.abort(), 30);
     await expect(promise).rejects.toThrow(/cancelad/i);
+    expect(abortadoEnVuelo).toBe(true);
     expect(state.progress.some((p) => p.state === 'completed')).toBe(false);
   });
 });

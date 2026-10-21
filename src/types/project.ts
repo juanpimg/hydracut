@@ -309,6 +309,25 @@ export interface Track {
   role?: TrackRole;
 }
 
+/**
+ * P0-6 · Marcador de la línea de tiempo.
+ *
+ * Un punto nombrado sobre la regla (`M` lo crea en el cabezal): sirve para
+ * saltar (`jumpToMarker`) y para fijar el rango de exportación (el par de
+ * marcadores se convierte en `{ start, end }` con `markerPairToRange`).
+ * `time` va en segundos, cuantizado a fotogramas del proyecto.
+ */
+export interface TimelineMarker {
+  /** Identificador único (`marker_…`). */
+  id: string;
+  /** Posición en la línea de tiempo (segundos, cuantizada a frame). */
+  time: number;
+  /** Nombre visible (p. ej. `Marcador 1`, `Estribillo`). */
+  name: string;
+  /** Color opcional en hex (`#rrggbb`); sin él se usa el color por defecto. */
+  color?: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -344,6 +363,13 @@ export interface Project {
    * before F2 have no trash at all.
    */
   trash?: TrashEntry[];
+  /**
+   * P0-6 · Marcadores de la línea de tiempo. Opcional por compatibilidad:
+   * los proyectos guardados antes no tienen ninguno. Viajan con el proyecto
+   * (se guardan, se exportan en el .hydra y se sanean al importar con
+   * `sanitizeMarkers`) y forman parte del historial (se deshacen).
+   */
+  markers?: TimelineMarker[];
 }
 
 export interface ProjectMetadata {

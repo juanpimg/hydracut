@@ -11,10 +11,18 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # ffmpeg/ffprobe pineados: los checks de exportación inspeccionan el MP4 con
+  # ffprobe y miden RMS/duración, así que un cambio silencioso de versión puede
+  # moverlos. Verificado contra `ubuntu-24.04` (paquete `ffmpeg` de noble):
+  # si el runner actualiza la revisión, la instalación falla EN VOZ ALTA y
+  # este pin se actualiza a propósito, en vez de derivar en silencio.
+  FFMPEG_VERSION: '7:6.1.1-3ubuntu5'
+
 jobs:
   verify:
-    name: Typecheck, lint, unit tests and build
-    runs-on: ubuntu-latest
+    name: Typecheck, lint, unit tests, coverage and build
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,13 +45,34 @@ jobs:
       - name: Unit tests (vitest)
         run: npm test
 
+      - name: Coverage (vitest + v8, with measured thresholds)
+        # El proveedor ya es devDependency (`@vitest/coverage-v8`, ver
+        # `package.json`): este paso ejecuta la medición y los umbrales se
+        # pasan por CLI para que una regresión rompa el build. Medidos el
+        # 2026-10-21 con la suite en verde: líneas 54.37, ramas 79.02,
+        # funciones 80.86, sentencias 54.37. Los umbrales quedan 1 punto por
+        # debajo (53/78/80/53) como colchón de redondeo, muy por encima de los
+        # antiguos valores "que nunca fallan" (40/60/60/40). Solo se suben
+        # desde un valor medido, nunca desde una suposición.
+        run: |
+          npx vitest run --coverage \
+            --coverage.thresholds.lines=53 \
+            --coverage.thresholds.statements=53 \
+            --coverage.thresholds.branches=78 \
+            --coverage.thresholds.functions=80
+
       - name: Build
         run: npm run build
 
   browser-e2e:
     name: Browser E2E (real Chrome)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      # Las líneas base de `suite-known-issues` SÍ guardan en CI: un defecto
+      # ya resuelto que reaparezca (o una línea base que derive) rompe el
+      # build en vez de quedarse como aviso informativo.
+      HYDRA_STRICT: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -59,10 +88,11 @@ jobs:
 
       - name: Install ffmpeg (ffprobe for the export checks)
         # Los checks de exportación inspeccionan el MP4 con ffprobe/ffmpeg:
-        # sin ellos la suite fallaba con `spawnSync ffprobe ENOENT`. Se muestra
-        # la versión para que un futuro fallo diga si estaban presentes.
+        # sin ellos la suite fallaba con `spawnSync ffprobe ENOENT`. Versión
+        # pineada vía `FFMPEG_VERSION` (ver `env` de arriba): se muestra la
+        # versión para que un futuro fallo diga si estaban presentes.
         run: |
-          sudo apt-get update && sudo apt-get install -y ffmpeg
+          sudo apt-get update && sudo apt-get install -y ffmpeg="$FFMPEG_VERSION"
           which ffprobe ffmpeg
           ffprobe -version | head -n 1
           ffmpeg -version | head -n 1
@@ -80,3 +110,43 @@ jobs:
           echo "Using Chrome at $HYDRA_CHROME_PATH"
           "$HYDRA_CHROME_PATH" --version
           npm run test:browser
+
+  browser-firefox:
+    name: Browser E2E (real Firefox)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install ffmpeg (ffprobe for the export checks)
+        # Misma versión pineada que el job de Chrome: la suite de Firefox
+        # también inspecciona el MP4 exportado con ffprobe.
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg="$FFMPEG_VERSION"
+          which ffprobe ffmpeg
+          ffprobe -version | head -n 1
+          ffmpeg -version | head -n 1
+
+      - name: Setup Firefox
+        uses: browser-actions/setup-firefox@v1
+
+      - name: Browser E2E Firefox (puppeteer + dev server)
+        # El harness resuelve el binario vía HYDRA_FIREFOX_PATH y luego las
+        # rutas habituales (`resolveFirefoxPath()` en
+        # src/tests/browser/browser-harness.mjs). Se exporta explícito para
+        # que el log muestre qué Firefox ejecutó la suite.
+        run: |
+          export HYDRA_FIREFOX_PATH="$(which firefox || which firefox-esr)"
+          echo "Using Firefox at $HYDRA_FIREFOX_PATH"
+          "$HYDRA_FIREFOX_PATH" --version
+          npm run test:browser:firefox

@@ -832,10 +832,13 @@ describe('Video Frame Caching & Solid Playback (Anti-Flicker)', () => {
     const unsub = mediaSourcePool.onFrameReady(listener);
 
     mediaSourcePool.notifyFrameReady();
-    // Allow macrotask / RAF to fire
-    await new Promise((r) => setTimeout(r, 40));
+    // La notificación viaja por RAF (o un `setTimeout(16)` sin RAF): se espera
+    // la CONDICIÓN en vez de dormir 40 ms fijos, que en CI cargado podían no
+    // bastar (falso rojo sin regresión).
+    await vi.waitFor(() => {
+      expect(listener).toHaveBeenCalled();
+    });
 
-    expect(listener).toHaveBeenCalled();
     unsub();
   });
 

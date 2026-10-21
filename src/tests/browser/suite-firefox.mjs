@@ -59,6 +59,7 @@ import {
   safeEvaluate,
   navigateWithRetry,
   delay,
+  EXPORT_DIALOG_SELECTOR,
 } from './browser-harness.mjs';
 
 export const name = 'firefox';
@@ -244,11 +245,11 @@ export async function run({ report, baseUrl = BASE_URL }) {
     let modalText = '';
     const deadline = Date.now() + EXPORT_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      modalText = await safeEvaluate(page, () => {
-        const modal = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+      modalText = await safeEvaluate(page, (sel) => {
+        const modal = document.querySelector(sel);
         if (!modal) return 'el modal se cerró';
         return modal.innerText.replace(/\s+/g, ' ').slice(0, 900);
-      });
+      }, EXPORT_DIALOG_SELECTOR);
       if (/descargado/i.test(modalText || '') || /no se pudo/i.test(modalText || '')) break;
       await delay(500);
     }

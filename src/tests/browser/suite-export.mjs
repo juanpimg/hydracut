@@ -37,6 +37,7 @@ import {
   waitForNetworkQuiescence,
   navCount,
   delay,
+  EXPORT_DIALOG_SELECTOR,
 } from './browser-harness.mjs';
 
 export const name = 'export';
@@ -145,8 +146,8 @@ export async function run({ browser, report, baseUrl }) {
     await openExportModal(page);
     await clickButtonByText(page, '720p HD', { exact: true });
     await clickButtonByText(page, '30 FPS', { exact: true });
-    const dims = await evaluateWithRetry(page, () => {
-      const modal = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+    const dims = await evaluateWithRetry(page, (sel) => {
+      const modal = document.querySelector(sel);
       if (!modal) return null;
       const walker = document.createTreeWalker(modal, NodeFilter.SHOW_TEXT);
       let node;
@@ -156,7 +157,7 @@ export async function run({ browser, report, baseUrl }) {
         }
       }
       return null;
-    });
+    }, EXPORT_DIALOG_SELECTOR);
 
     const started = Date.now();
     let file = null;
@@ -179,11 +180,11 @@ export async function run({ browser, report, baseUrl }) {
           minBytes: 1,
         });
         if (file) break;
-        modalState = await safeEvaluate(page, () => {
-          const modal = document.querySelector('div[role="dialog"][aria-label="Exportar video"]');
+        modalState = await safeEvaluate(page, (sel) => {
+          const modal = document.querySelector(sel);
           if (!modal) return 'el modal se cerró';
           return modal.innerText.replace(/\s+/g, ' ').slice(0, 220);
-        });
+        }, EXPORT_DIALOG_SELECTOR);
         await delay(400);
       }
       navs = navCount(page) - navBefore;

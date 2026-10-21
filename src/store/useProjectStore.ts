@@ -11,6 +11,7 @@ import {
   OverlapPolicy,
   Project,
   TextStyle,
+  TimelineMarker,
   Track,
   TrackRole,
   TrackType,
@@ -30,8 +31,17 @@ import type { StorageScope } from '../core/storage/projectStorage';
 import { calculateSnapping } from '../core/utils/math';
 import {
   isDeliberateCrossfadeOverlap,
+  crossfadeOverlapDuration,
   planCrossfade,
 } from '../core/utils/crossfade';
+import {
+  MARKER_COLORS,
+  createMarkerId,
+  defaultMarkerName,
+  markerPairToRange,
+  sortMarkersByTime,
+} from '../core/utils/markers';
+import { quantizeToFrame } from '../core/utils/time';
 import { clampClipAudioFades } from '../core/utils/audioFades';
 import { normalizeAudioEffects, normalizeTrackRole } from '../core/utils/audioEffects';
 import {
@@ -74,6 +84,14 @@ export interface HistoryState {
    * exists again).
    */
   selectedClipIds?: string[];
+  /**
+   * P0-6 · Markers snapshot.
+   *
+   * The markers are part of the project AND of the undoable state: adding a
+   * marker with `M` is undone with a single Ctrl+Z, like any other edit.
+   * Deep-copied (they are tiny: a handful of `{ id, time, name }` objects).
+   */
+  markers?: TimelineMarker[];
 }
 
 /** Maximum number of undo entries kept in the history stack. */
@@ -434,6 +452,139 @@ export function applyRippleInsert(
   return { clips: result, shifted, created };
 }
 
+/* ------------------------------------------------------------------ */
+/* P0-1 — Ripple delete (borrar y cerrar el hueco)                      */
+/* ------------------------------------------------------------------ */
+
+/** Result of `rippleDeleteClip` / `planRippleDelete`. */
+export type RippleDeleteResult =
+  | { ok: true; clipId: string; shifted: number }
+  | { ok: false; reason: string };
+
+/** New start of a clip that moves left to close the gap. */
+export interface RippleDeleteMove {
+  id: string;
+  start: number;
+}
+
+/**
+ * A crossfade marker that dies with the deleted clip.
+ *
+ * When half of a deliberate crossfade pair is ripple-deleted, the survivor
+ * keeps its position and its content, but the marker that pointed at the
+ * deleted half becomes stale: it MUST be cleared, otherwise it claims a
+ * crossfade that no longer exists (and the overlap policy would whitelist a
+ * phantom). `side: 'in'` clears `crossfadeInDuration`, `'out'` clears
+ * `crossfadeOutDuration`.
+ */
+export interface RippleDeleteClear {
+  id: string;
+  side: 'in' | 'out';
+}
+
+export type PlanRippleDeleteResult =
+  | {
+      ok: true;
+      removedId: string;
+      /** Timeline extent the deletion really frees (exclusive part). */
+      shift: number;
+      moved: RippleDeleteMove[];
+      clearedCrossfade: RippleDeleteClear[];
+    }
+  | { ok: false; reason: string };
+
+/** Order of the clips of one track (timeline order, stable by id). */
+function orderTrackClips(clips: Clip[], trackId: string): Clip[] {
+  return clips
+    .filter((clip) => clip.trackId === trackId)
+    .sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
+}
+
+/**
+ * P0-1 · Plans a ripple delete (pure, testable): removing `targetId` AND
+ * shifting the following clips of the SAME track left to close the gap.
+ *
+ * - Only the track of the deleted clip moves (other tracks are untouched).
+ * - Pre-existing gaps are preserved: every follower moves by the SAME amount,
+ *   so their relative distances never change.
+ * - Deliberate crossfades survive: a pair AFTER the deleted clip moves
+ *   TOGETHER (same shift, relative offset intact, markers untouched). When
+ *   the deleted clip IS half of a pair, the follower chain moves by the
+ *   EXCLUSIVE extent (duration minus the shared overlap) so it abuts the
+ *   previous content exactly, and the orphaned marker of the survivor is
+ *   reported in `clearedCrossfade` (the store strips it: a marker without a
+ *   partner is a lie).
+ */
+export function planRippleDelete(clips: Clip[], targetId: string): PlanRippleDeleteResult {
+  const target = clips.find((clip) => clip.id === targetId);
+  if (!target) {
+    return { ok: false, reason: 'No se encontró el clip para eliminar y cerrar el hueco.' };
+  }
+
+  const ordered = orderTrackClips(clips, target.trackId);
+  const index = ordered.findIndex((clip) => clip.id === targetId);
+  const prev = index > 0 ? ordered[index - 1] : null;
+  const next = index >= 0 && index + 1 < ordered.length ? ordered[index + 1] : null;
+
+  // The exclusive extent: the shared regions of deliberate crossfades with
+  // the immediate neighbours were never "owned" by the deleted clip alone.
+  let shift = target.duration;
+  const clearedCrossfade: RippleDeleteClear[] = [];
+  if (prev && isDeliberateCrossfadeOverlap(prev, target)) {
+    shift -= crossfadeOverlapDuration(prev, target);
+    clearedCrossfade.push({ id: prev.id, side: 'out' });
+  }
+  if (next && isDeliberateCrossfadeOverlap(target, next)) {
+    shift -= crossfadeOverlapDuration(target, next);
+    clearedCrossfade.push({ id: next.id, side: 'in' });
+  }
+  shift = Math.max(0, shift);
+
+  const moved: RippleDeleteMove[] = ordered.slice(index + 1).map((clip) => ({
+    id: clip.id,
+    start: Math.max(0, clip.start - shift),
+  }));
+
+  return { ok: true, removedId: target.id, shift, moved, clearedCrossfade };
+}
+
+/**
+ * P0-1 · Which delete a `Delete`/`Backspace` keypress means.
+ *
+ * - `Shift+Delete` / `Shift+Backspace` → `'ripple'` (borrar y cerrar el hueco,
+ *   the conventional shortcut of Premiere/Resolve).
+ * - plain `Delete` / `Backspace` → `'plain'` (the existing hole-leaving delete).
+ * - anything else → `null` (not a delete shortcut).
+ */
+export function resolveDeleteKind(event: { key: string; shiftKey?: boolean }): 'ripple' | 'plain' | null {
+  if (event.key !== 'Delete' && event.key !== 'Backspace') return null;
+  return event.shiftKey === true ? 'ripple' : 'plain';
+}
+
+/* ------------------------------------------------------------------ */
+/* P0-6 + P0-11 — marcadores, rango pendiente e ir al cabezal           */
+/* ------------------------------------------------------------------ */
+
+/** Result of `trimClipHeadToPlayhead` (`Q`) / `trimClipTailToPlayhead` (`W`). */
+export type TrimToPlayheadResult =
+  | { ok: true; clipId: string }
+  | { ok: false; reason: string };
+
+/**
+ * P0-6 · Draft of the export range fed from the markers.
+ *
+ * The export dialog OWNS its range state (`ExportModal.tsx`); this draft is
+ * the bridge the timeline writes (`Marcar entrada` / `Marcar salida` on a
+ * marker, or `applyMarkerPairToExportRange`) and the dialog reads when it
+ * opens. It is UI state, NOT undoable state (like `snappingGuideTime`).
+ */
+export interface PendingExportRange {
+  /** In point (timeline seconds). `null` = not marked yet. */
+  start: number | null;
+  /** Out point (timeline seconds). `null` = not marked yet. */
+  end: number | null;
+}
+
 /**
  * Human readable reason of an overlap refusal (shown in the UI).
  */
@@ -780,6 +931,45 @@ function createClipId(): string {
 }
 
 /**
+ * P0-1 · Strips ONE side of a crossfade marker from a transition.
+ *
+ * When a ripple delete removes half of a deliberate pair, the survivor keeps
+ * its content but loses the marker that pointed at the deleted half (a
+ * marker without a partner claims a crossfade that no longer exists). Like
+ * `removeCrossfade`, dropping the last marker of an otherwise empty
+ * transition removes the transition object itself (no dead weight).
+ */
+function stripCrossfadeSideMarker(
+  transition: Clip['transition'],
+  side: 'in' | 'out'
+): Clip['transition'] {
+  if (!transition) return undefined;
+  const rest = { ...transition };
+  if (side === 'in') delete rest.crossfadeInDuration;
+  else delete rest.crossfadeOutDuration;
+  const hasFades =
+    (rest.fadeInType !== undefined && rest.fadeInType !== 'none') ||
+    (rest.fadeInDuration ?? 0) > 0 ||
+    (rest.fadeOutType !== undefined && rest.fadeOutType !== 'none') ||
+    (rest.fadeOutDuration ?? 0) > 0;
+  const hasCrossfade =
+    (rest.crossfadeInDuration ?? 0) > 0 || (rest.crossfadeOutDuration ?? 0) > 0;
+  if (!hasFades && !hasCrossfade) return undefined;
+  return {
+    fadeInType: rest.fadeInType ?? 'none',
+    fadeInDuration: rest.fadeInDuration ?? 0,
+    fadeOutType: rest.fadeOutType ?? 'none',
+    fadeOutDuration: rest.fadeOutDuration ?? 0,
+    ...(rest.crossfadeInDuration !== undefined
+      ? { crossfadeInDuration: rest.crossfadeInDuration }
+      : {}),
+    ...(rest.crossfadeOutDuration !== undefined
+      ? { crossfadeOutDuration: rest.crossfadeOutDuration }
+      : {}),
+  };
+}
+
+/**
  * True when two clips of the same group overlap each other.
  *
  * The pasted group comes from the clipboard, so it may carry clips that were
@@ -1021,6 +1211,92 @@ export interface ProjectState {
   splitClip: (clipId: string, splitTime?: number) => void;
   splitAtPlayhead: () => void;
   deleteSelectedClip: () => void;
+
+  /**
+   * P0-1 · Ripple delete: removes the clip AND shifts the following clips of
+   * the SAME track left to close the gap (one undoable step).
+   *
+   * Deliberate crossfades are preserved (see `planRippleDelete`): a pair
+   * after the deleted clip moves together, and the orphaned marker of a
+   * surviving half is stripped. Refuses with a reason on a locked track.
+   * The project duration is recalculated.
+   */
+  rippleDeleteClip: (clipId: string) => RippleDeleteResult;
+
+  /* ---------------------------------------------------------------- */
+  /* P0-6 — marcadores                                                 */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Adds a marker at `time` (default: the playhead), quantised to a frame of
+   * the project and named `Marcador N`. Undoable as ONE history entry.
+   * Returns the marker, or `null` with a reason when the time is not valid.
+   */
+  addMarker: (time?: number) => TimelineMarker | null;
+
+  /**
+   * Removes a marker (undoable). Returns `false` with a reason when the id
+   * does not exist.
+   */
+  removeMarker: (markerId: string) => boolean;
+
+  /**
+   * Renames a marker (undoable). An empty name is refused with a reason.
+   * Returns `false` when the id does not exist or the name is empty.
+   */
+  renameMarker: (markerId: string, name: string) => boolean;
+
+  /**
+   * Jumps the playhead to a marker (engine seek + store time, like the
+   * draggable playhead). Returns `false` when the id does not exist.
+   */
+  jumpToMarker: (markerId: string) => boolean;
+
+  /**
+   * P0-6 · Draft of the export range fed from the markers (NOT undoable).
+   * The export dialog reads it when it opens (see `PendingExportRange`).
+   */
+  pendingExportRange: PendingExportRange;
+
+  /**
+   * Marks one endpoint (`start` = entrada, `end` = salida) of the pending
+   * export range. Refuses a non-finite time with a reason.
+   */
+  setExportRangeEndpoint: (which: 'start' | 'end', time: number) => boolean;
+
+  /** Clears the pending export range (both endpoints back to `null`). */
+  clearPendingExportRange: () => void;
+
+  /**
+   * Sets the pending export range to the ordered pair of two markers
+   * (`null` when they share the same time). Returns `false` with a reason
+   * when a marker does not exist or the pair is not a valid range.
+   */
+  applyMarkerPairToExportRange: (aId: string, bId: string) => boolean;
+
+  /* ---------------------------------------------------------------- */
+  /* P0-11 — ir al timecode + recortar al cabezal (Q/W)                 */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Jumps the playhead to an absolute time in seconds (the numeric timecode
+   * field parses with `parseTimecodeInput` first). Clamped to the project
+   * duration. Returns `false` with a reason when the time is not valid.
+   */
+  goToTimecode: (seconds: number) => boolean;
+
+  /**
+   * `Q`: trims the HEAD of the clip to the playhead (the source window moves
+   * with the cut, like `trimClipStart`, whose policy check applies: under
+   * `block` an invading trim is refused with a reason). Undoable as ONE step.
+   */
+  trimClipHeadToPlayhead: (clipId: string) => TrimToPlayheadResult;
+
+  /**
+   * `W`: trims the TAIL of the clip to the playhead (same contract as the
+   * head variant, via `trimClipEnd`).
+   */
+  trimClipTailToPlayhead: (clipId: string) => TrimToPlayheadResult;
 
   /**
    * Changes the overlap policy of the project (F1).
@@ -1582,6 +1858,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   lastSavedAt: null,
   // F7: the internal clipboard starts empty.
   clipboard: [],
+  // P0-6: no pending export range (the dialog starts on "Todo el proyecto").
+  pendingExportRange: { start: null, end: null },
 
   clearLastError: () => set({ lastError: null }),
   clearStorageError: () => set({ storageError: null }),
@@ -1825,6 +2103,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       mediaPool: [...project.mediaPool],
       // The trash is undoable state too (F2).
       trash: [...(project.trash ?? [])],
+      // P0-6: the markers travel with every snapshot (adding one with `M`
+      // is a single Ctrl+Z, like any other edit).
+      markers: project.markers ? JSON.parse(JSON.stringify(project.markers)) : undefined,
       // F6: the selection is undoable state (a selected clip that is restored
       // by the undo stays selected).
       selectedClipIds: [...selectedClipIds],
@@ -1845,6 +2126,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clips: JSON.parse(JSON.stringify(project.clips)),
       mediaPool: [...project.mediaPool],
       trash: [...(project.trash ?? [])],
+      // P0-6: the markers are undoable state too.
+      markers: project.markers ? JSON.parse(JSON.stringify(project.markers)) : undefined,
       selectedClipIds: [...get().selectedClipIds],
     };
     const updated: Project = {
@@ -1855,6 +2138,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       mediaPool: [...previous.mediaPool],
       // The trash is restored too (F2): undoing a removal empties it.
       trash: [...(previous.trash ?? [])],
+      // P0-6: the markers of the restored state come back too (an undone
+      // `M` leaves no marker behind; an undone delete brings it back). An
+      // old snapshot without markers restores "no markers".
+      markers: previous.markers ? JSON.parse(JSON.stringify(previous.markers)) : undefined,
       updatedAt: Date.now(),
     };
     // D01: un undo puede resucitar un medio cuyos bytes ya se purgaron. El
@@ -1901,6 +2188,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clips: JSON.parse(JSON.stringify(project.clips)),
       mediaPool: [...project.mediaPool],
       trash: [...(project.trash ?? [])],
+      // P0-6: the markers are undoable state too.
+      markers: project.markers ? JSON.parse(JSON.stringify(project.markers)) : undefined,
       selectedClipIds: [...get().selectedClipIds],
     };
     const updated: Project = {
@@ -1909,6 +2198,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       clips: JSON.parse(JSON.stringify(next.clips)),
       mediaPool: [...next.mediaPool],
       trash: [...(next.trash ?? [])],
+      // P0-6: same rule as the undo (no marker is ever invented by a redo).
+      markers: next.markers ? JSON.parse(JSON.stringify(next.markers)) : undefined,
       updatedAt: Date.now(),
     };
     // D01: como en el undo, un redo nunca resucita medios sin bytes como si
@@ -3929,6 +4220,331 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     get().deleteSelectedClips();
   },
 
+  rippleDeleteClip: (clipId) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para eliminar y cerrar el hueco.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    // S-03: a locked track freezes the removal (same guard as the plain
+    // delete, with the ripple-specific recovery).
+    const track = state.project.tracks.find((t) => t.id === clip.trackId);
+    if (track?.isLocked) {
+      const reason =
+        `La pista «${track.name}» está bloqueada: desbloquéala para poder eliminar «${clip.name}» y cerrar el hueco.`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+
+    const plan = planRippleDelete(state.project.clips, clipId);
+    if (!plan.ok) {
+      console.warn(plan.reason);
+      set({ lastError: plan.reason });
+      return plan;
+    }
+
+    // ONE history entry for the removal AND the shift (not one per clip).
+    get().pushHistory();
+    const movedById = new Map(plan.moved.map((move) => [move.id, move.start]));
+    const clearedById = new Map(plan.clearedCrossfade.map((clear) => [clear.id, clear.side]));
+    set((s) => {
+      const updatedClips: Clip[] = [];
+      for (const current of s.project.clips) {
+        if (current.id === clipId) continue;
+        let next = current;
+        const movedStart = movedById.get(current.id);
+        if (movedStart !== undefined) {
+          // The content moves left: the ABSOLUTE word timings (`WordTiming`
+          // start/end are timeline times) move with it, otherwise the karaoke
+          // desyncs from the audio it belongs to.
+          const delta = movedStart - current.start;
+          next = {
+            ...next,
+            start: movedStart,
+            ...(next.words
+              ? {
+                  words: next.words.map((word) => ({
+                    ...word,
+                    start: word.start + delta,
+                    end: word.end + delta,
+                  })),
+                }
+              : {}),
+          };
+        }
+        const clearedSide = clearedById.get(current.id);
+        if (clearedSide) {
+          next = { ...next, transition: stripCrossfadeSideMarker(next.transition, clearedSide) };
+        }
+        updatedClips.push(next);
+      }
+      const updated: Project = {
+        ...s.project,
+        clips: updatedClips,
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      // F6: the deleted clip leaves the selection (no dangling id).
+      return {
+        project: updated,
+        ...selectionPatch(pruneSelection(s.selectedClipIds, updatedClips)),
+        lastError: null,
+      };
+    });
+
+    // F1: the pooled resources of the clip die with it (and the media level
+    // ones when the clip was the last user of that media).
+    releaseClipResources(clip, get().project.clips);
+    get().recalculateDuration();
+    return { ok: true, clipId, shifted: plan.moved.length };
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* P0-6 — marcadores                                                 */
+  /* ---------------------------------------------------------------- */
+
+  addMarker: (time) => {
+    const state = get();
+    const fps = state.project.fps ?? 30;
+    const raw = time !== undefined ? time : masterClock.getTime() || state.currentTime;
+    if (!Number.isFinite(raw) || raw < 0) {
+      const reason = 'No se puede añadir un marcador en un tiempo no válido.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return null;
+    }
+    const existing = state.project.markers ?? [];
+    const marker: TimelineMarker = {
+      id: createMarkerId(),
+      time: quantizeToFrame(Math.max(0, raw), fps),
+      name: defaultMarkerName(existing.length + 1),
+      color: MARKER_COLORS[existing.length % MARKER_COLORS.length],
+    };
+    get().pushHistory();
+    set((s) => {
+      const updated: Project = {
+        ...s.project,
+        markers: sortMarkersByTime([...(s.project.markers ?? []), marker]),
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    return marker;
+  },
+
+  removeMarker: (markerId) => {
+    const state = get();
+    const markers = state.project.markers ?? [];
+    if (!markers.some((marker) => marker.id === markerId)) {
+      const reason = 'No se encontró el marcador para eliminarlo.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    get().pushHistory();
+    set((s) => {
+      const updated: Project = {
+        ...s.project,
+        markers: (s.project.markers ?? []).filter((marker) => marker.id !== markerId),
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    return true;
+  },
+
+  renameMarker: (markerId, name) => {
+    const state = get();
+    const markers = state.project.markers ?? [];
+    if (!markers.some((marker) => marker.id === markerId)) {
+      const reason = 'No se encontró el marcador para renombrarlo.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    const trimmed = typeof name === 'string' ? name.trim().slice(0, 60) : '';
+    if (trimmed.length === 0) {
+      const reason = 'El nombre del marcador no puede estar vacío.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    get().pushHistory();
+    set((s) => {
+      const updated: Project = {
+        ...s.project,
+        markers: (s.project.markers ?? []).map((marker) =>
+          marker.id === markerId ? { ...marker, name: trimmed } : marker
+        ),
+        updatedAt: Date.now(),
+      };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+    return true;
+  },
+
+  jumpToMarker: (markerId) => {
+    const marker = (get().project.markers ?? []).find((m) => m.id === markerId);
+    if (!marker) {
+      const reason = 'No se encontró el marcador para saltar a él.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    // Same contract as the draggable playhead: the engine seeks and the
+    // store time follows (a jump is navigation, not an edit: no history).
+    masterClock.seek(marker.time);
+    get().setCurrentTime(marker.time);
+    return true;
+  },
+
+  setExportRangeEndpoint: (which, time) => {
+    if (!Number.isFinite(time) || time < 0) {
+      const reason = 'El punto del rango de exportación no es un tiempo válido.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    // UI draft (like `snappingGuideTime`): marking in/out points is not an
+    // edit, so it pushes no history.
+    set((s) => ({
+      pendingExportRange: { ...s.pendingExportRange, [which]: Math.max(0, time) },
+      lastError: null,
+    }));
+    return true;
+  },
+
+  clearPendingExportRange: () => {
+    set({ pendingExportRange: { start: null, end: null } });
+  },
+
+  applyMarkerPairToExportRange: (aId, bId) => {
+    const markers = get().project.markers ?? [];
+    const a = markers.find((marker) => marker.id === aId);
+    const b = markers.find((marker) => marker.id === bId);
+    if (!a || !b) {
+      const reason = 'Elige dos marcadores para fijar el rango de exportación.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    const range = markerPairToRange(a, b);
+    if (!range) {
+      const reason = 'Los dos marcadores están en el mismo punto: elige dos puntos distintos.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    set({ pendingExportRange: { start: range.start, end: range.end }, lastError: null });
+    return true;
+  },
+
+  /* ---------------------------------------------------------------- */
+  /* P0-11 — ir al timecode + recortar al cabezal (Q/W)                 */
+  /* ---------------------------------------------------------------- */
+
+  goToTimecode: (seconds) => {
+    if (!Number.isFinite(seconds) || seconds < 0) {
+      const reason = 'El timecode no es un tiempo válido: usa HH:MM:SS:FF o segundos (p. ej. 75,5).';
+      console.warn(reason);
+      set({ lastError: reason });
+      return false;
+    }
+    // The playhead never leaves the project (jumping past the end lands on
+    // the last frame instead of a black void).
+    const clamped = Math.min(Math.max(0, seconds), get().project.duration);
+    masterClock.seek(clamped);
+    get().setCurrentTime(clamped);
+    return true;
+  },
+
+  trimClipHeadToPlayhead: (clipId) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para recortar su inicio al cabezal.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    const track = state.project.tracks.find((t) => t.id === clip.trackId);
+    if (track?.isLocked) {
+      const reason =
+        `La pista «${track.name}» está bloqueada: desbloquéala para poder recortar «${clip.name}» al cabezal.`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    const playhead = quantizeToFrame(
+      masterClock.getTime() || state.currentTime,
+      state.project.fps ?? 30
+    );
+    const clipEndTime = clip.start + clip.duration;
+    // A no-op trim (or one that would leave less than the 0,1 s minimum of
+    // `trimClipStart`) is refused WITH a reason instead of failing silently.
+    if (!(playhead > clip.start) || !(playhead < clipEndTime - 0.1)) {
+      const reason =
+        `El cabezal está fuera de «${clip.name}»: colócalo dentro del clip para recortar su inicio (Q).`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    // `trimClipStart` owns the source window, the overlap policy and the
+    // single history entry: a Q/W trim is exactly a trim to a known time.
+    get().trimClipStart(clipId, playhead, { snap: false });
+    const after = get().project.clips.find((c) => c.id === clipId);
+    if (!after || Math.abs(after.start - playhead) > 1e-6) {
+      const reason = get().lastError ?? `No se pudo recortar «${clip.name}» al cabezal.`;
+      return { ok: false, reason };
+    }
+    return { ok: true, clipId };
+  },
+
+  trimClipTailToPlayhead: (clipId) => {
+    const state = get();
+    const clip = state.project.clips.find((c) => c.id === clipId);
+    if (!clip) {
+      const reason = 'No se encontró el clip para recortar su final al cabezal.';
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    const track = state.project.tracks.find((t) => t.id === clip.trackId);
+    if (track?.isLocked) {
+      const reason =
+        `La pista «${track.name}» está bloqueada: desbloquéala para poder recortar «${clip.name}» al cabezal.`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    const playhead = quantizeToFrame(
+      masterClock.getTime() || state.currentTime,
+      state.project.fps ?? 30
+    );
+    const clipEndTime = clip.start + clip.duration;
+    if (!(playhead > clip.start + 0.1) || !(playhead < clipEndTime)) {
+      const reason =
+        `El cabezal está fuera de «${clip.name}»: colócalo dentro del clip para recortar su final (W).`;
+      console.warn(reason);
+      set({ lastError: reason });
+      return { ok: false, reason };
+    }
+    get().trimClipEnd(clipId, playhead, { snap: false });
+    const after = get().project.clips.find((c) => c.id === clipId);
+    if (!after || Math.abs(clip.start + after.duration - playhead) > 1e-6) {
+      const reason = get().lastError ?? `No se pudo recortar «${clip.name}» al cabezal.`;
+      return { ok: false, reason };
+    }
+    return { ok: true, clipId };
+  },
+
   recalculateDuration: () => {
     // KI-01 / S-06 / B-06: the duration is the REAL extent of the content.
     // The old implementation used a hard-coded floor of 15 s plus an
@@ -3977,6 +4593,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       lastSavedAt: null,
       // F7: the clipboard of the previous project is meaningless now.
       clipboard: [],
+      // P0-6: the pending export range belongs to the previous project too.
+      pendingExportRange: { start: null, end: null },
     });
     persistProject(get().project);
   },
@@ -4015,6 +4633,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       lastSavedAt: null,
       // F7: the clipboard of the previous project is meaningless now.
       clipboard: [],
+      // P0-6: same for the pending export range (the dialog re-reads it).
+      pendingExportRange: { start: null, end: null },
     });
     get().recalculateDuration();
     persistProject(loadedProject);

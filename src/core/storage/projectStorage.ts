@@ -16,6 +16,7 @@ import * as opfsStorage from './opfsStorage';
 import { normalizeKeyframesForWrite } from '../utils/keyframes';
 import { clampClipAudioFades } from '../utils/audioFades';
 import { normalizeAudioEffects, normalizeTrackRole } from '../utils/audioEffects';
+import { sanitizeMarkers } from '../utils/markers';
 import {
   sanitizeClipTextStyle,
   sanitizeClipTransition,
@@ -2283,6 +2284,16 @@ export function sanitizeImportedProject(
     });
   }
 
+  /* ----------------------------- markers ----------------------------- */
+  // P0-6: los marcadores viajan con el proyecto, pero nunca en crudo: un
+  // archivo editado a mano podría traer ids ausentes o duplicados, tiempos
+  // no válidos o colores imposibles. Pasan por el mismo saneador que al
+  // guardar (ordenados por tiempo y cuantizados a los fps del proyecto).
+  const marcadoresSaneados = sanitizeMarkers(candidate.markers, fps);
+  if (marcadoresSaneados.warnings.length > 0) {
+    warnings.push(...marcadoresSaneados.warnings);
+  }
+
   /* --------------------------- project shell -------------------------- */
   const resolution = clampResolution(candidate.resolution);
   const aspectRatio = normalizeAspectRatio(resolution.width, resolution.height);
@@ -2337,6 +2348,8 @@ export function sanitizeImportedProject(
     overlapPolicy,
     // F2: the trash travels with the project.
     trash,
+    // P0-6: los marcadores saneados (nunca los del archivo en crudo).
+    markers: marcadoresSaneados.markers,
     createdAt: Number.isFinite(Number(candidate.createdAt)) ? Number(candidate.createdAt) : now,
     updatedAt: now,
   };

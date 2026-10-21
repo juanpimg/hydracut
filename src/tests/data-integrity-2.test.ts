@@ -170,9 +170,11 @@ describe('D01 — purgar la papelera no es deshacible y el undo no miente', () =
     store.addClip(makeClip({ mediaId: 'm_purge' }));
     store.removeMediaItem('m_purge');
     useProjectStore.getState().purgeTrash();
-    // La purga borra los bytes de verdad.
-    await new Promise((r) => setTimeout(r, 20));
-    expect(h.opfsFiles.has('m_purge_purge.mp4')).toBe(false);
+    // La purga borra los bytes de verdad (vía promesa): se espera la
+    // CONDICIÓN en vez de dormir 20 ms fijos.
+    await vi.waitFor(() => {
+      expect(h.opfsFiles.has('m_purge_purge.mp4')).toBe(false);
+    });
 
     useProjectStore.getState().undo();
 

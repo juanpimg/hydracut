@@ -132,7 +132,10 @@ beforeEach(() => {
   opfsGetMedia.mockClear();
   opfsGetMedia.mockResolvedValue(null);
   opfsDeleteFiles.mockClear();
-  createObjectURLSpy = vi.fn(() => `blob:mock-${Math.random().toString(36).slice(2)}`);
+  // Contador determinista en vez de `Math.random()`: ante un fallo, el mensaje
+  // muestra la misma URL en cada ejecución y el run es reproducible.
+  let contadorUrls = 0;
+  createObjectURLSpy = vi.fn(() => `blob:mock-${++contadorUrls}`);
   revokeObjectURLSpy = vi.fn();
   (globalThis as any).URL.createObjectURL = createObjectURLSpy;
   (globalThis as any).URL.revokeObjectURL = revokeObjectURLSpy;
@@ -140,6 +143,10 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  // Sin esto, los stubs globales (`URL.createObjectURL`, `navigator`) viven
+  // hasta el siguiente `beforeEach` y reordenar los `describe` filtraría
+  // estado entre tests.
+  vi.restoreAllMocks();
 });
 
 /* ------------------------------------------------------------------ */

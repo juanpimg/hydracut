@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useMemo, useState } from 'react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { masterClock } from '../../core/engine/MasterClock';
-import { pixelsToTime } from '../../core/utils/time';
+import { pixelsToTime, formatTimecode } from '../../core/utils/time';
 
 interface TimeRulerProps {
   scrollLeft: number;
@@ -89,6 +89,11 @@ export function getRulerTickWindow(params: {
 export const TimeRuler: React.FC<TimeRulerProps> = ({ scrollLeft }) => {
   const duration = useProjectStore((s) => s.project.duration);
   const zoom = useProjectStore((s) => s.zoom);
+  const fps = useProjectStore((s) => s.project.fps);
+  // P0-6 · Los marcadores viven en la regla: rombos pequeños y discretos que
+  // saltan al marcador (no inician el arrastre de la regla).
+  const markers = useProjectStore((s) => s.project.markers);
+  const jumpToMarker = useProjectStore((s) => s.jumpToMarker);
   const rulerRef = useRef<HTMLDivElement>(null);
   /** Abort controller of the scrub gesture in progress (if any). */
   const gestureRef = useRef<AbortController | null>(null);
@@ -270,6 +275,29 @@ export const TimeRuler: React.FC<TimeRulerProps> = ({ scrollLeft }) => {
           </div>
         );
       })}
+      {/* P0-6 · Capa de marcadores: absoluta dentro de la regla (`overflow
+          hidden`, `h-7` intactos: no añade scroll ni mueve la geometría que
+          mide la suite de navegador). Cada rombo salta a su marcador. */}
+      {markers && markers.length > 0 && (
+        <div data-testid="timeline-markers" className="absolute inset-0 pointer-events-none">
+          {markers.map((marker) => (
+            <button
+              key={marker.id}
+              type="button"
+              data-testid={`timeline-marker-${marker.id}`}
+              aria-label={`Saltar al marcador «${marker.name}»`}
+              title={`${marker.name} (${formatTimecode(marker.time, fps ?? 30)})`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                jumpToMarker(marker.id);
+              }}
+              style={{ left: `${marker.time * zoom}px`, backgroundColor: marker.color ?? '#f59e0b' }}
+              className="pointer-events-auto absolute top-[3px] -ml-[5px] h-2.5 w-2.5 rotate-45 rounded-[1px] border border-black/40 focus-visible:outline-2 focus-visible:outline-white"
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 };
