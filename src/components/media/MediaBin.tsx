@@ -4,6 +4,8 @@ import {
   FolderOpen,
   AlertCircle,
   Loader2,
+  Mic,
+  Square,
   X,
   Trash2,
   Link2,
@@ -16,6 +18,31 @@ import { useProjectStore } from '../../store/useProjectStore';
 import { generateVideoThumbnail, createPlaceholderThumbnail, generateFilmstrip, generatePlaceholderFilmstrip } from '../../core/utils/thumbnails';
 import { extractWaveformPeaksFromBlob, generateSyntheticWaveform } from '../../core/utils/waveform';
 import { saveMediaToOPFS } from '../../core/storage/opfsStorage';
+import { WAV_MIME } from '../../core/export/wavExporter';
+import {
+  VOZ_AVISO_MONITOR,
+  VOZ_BASE_NOMBRE,
+  VOZ_ETIQUETA_GRABAR,
+  VOZ_MENSAJE_DENEGADA,
+  VOZ_PICOS_CELDAS,
+  calcularDuracionVoz,
+  calcularPicosVoz,
+  codificarWavVoz,
+  construirMediaItemVoz,
+  construirNombreArchivoVoz,
+  crearIdVoz,
+  formatearTiempoVoz,
+  iniciarCapturaVoz,
+  liberarMicrofono,
+  mensajeErrorMicrofono,
+  normalizarCanalesVoz,
+  pedirMicrofono,
+  siguienteNombreVoz,
+  transicionGrabacion,
+  type ClaseErrorMicrofono,
+  type ControlCapturaVoz,
+  type EstadoGrabacion,
+} from '../../core/utils/recording';
 import {
   MAX_EMBEDDED_MEDIA_BYTES,
   buildQuotaSnapshot,
@@ -28,6 +55,7 @@ import {
 } from '../../core/storage/projectStorage';
 import { createPresetMediaItems } from '../../core/utils/sampleMedia';
 import { MediaItemCard } from './MediaItemCard';
+import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { IconButton } from '../ui/IconButton';
 
@@ -185,6 +213,449 @@ export async function buildMediaItemFromFile(
 
   return item;
 }
+
+/**
+ * Props del control de voz en off (reutilizado por el bin y por la hoja
+ * móvil de Audio: la misma UI, sin duplicar).
+ */
+export interface ControlVozEnOffProps {
+  /** Versión compacta para la hoja móvil (objetivos táctiles de 44 px). */
+  compacto?: boolean;
+  /**
+   * Abre el importador cuando el permiso falla. Lo da el bin; la hoja móvil
+   * no lo tiene y enseña solo el texto (importar vive en Medios).
+   */
+  alImportar?: () => void;
+}
+
+/**
+ * Voz en off local: graba la narración con el micrófono y la deja como un
+ * medio de audio NORMAL en el pool (se añade a la línea de tiempo como
+ * cualquier audio y sobrevive a la recarga vía OPFS).
+ *
+ * - La máquina (`inactiva → pidiendo → grabando → procesando → lista /
+ *   denegada / error / cancelada`) vive en `src/core/utils/recording.ts`.
+ * - El temporizador y el nivel se pintan sin estado por fotograma: el tiempo
+ *   va por intervalo de 250 ms y el nivel escribe `transform` en el `ref`
+ *   (como el medidor del master).
+ * - El micrófono se suelta en TODOS los caminos: detener, descartar,
+ *   desmontar y error (`liberarMicrofono`, idempotente).
+ * - La monitorización está silenciada por construcción (la toma nunca suena
+ *   por los altavoces), pero la vista previa SIGUE sonando: se avisa con
+ *   `VOZ_AVISO_MONITOR` (auriculares o bajar el volumen general).
+ */
+export const ControlVozEnOff: React.FC<ControlVozEnOffProps> = ({
+  compacto = false,
+  alImportar,
+}) => {
+  const [estado, setEstado] = useState<EstadoGrabacion>('inactiva');
+  const [mensaje, setMensaje] = useState<string | null>(null);
+  const [segundos, setSegundos] = useState(0);
+  const [ultimaToma, setUltimaToma] = useState<string | null>(null);
+
+  /** Espejo del estado para las continuaciones asíncronas (sin cierres rancios). */
+  const estadoRef = useRef<EstadoGrabacion>('inactiva');
+  const controlRef = useRef<ControlCapturaVoz | null>(null);
+  /** Stream pedido pero aún sin grafo (permiso concedido tras cancelar). */
+  const pendienteRef = useRef<MediaStream | null>(null);
+  const intervaloRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const inicioRef = useRef(0);
+  const barraRef = useRef<HTMLDivElement>(null);
+  const abandonadoRef = useRef(false);
+  const montadoRef = useRef(true);
+
+  const fijarEstado = (siguiente: EstadoGrabacion): void => {
+    estadoRef.current = siguiente;
+    setEstado(siguiente);
+  };
+
+  const limpiarTemporizadores = useCallback((): void => {
+    if (intervaloRef.current !== null) {
+      clearInterval(intervaloRef.current);
+      intervaloRef.current = null;
+    }
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  }, []);
+
+  /** Suelta todo lo abierto (grafo + permiso pendiente + temporizadores). */
+  const soltarTodo = useCallback((): void => {
+    const control = controlRef.current;
+    controlRef.current = null;
+    try {
+      control?.liberar();
+    } catch {
+      // `liberar` nunca lanza: el micro se suelta igual.
+    }
+    const pendiente = pendienteRef.current;
+    pendienteRef.current = null;
+    liberarMicrofono(pendiente);
+    limpiarTemporizadores();
+  }, [limpiarTemporizadores]);
+
+  // Al desmontar no puede quedar ni la captura ni el permiso abiertos (una
+  // pista viva se ve como indicador de grabación para el usuario).
+  useEffect(() => {
+    montadoRef.current = true;
+    return () => {
+      montadoRef.current = false;
+      abandonadoRef.current = true;
+      soltarTodo();
+    };
+  }, [soltarTodo]);
+
+  /**
+   * Pide el permiso y arranca la captura. Si el permiso llega tarde (tras
+   * cancelar o desmontar) el stream se suelta en el acto, sin grafo.
+   */
+  const pedir = useCallback((): void => {
+    const siguiente = transicionGrabacion(estadoRef.current, 'pedir');
+    if (!siguiente) return;
+    abandonadoRef.current = false;
+    setMensaje(null);
+    setUltimaToma(null);
+    fijarEstado(siguiente);
+    void (async () => {
+      let stream: MediaStream | null = null;
+      try {
+        stream = await pedirMicrofono();
+      } catch (err) {
+        if (!montadoRef.current || abandonadoRef.current) return;
+        const causa = (err as Error & { cause?: unknown })?.cause as
+          | ClaseErrorMicrofono
+          | undefined;
+        const evento =
+          causa === 'denegada' ? 'denegada' : causa === 'no-disponible' ? 'no-disponible' : 'fallo';
+        setMensaje((err as Error)?.message ?? mensajeErrorMicrofono('error'));
+        fijarEstado(transicionGrabacion(estadoRef.current, evento) ?? 'error');
+        return;
+      }
+      if (!montadoRef.current || abandonadoRef.current) {
+        liberarMicrofono(stream);
+        return;
+      }
+      pendienteRef.current = stream;
+      let control: ControlCapturaVoz | null = null;
+      try {
+        control = iniciarCapturaVoz(stream);
+      } catch (err) {
+        pendienteRef.current = null;
+        liberarMicrofono(stream);
+        if (!montadoRef.current || abandonadoRef.current) return;
+        setMensaje((err as Error)?.message ?? mensajeErrorMicrofono('error'));
+        fijarEstado(transicionGrabacion(estadoRef.current, 'fallo') ?? 'error');
+        return;
+      }
+      if (!montadoRef.current || abandonadoRef.current) {
+        pendienteRef.current = null;
+        control.liberar();
+        return;
+      }
+      pendienteRef.current = null;
+      controlRef.current = control;
+      fijarEstado(transicionGrabacion(estadoRef.current, 'permitida') ?? 'grabando');
+      inicioRef.current = Date.now();
+      setSegundos(0);
+      intervaloRef.current = window.setInterval(() => {
+        setSegundos((Date.now() - inicioRef.current) / 1000);
+      }, 250);
+      const bucle = (): void => {
+        rafRef.current = requestAnimationFrame(bucle);
+        const barra = barraRef.current;
+        if (!barra) return;
+        const vivo = controlRef.current;
+        if (!vivo) {
+          barra.style.transform = 'scaleX(0)';
+          return;
+        }
+        barra.style.transform = `scaleX(${vivo.leerNivel().toFixed(3)})`;
+      };
+      rafRef.current = requestAnimationFrame(bucle);
+    })();
+  }, []);
+
+  /**
+   * Detiene, codifica la toma a WAV y la guarda como un medio normal:
+   * OPFS + `addMediaItem` (UN paso del historial, como importar).
+   * El micrófono se suelta ANTES de procesar (la toma ya está en memoria).
+   */
+  const detenerYGuardar = useCallback((): void => {
+    const control = controlRef.current;
+    const siguiente = control ? transicionGrabacion(estadoRef.current, 'detener') : null;
+    if (!control || !siguiente) return;
+    const canales = control.recoger();
+    const ritmo = control.ritmo;
+    controlRef.current = null;
+    pendienteRef.current = null;
+    try {
+      control.liberar();
+    } catch {
+      // Ignorado: la toma ya está en memoria y el micro se soltó igual.
+    }
+    limpiarTemporizadores();
+    setMensaje(null);
+    fijarEstado(siguiente);
+    void (async () => {
+      try {
+        const normales = normalizarCanalesVoz(canales);
+        const total = normales.reduce((max, canal) => Math.max(max, canal?.length ?? 0), 0);
+        const duracion = calcularDuracionVoz(total, ritmo);
+        // Lanza en español cuando la toma está vacía (no entra basura al pool).
+        const blob = codificarWavVoz(normales, ritmo);
+        const id = crearIdVoz();
+        const nombres = useProjectStore.getState().project.mediaPool.map((m) => m.name);
+        const nombre = siguienteNombreVoz(nombres);
+        const archivo = new File([blob], construirNombreArchivoVoz(nombre), { type: WAV_MIME });
+        let opfsPath: string | undefined;
+        try {
+          opfsPath = await saveMediaToOPFS(id, archivo);
+        } catch (err) {
+          console.warn('OPFS storage note:', err);
+        }
+        const url = URL.createObjectURL(archivo);
+        let picos: number[] | undefined;
+        try {
+          const decodificados = await extractWaveformPeaksFromBlob(archivo, VOZ_PICOS_CELDAS);
+          picos =
+            decodificados.length > 0
+              ? decodificados
+              : calcularPicosVoz(normales[0] ?? new Float32Array(0), VOZ_PICOS_CELDAS);
+        } catch {
+          picos = calcularPicosVoz(normales[0] ?? new Float32Array(0), VOZ_PICOS_CELDAS);
+        }
+        let miniatura = '';
+        try {
+          miniatura = createPlaceholderThumbnail(VOZ_BASE_NOMBRE, '#10b981');
+        } catch {
+          miniatura = '';
+        }
+        const item = construirMediaItemVoz({
+          id,
+          nombre,
+          blob: archivo,
+          duracion,
+          url,
+          miniatura,
+          picos,
+          opfsPath,
+        });
+        useProjectStore.getState().addMediaItem(item);
+        if (!montadoRef.current) return;
+        setUltimaToma(nombre);
+        fijarEstado(transicionGrabacion(estadoRef.current, 'guardada') ?? 'lista');
+      } catch (err) {
+        if (!montadoRef.current) return;
+        setMensaje(err instanceof Error ? err.message : mensajeErrorMicrofono('error'));
+        fijarEstado(transicionGrabacion(estadoRef.current, 'fallo') ?? 'error');
+      }
+    })();
+  }, [limpiarTemporizadores]);
+
+  /** Descarta la toma (el micro se suelta, nada entra al pool). */
+  const cancelar = useCallback((): void => {
+    const siguiente = transicionGrabacion(estadoRef.current, 'cancelar');
+    if (!siguiente) return;
+    abandonadoRef.current = true;
+    soltarTodo();
+    setMensaje('Toma descartada.');
+    fijarEstado(siguiente);
+  }, [soltarTodo]);
+
+  /** Vuelve al reposo (cierra el aviso). */
+  const descartar = useCallback((): void => {
+    const siguiente = transicionGrabacion(estadoRef.current, 'descartar');
+    if (!siguiente) return;
+    setMensaje(null);
+    setUltimaToma(null);
+    setSegundos(0);
+    fijarEstado(siguiente);
+  }, []);
+
+  /** Reintenta: vuelve al reposo y pide el permiso de nuevo. */
+  const reintentar = useCallback((): void => {
+    if (!transicionGrabacion(estadoRef.current, 'reintentar')) return;
+    setMensaje(null);
+    setUltimaToma(null);
+    fijarEstado('inactiva');
+    pedir();
+  }, [pedir]);
+
+  const tactil = compacto ? 'min-h-[44px]' : '';
+  const esDenegada = mensaje === VOZ_MENSAJE_DENEGADA;
+
+  // Reposo: solo el disparador (una puerta, como Importar).
+  if (estado === 'inactiva') {
+    return (
+      <div data-testid="control-voz">
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={<Mic size={14} aria-hidden="true" />}
+          onClick={pedir}
+          data-testid="voz-grabar"
+          title={VOZ_ETIQUETA_GRABAR}
+          aria-label={VOZ_ETIQUETA_GRABAR}
+          className={`w-full ${tactil}`}
+        >
+          {VOZ_ETIQUETA_GRABAR}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="control-voz" className="rounded border border-border-subtle bg-raised px-2 py-1.5">
+      {/* Pidiendo: el navegador tiene la palabra (su diálogo de permiso). */}
+      {estado === 'pidiendo' && (
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="shrink-0 animate-spin text-text-2" aria-hidden="true" />
+          <p className="min-w-0 flex-1 text-body-sm text-text-1">
+            Pidiendo acceso al micrófono…
+            <span className="block text-caption text-text-3">
+              Acepta el permiso en el navegador para empezar.
+            </span>
+          </p>
+          <Button variant="ghost" size="sm" onClick={cancelar} data-testid="voz-cancelar" className={tactil}>
+            Cancelar
+          </Button>
+        </div>
+      )}
+
+      {/* Grabando: punto sobrio (sin parpadeo) + tiempo + nivel + acciones. */}
+      {estado === 'grabando' && (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center gap-2">
+            <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-danger" />
+            <p className="min-w-0 flex-1 truncate text-body-sm font-medium text-text-1">
+              Grabando voz en off
+            </p>
+            <span
+              role="timer"
+              aria-label="Tiempo de grabación"
+              data-testid="voz-tiempo"
+              className="shrink-0 font-mono text-timecode tabular text-text-1"
+            >
+              {formatearTiempoVoz(segundos)}
+            </span>
+          </div>
+          <div
+            role="img"
+            aria-label="Nivel de entrada"
+            data-testid="voz-nivel"
+            className="h-1 w-full overflow-hidden rounded bg-app"
+          >
+            <div
+              ref={barraRef}
+              className="h-full w-full origin-left bg-text-2"
+              style={{ transform: 'scaleX(0)' }}
+            />
+          </div>
+          <p className="text-caption leading-snug text-text-3">{VOZ_AVISO_MONITOR}</p>
+          <div className="flex items-center gap-1.5">
+            <Button
+              variant="primary"
+              size="sm"
+              icon={<Square size={13} aria-hidden="true" />}
+              onClick={detenerYGuardar}
+              data-testid="voz-detener"
+              title="Detener y guardar la toma en Medios"
+              aria-label="Detener y guardar la toma en Medios"
+              className={`flex-1 ${tactil}`}
+            >
+              Detener
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={cancelar}
+              data-testid="voz-descartar"
+              title="Descartar la toma sin guardarla"
+              aria-label="Descartar la toma sin guardarla"
+              className={tactil}
+            >
+              Descartar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Procesando: la toma ya está en memoria, el micro ya está suelto. */}
+      {estado === 'procesando' && (
+        <div className="flex items-center gap-2">
+          <Loader2 size={14} className="shrink-0 animate-spin text-text-2" aria-hidden="true" />
+          <p className="min-w-0 flex-1 text-body-sm text-text-1">Guardando la toma…</p>
+        </div>
+      )}
+
+      {/* Lista: la toma ya es un medio más (Badge de éxito, un hecho). */}
+      {estado === 'lista' && (
+        <div className="flex items-center gap-2">
+          <Badge variant="success">Toma guardada</Badge>
+          <p className="min-w-0 flex-1 truncate text-body-sm text-text-1" title={ultimaToma ?? ''}>
+            {ultimaToma ? `«${ultimaToma}» está en Medios.` : 'La toma está en Medios.'}
+          </p>
+          <Button variant="ghost" size="sm" onClick={descartar} data-testid="voz-cerrar" className={tactil}>
+            Cerrar
+          </Button>
+        </div>
+      )}
+
+      {/* Denegada o error: problema + recuperación (nunca solo el susto). */}
+      {(estado === 'denegada' || estado === 'error') && (
+        <div className="flex flex-col gap-1.5">
+          <div role="alert" className="flex items-start gap-2">
+            <AlertCircle size={14} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <p className="min-w-0 flex-1 break-words text-body-sm text-text-1">{mensaje}</p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            {esDenegada && alImportar && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<FolderOpen size={13} aria-hidden="true" />}
+                onClick={alImportar}
+                data-testid="voz-importar"
+                title="Importar un archivo de audio en vez de grabar"
+                aria-label="Importar un archivo de audio en vez de grabar"
+                className={tactil}
+              >
+                Importar audio
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" onClick={reintentar} data-testid="voz-reintentar" className={tactil}>
+              Reintentar
+            </Button>
+            <Button variant="ghost" size="sm" onClick={descartar} data-testid="voz-cerrar" className={tactil}>
+              Cerrar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Cancelada: la toma se descartó, nada entró al pool. */}
+      {estado === 'cancelada' && (
+        <div className="flex items-center gap-2">
+          <p className="min-w-0 flex-1 text-body-sm text-text-2">{mensaje ?? 'Toma descartada.'}</p>
+          <Button variant="secondary" size="sm" onClick={reintentar} data-testid="voz-regrabar" className={tactil}>
+            Grabar de nuevo
+          </Button>
+          <IconButton
+            size="sm"
+            onClick={descartar}
+            data-testid="voz-cerrar"
+            aria-label="Cerrar aviso"
+            title="Cerrar aviso"
+          >
+            <X size={13} />
+          </IconButton>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const MediaBin: React.FC = () => {
   const mediaPool = useProjectStore((s) => s.project.mediaPool);
@@ -434,6 +905,12 @@ export const MediaBin: React.FC = () => {
           onChange={(e) => handleFiles(e.target.files)}
           className="hidden"
         />
+      </div>
+
+      {/* Voz en off: grabar la narración sin salir de la app (una puerta,
+          legible también dentro de la hoja móvil, que monta este mismo bin). */}
+      <div className="shrink-0 border-b border-border-subtle px-3 py-2">
+        <ControlVozEnOff alImportar={() => fileInputRef.current?.click()} />
       </div>
 
       {/* Aviso de error: problema + cierre, sin jerga. */}

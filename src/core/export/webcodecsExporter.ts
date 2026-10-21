@@ -1,5 +1,6 @@
 import { Muxer, ArrayBufferTarget } from 'mp4-muxer';
 import { Clip, ExportConfig, ExportProgress, MediaItem, Track } from '../../types/project';
+import { applySoloToTracks } from '../engine/AudioEngine';
 import { Compositor } from '../engine/Compositor';
 import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
 import { applyDetuneToParam, resolvePlayback } from '../utils/playbackRate';
@@ -15,6 +16,10 @@ import {
   type ResolvedClipAudioChain,
 } from '../utils/audioEffects';
 import { buildCssFilterString, getCanvasFilterSupport } from '../utils/colorFilters';
+import {
+  resolveClipVisualTransform,
+  type ResolvedClipVisual,
+} from '../utils/clipTransform';
 import {
   buildCrossfadeAudioSchedule,
   buildCrossfadeIndex,
@@ -60,6 +65,25 @@ export interface ExportParams {
 export function resolveClipColorFilter(clip: Clip): string {
   if (!getCanvasFilterSupport()) return '';
   return buildCssFilterString(clip.filters);
+}
+
+/**
+ * La transformación visual (rotación / volteo / recorte) que el EXPORT
+ * aplica a un clip.
+ *
+ * El export NO tiene su propio código de dibujado: renderiza cada fotograma
+ * con la MISMA clase `Compositor` del preview (`renderFrame`), así que los
+ * píxeles del MP4 rotan, se voltean y se recortan exactamente como los del
+ * preview.
+ *
+ * Este helper existe para hacer ese contrato explícito y comprobable:
+ * deriva la geometría con la MISMA función de producción que usa el
+ * compositor (`resolveClipVisualTransform`), así que
+ * `resolveExportClipTransform(clip)` y lo que el preview dibuja se comparan
+ * literalmente (ver `src/tests/rotate-flip-crop.test.ts`).
+ */
+export function resolveExportClipTransform(clip: Clip): ResolvedClipVisual {
+  return resolveClipVisualTransform(clip);
 }
 
 /**
@@ -2006,9 +2030,13 @@ async function exportWithWebCodecs(
     // 1. Prepare offline audio if available
     let renderedAudio: AudioBuffer | null = null;
     try {
+      // El solo manda sobre la mezcla (preview ≡ export): las pistas no solo
+      // llegan enmudecidas al render, la MISMA decisión del preview y del WAV
+      // (`applySoloToTracks`; sin solo devuelve el mismo array, sin asignar).
+      const pistasEfectivas = applySoloToTracks(tracks);
       renderedAudio = await renderOfflineAudio(
         duration,
-        tracks,
+        pistasEfectivas,
         clips,
         mediaPool,
         signal,
@@ -2244,7 +2272,10 @@ async function exportWithWebCodecs(
         // Render frame to canvas
         // F9: the colour filters of the clip are applied by the compositor
         // itself (the SAME class the preview uses), so the exported pixels are
-        // filtered exactly like the previewed ones.
+        // filtered exactly like the previewed ones. La rotación, el volteo y
+        // el recorte del clip viajan por el mismo camino (ver
+        // `resolveExportClipTransform`): el MP4 y el preview acuerdan por
+        // construcción.
         compositor.renderFrame({
           time: t,
           canvas,
@@ -2656,9 +2687,11 @@ async function exportWithMediaRecorder(
   // Render offline audio if available and attach to MediaStream
   let offlineAudioCtx: AudioContext | null = null;
   try {
+    // El solo manda también en el respaldo (misma regla que arriba y que el WAV).
+    const pistasEfectivas = applySoloToTracks(tracks);
     const renderedAudio = await renderOfflineAudio(
       duration,
-      tracks,
+      pistasEfectivas,
       clips,
       mediaPool,
       signal,

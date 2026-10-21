@@ -89,6 +89,52 @@ export function resolvePreviewAudioChain(clip: Clip): ResolvedClipAudioChain {
 }
 
 /**
+ * Solo de pista (aislar): cuando alguna pista lo trae, las que NO lo traen se
+ * silencian en la mezcla. No es lo mismo que silenciar: el silencio es por
+ * pista, el solo es monitorización y manda sobre las otras.
+ *
+ * La MISMA decisión vale para el preview y para el export: el preview la
+ * evalúa por frame en `updateAudio`; el export mapea las pistas con
+ * `applySoloToTracks` antes de llamar a `renderOfflineAudio` (que ya filtra
+ * por `isMuted`), así que ambas usan estos mismos predicados.
+ *
+ * Puras y sin asignaciones en caliente: `hasSoloedTrack` se evalúa UNA vez
+ * por frame (no por clip) y `isTrackSilencedBySolo` es aritmética de flags.
+ */
+export function hasSoloedTrack(tracks: Array<{ solo?: boolean }>): boolean {
+  for (let i = 0; i < tracks.length; i++) {
+    if (tracks[i].solo === true) return true;
+  }
+  return false;
+}
+
+/**
+ * `true` cuando la pista debe callar porque OTRA está en solo. Sin ningún
+ * solo no hay nada que aislar: nadie calla por esta regla.
+ */
+export function isTrackSilencedBySolo(
+  track: { solo?: boolean } | undefined | null,
+  anySolo: boolean
+): boolean {
+  if (!anySolo) return false;
+  return track?.solo !== true;
+}
+
+/**
+ * Expresa el solo con el vocabulario que el export ya entiende (`isMuted`):
+ * cuando hay algún solo, las pistas no solo suenan enmudecidas. Sin solo
+ * devuelve el MISMO array (sin asignar: el export sin solo se comporta igual
+ * que hoy). Una pista en solo conserva su propio silencio (el silencio por
+ * pista sigue mandando sobre ella).
+ */
+export function applySoloToTracks<T extends { solo?: boolean; isMuted: boolean }>(
+  tracks: T[]
+): T[] {
+  if (!hasSoloedTrack(tracks)) return tracks;
+  return tracks.map((t) => (t.solo === true ? t : { ...t, isMuted: true }));
+}
+
+/**
  * AudioEngine manages audio playback and mixing across multitrack clips.
  *
  * Volume semantics (kept identical to the exporter):
@@ -98,9 +144,51 @@ export function resolvePreviewAudioChain(clip: Clip): ResolvedClipAudioChain {
  *   because `HTMLMediaElement.volume` is hard capped at 1 by the DOM.
  * - Muting (clip, track or master) is applied on the media element, so it also
  *   works when no Web Audio graph is available.
+ * - Solo (`track.solo`): when any track is soloed, the tracks that are NOT
+ *   soloed are silenced in the mix (see `isTrackSilencedBySolo`).
+ *
+ * The master `AnalyserNode` (see `getAnalyserNode`) taps the routed gains so
+ * the level meter sees what sounds. Routing stays selective (boost, pan, EQ)
+ * unless the meter is visible (`setMeterEnabled`), in which case every active
+ * clip is routed at unity gain.
  */
 export class AudioEngine {
   private masterVolume: number = 1;
+
+  /**
+   * Analizador del master para el medidor de nivel (ver
+   * `src/core/utils/levelMeter.ts` y `getAnalyserNode`). Las ganancias de
+   * clip enrutadas desaguan en él (`ganancia → analyser → destino`): el
+   * analizador deja pasar el audio intacto y solo lo observa. Sin analizador
+   * (contexto sin `createAnalyser`) el enrutado sigue al destino directo,
+   * como hoy.
+   */
+  private masterAnalyser: AnalyserNode | null = null;
+  private masterContext: AudioContext | null = null;
+
+  /**
+   * El medidor necesita ver la mezcla: cuando está visible, TODO clip activo
+   * se enruta por el grafo (a unidad cuando no hay impulso ni efectos).
+   * Apagado por defecto en el motor (el camino histórico no crea grafo para
+   * ≤100 % sin efectos); la UI lo enciende al mostrar el medidor
+   * (`setMeterEnabled`). Los elementos ya enrutados no se pueden
+   * "desenrutar" (el `MediaElementSource` es permanente), pero a unidad son
+   * transparentes.
+   */
+  private meterEnabled = false;
+
+  /**
+   * Enciende o apaga la medición del master. Lo llama la UI al montar el
+   * transporte y al conmutar el medidor (ver `src/core/utils/levelMeter.ts`).
+   */
+  public setMeterEnabled(enabled: boolean): void {
+    this.meterEnabled = enabled === true;
+  }
+
+  /** True cuando el medidor está midiendo (todo clip activo se enruta). */
+  public isMeterEnabled(): boolean {
+    return this.meterEnabled;
+  }
 
   // Zero-thrashing caches
   private elementVolumeCache: WeakMap<HTMLMediaElement, number> = new WeakMap();
@@ -146,13 +234,52 @@ export class AudioEngine {
   }
 
   /**
+   * Analizador del master (perezoso, uno solo por contexto).
+   *
+   * Devuelve el nodo al que deben desaguar las ganancias de clip, o `null`
+   * cuando el contexto no sabe analizar (el llamador sigue al destino
+   * directo: el camino histórico queda intacto). Nunca lanza.
+   */
+  private ensureMasterAnalyser(ctx: AudioContext): AnalyserNode | null {
+    if (this.masterAnalyser && this.masterContext === ctx) return this.masterAnalyser;
+    try {
+      if (typeof ctx.createAnalyser !== 'function') return null;
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      analyser.connect(ctx.destination);
+      this.masterAnalyser = analyser;
+      this.masterContext = ctx;
+      return analyser;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Analizador del master para el medidor de nivel (`src/core/utils/levelMeter.ts`).
+   *
+   * Perezoso y compartido: se crea con la cadena del master y sobrevive a las
+   * pausas (como el enrutado). `null` cuando no hay contexto utilizable (el
+   * medidor pinta silencio, nunca rompe el transporte).
+   */
+  public getAnalyserNode(): AnalyserNode | null {
+    const ctx = masterClock.getAudioContext();
+    if (!ctx || ctx.state === 'closed') return null;
+    if (this.masterAnalyser && this.masterContext === ctx) return this.masterAnalyser;
+    return this.ensureMasterAnalyser(ctx);
+  }
+
+  /**
    * Routes a media element through the Web Audio graph so that volumes above
    * 100% can be honoured (`HTMLMediaElement.volume` is hard capped at 1) and
    * so that the per-clip pan / 3-band EQ can be applied.
    *
    * The chain is `source → eqLow → eqMid → eqHigh → panner → gain →
-   * destination` (a missing node type is skipped when the context does not
-   * support it: no panning/EQ there, exactly like the export degrades).
+   * (analyser →) destination` (a missing node type is skipped when the
+   * context does not support it: no panning/EQ there, exactly like the
+   * export degrades; without `createAnalyser` the gain goes straight to the
+   * destination, exactly like before). The analyser passes the audio through
+   * untouched: what it sees is what sounds.
    * Every parameter after the first build is only rewritten when it really
    * changed (same zero-thrash discipline as the element volume).
    *
@@ -178,6 +305,8 @@ export class AudioEngine {
       // elements are dropped and recreated for the new context.
       this.routedElements = new WeakMap();
       this.routedContext = ctx;
+      this.masterAnalyser = null;
+      this.masterContext = null;
       try {
         mediaSourcePool.clear();
       } catch {
@@ -215,7 +344,7 @@ export class AudioEngine {
           pannerNode = ctx.createStereoPanner();
           pannerNode.pan.value = 0;
         }
-        // source → eqLow → eqMid → eqHigh → panner → gain → destination.
+        // source → eqLow → eqMid → eqHigh → panner → gain → master.
         let head: AudioNode = source;
         if (eqLowNode) {
           head.connect(eqLowNode);
@@ -234,7 +363,15 @@ export class AudioEngine {
           head = pannerNode;
         }
         head.connect(gain);
-        gain.connect(ctx.destination);
+        // El desagüe es el analizador del master cuando el contexto sabe
+        // analizar (el medidor ve lo que suena) y el destino directo cuando
+        // no (camino histórico intacto).
+        const tap = this.ensureMasterAnalyser(ctx);
+        if (tap) {
+          gain.connect(tap);
+        } else {
+          gain.connect(ctx.destination);
+        }
         routed = {
           source,
           gain,
@@ -375,6 +512,11 @@ export class AudioEngine {
       const pannerSupported = getStereoPannerSupport();
       const biquadSupported = getBiquadFilterSupport();
 
+      // Solo: se evalúa UNA vez por frame (no por clip). Cuando alguna pista
+      // está en solo, las demás se silencian en la mezcla (misma decisión que
+      // el export: `isTrackSilencedBySolo` / `applySoloToTracks`).
+      const anySolo = hasSoloedTrack(tracks);
+
       // Process clips with audio
       for (let i = 0; i < clips.length; i++) {
         const clip = clips[i];
@@ -382,6 +524,7 @@ export class AudioEngine {
 
         const track = this.trackMapCache.get(clip.trackId);
         const isTrackMuted = track ? track.isMuted : false;
+        const silencedBySolo = isTrackSilencedBySolo(track, anySolo);
 
         const clipEnd = clip.start + clip.duration;
         const isActive =
@@ -389,7 +532,8 @@ export class AudioEngine {
           time >= clip.start &&
           time < clipEnd &&
           !clip.muted &&
-          !isTrackMuted;
+          !isTrackMuted &&
+          !silencedBySolo;
 
         const isUpcoming = clip.start > time;
         const withinPrewarm = isUpcoming && clip.start <= time + PREWARM_WINDOW;
@@ -530,7 +674,11 @@ export class AudioEngine {
           // through the Web Audio graph so that 200% is really 200% (E-04).
           // A clip with an active pan or EQ is routed too (otherwise the
           // effect would never sound); ducking needs no graph (it only
-          // attenuates, like a fade).
+          // attenuates, like a fade). Con el medidor visible TODO clip activo
+          // se enruta (a unidad cuando no hay impulso ni efectos) para que el
+          // `AnalyserNode` vea la misma mezcla que suena (ver
+          // `setMeterEnabled`); con el medidor oculto el camino es el
+          // histórico, sin grafo para ≤100 % sin efectos.
           const elementTarget = Math.min(Math.max(effectiveVolume, 0), 1);
           const graphTarget = effectiveVolume > 1 ? effectiveVolume : 1;
           const needsGraph =
@@ -538,7 +686,7 @@ export class AudioEngine {
             this.eqScratch.low !== 0 ||
             this.eqScratch.mid !== 0 ||
             this.eqScratch.high !== 0;
-          if (graphTarget > 1 || needsGraph) {
+          if (graphTarget > 1 || needsGraph || this.meterEnabled) {
             this.routeElement(
               mediaEl,
               graphTarget,
@@ -570,7 +718,7 @@ export class AudioEngine {
           }
 
           // Guard muted mutation: update only when changed
-          const targetMuted = clip.muted || isTrackMuted || this.masterVolume === 0;
+          const targetMuted = clip.muted || isTrackMuted || silencedBySolo || this.masterVolume === 0;
           if (mediaEl.muted !== targetMuted) {
             mediaEl.muted = targetMuted;
           }

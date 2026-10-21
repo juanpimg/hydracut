@@ -1178,6 +1178,12 @@ export interface ProjectState {
   reorderTrack: (trackId: string, direction: 'up' | 'down') => void;
   moveTrack: (trackId: string, direction: 'up' | 'down') => void;
   toggleTrackMute: (trackId: string) => void;
+  /**
+   * Aísla una pista (solo): mientras alguna pista lo trae, las demás se
+   * silencian en la mezcla del preview y del export. Deshacible (como
+   * mute/lock/visibility, es una edición).
+   */
+  toggleTrackSolo: (trackId: string) => void;
   toggleTrackLock: (trackId: string) => void;
   toggleTrackVisibility: (trackId: string) => void;
 
@@ -2647,6 +2653,28 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const updatedTracks = state.project.tracks.map((t) =>
         t.id === trackId ? { ...t, isMuted: !t.isMuted } : t
       );
+      const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
+      persistProject(updated);
+      return { project: updated, lastError: null };
+    });
+  },
+
+  toggleTrackSolo: (trackId) => {
+    // S-18: como mute/lock/visibility, el solo es una edición deshacible. Al
+    // quitarlo la clave desaparece (acarreo opcional, como el rol de pista:
+    // una pista sin solo no gana peso muerto).
+    if (!get().project.tracks.some((t) => t.id === trackId)) return;
+    get().pushHistory();
+    set((state) => {
+      const updatedTracks = state.project.tracks.map((t) => {
+        if (t.id !== trackId) return t;
+        if (t.solo === true) {
+          const copy: Track = { ...t };
+          delete copy.solo;
+          return copy;
+        }
+        return { ...t, solo: true };
+      });
       const updated = { ...state.project, tracks: updatedTracks, updatedAt: Date.now() };
       persistProject(updated);
       return { project: updated, lastError: null };

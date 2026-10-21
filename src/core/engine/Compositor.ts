@@ -21,6 +21,19 @@ import {
   staticTransformInto,
   type ResolvedKeyframeTransform,
 } from '../utils/keyframes';
+import {
+  clampCropEdge,
+  isNeutralCrop,
+  resolveClipVisualTransform,
+  resolveCropSourceInto,
+  resolveFittedSizeInto,
+  sanitizeFlip,
+  sanitizeRotation,
+  swapsAxes,
+  type CropSourceRect,
+  type FittedSize,
+  type ResolvedClipVisual,
+} from '../utils/clipTransform';
 
 export interface RenderOptions {
   time: number;
@@ -332,6 +345,21 @@ export function calculateTransition(clip: Clip, time: number, canvasWidth: numbe
   return { alphaMultiplier, offsetX, wipeWidth, overlayColor, overlayOpacity };
 }
 
+/**
+ * La geometría visual de un clip neutral (sin rotación, sin volteo, sin
+ * recorte): congelada y compartida para no asignar nada en el caso común.
+ */
+const NEUTRAL_CLIP_VISUAL: ResolvedClipVisual = Object.freeze({
+  rotation: 0 as const,
+  flipH: false,
+  flipV: false,
+  cropLeft: 0,
+  cropRight: 0,
+  cropTop: 0,
+  cropBottom: 0,
+  neutral: true,
+});
+
 export class Compositor {
   private lastCompositedCanvas: HTMLCanvasElement | OffscreenCanvas | null = null;
   private lastCompositedTime = 0;
@@ -422,6 +450,37 @@ export class Compositor {
    */
   private kfScratch: ResolvedKeyframeTransform = { x: 0, y: 0, scale: 1, opacity: 1 };
 
+  /**
+   * Rotación / volteo / recorte de cada clip, cacheados.
+   *
+   * La geometría visual de un clip SOLO se resuelve cuando cambian sus
+   * valores (`rotation`, `flipH`, `flipV`, `crop`): el camino caliente
+   * (60 fps) es un `Map.get` más aritmética escalar sobre el resultado
+   * cacheado (el mismo patrón que los filtros F9 y los keyframes F8). Un
+   * clip neutral (el caso común) ni siquiera entra en la caché: comparte el
+   * objeto congelado `NEUTRAL_CLIP_VISUAL` sin resolver nada.
+   */
+  private visualCache: Map<
+    string,
+    {
+      rotation: number;
+      flipH: boolean;
+      flipV: boolean;
+      cropTop: number;
+      cropRight: number;
+      cropBottom: number;
+      cropLeft: number;
+      resolved: ResolvedClipVisual;
+    }
+  > = new Map();
+
+  /** Scratch reutilizable de la caja ajustada (ver `resolveFittedSizeInto`). */
+  private boxScratch: FittedSize = { w: 1, h: 1 };
+  /** Scratch reutilizable de la región de origen del recorte. */
+  private cropScratch: CropSourceRect = { sx: 0, sy: 0, sw: 1, sh: 1 };
+  /** Scratch reutilizable del tamaño intrínseco del elemento dibujado. */
+  private intrinsicScratch: FittedSize = { w: 0, h: 0 };
+
   // Dirty-checking state
   private lastRenderedTime = -1;
   private lastRenderedCanvasRef: HTMLCanvasElement | OffscreenCanvas | null = null;
@@ -461,6 +520,7 @@ export class Compositor {
     this.videoKeyCache.clear();
     this.filterCache.clear();
     this.keyframeCache.clear();
+    this.visualCache.clear();
     this.crossfadeCache = createCrossfadeIndexCache();
   }
 
@@ -499,6 +559,63 @@ export class Compositor {
     for (let i = 0; i < clips.length; i++) alive.add(clips[i].id);
     for (const id of this.keyframeCache.keys()) {
       if (!alive.has(id)) this.keyframeCache.delete(id);
+    }
+  }
+
+  /**
+   * La geometría visual (rotación / volteo / recorte) de un clip, cacheada.
+   *
+   * Camino caliente: cero asignaciones. Un clip neutral devuelve el objeto
+   * congelado compartido (ni siquiera se resuelve ni se cachea); un clip
+   * con transformación solo se resuelve cuando cambian sus valores.
+   */
+  private resolveClipVisual(clip: Clip): ResolvedClipVisual {
+    const rotation = sanitizeRotation(clip.rotation);
+    const flipH = sanitizeFlip(clip.flipH);
+    const flipV = sanitizeFlip(clip.flipV);
+    const crop = clip.crop;
+    if (rotation === 0 && !flipH && !flipV && isNeutralCrop(crop)) {
+      return NEUTRAL_CLIP_VISUAL;
+    }
+    const cropTop = clampCropEdge(crop?.top);
+    const cropRight = clampCropEdge(crop?.right);
+    const cropBottom = clampCropEdge(crop?.bottom);
+    const cropLeft = clampCropEdge(crop?.left);
+    const cached = this.visualCache.get(clip.id);
+    if (
+      cached &&
+      cached.rotation === rotation &&
+      cached.flipH === flipH &&
+      cached.flipV === flipV &&
+      cached.cropTop === cropTop &&
+      cached.cropRight === cropRight &&
+      cached.cropBottom === cropBottom &&
+      cached.cropLeft === cropLeft
+    ) {
+      return cached.resolved;
+    }
+    const resolved = resolveClipVisualTransform(clip);
+    this.visualCache.set(clip.id, {
+      rotation,
+      flipH,
+      flipV,
+      cropTop,
+      cropRight,
+      cropBottom,
+      cropLeft,
+      resolved,
+    });
+    return resolved;
+  }
+
+  /**
+   * Drops the cached visuals of the clips that no longer exist.
+   */
+  private pruneVisualCache(clips: Clip[]): void {
+    const alive = new Set<string>();
+    for (let i = 0; i < clips.length; i++) alive.add(clips[i].id);
+    for (const id of this.visualCache.keys()) {
+      if (!alive.has(id)) this.visualCache.delete(id);
     }
   }
 
@@ -703,6 +820,11 @@ export class Compositor {
     // F8: same rule for the cached keyframes.
     if (this.keyframeCache.size > clips.length * 2 + 32) {
       this.pruneKeyframeCache(clips);
+    }
+
+    // Rotación / volteo / recorte: misma regla para la geometría cacheada.
+    if (this.visualCache.size > clips.length * 2 + 32) {
+      this.pruneVisualCache(clips);
     }
 
     // P3: same rule for the cached video pool keys.
@@ -970,6 +1092,173 @@ export class Compositor {
   }
 
   /**
+   * `true` cuando el contexto 2D soporta la API de transformación completa.
+   *
+   * Los contextos falsos de los tests solo implementan un subconjunto: sin
+   * esta sonda, un clip rotado rompería en un navegador antiguo en vez de
+   * degradar al dibujado plano.
+   */
+  private static supportsClipTransform(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
+  ): boolean {
+    const candidate = ctx as unknown as Record<string, unknown>;
+    return (
+      typeof candidate.translate === 'function' &&
+      typeof candidate.rotate === 'function' &&
+      typeof candidate.scale === 'function'
+    );
+  }
+
+  /**
+   * Tamaño intrínseco del elemento dibujado (px de la fuente).
+   *
+   * El recorte vive en fracciones de la fuente, así que se mapea sobre el
+   * tamaño REAL del elemento (no sobre los metadatos): un vídeo 640×360 con
+   * metadatos ausentes se recorta igual. Escribe en `out`, no asigna.
+   * `(0, 0)` cuando el tamaño se desconoce (el llamante degrada al dibujado
+   * de la fuente completa en vez de no dibujar nada).
+   */
+  private intrinsicSizeInto(
+    element: CanvasImageSource,
+    out: FittedSize
+  ): FittedSize {
+    const candidate = element as unknown as Record<string, unknown>;
+    const width =
+      candidate.videoWidth ?? candidate.naturalWidth ?? candidate.width;
+    const height =
+      candidate.videoHeight ?? candidate.naturalHeight ?? candidate.height;
+    out.w =
+      typeof width === 'number' && Number.isFinite(width) && width > 0 ? width : 0;
+    out.h =
+      typeof height === 'number' && Number.isFinite(height) && height > 0
+        ? height
+        : 0;
+    return out;
+  }
+
+  /**
+   * Dibuja UN elemento (vídeo, imagen, fotograma cacheado o miniatura) con
+   * la rotación, el volteo y el recorte del clip.
+   *
+   * - `(x, y, boxW, boxH)` es la caja del clip (axis-aligned, ya con
+   *   posición/escala/rotación ajustada): las capas de temperatura y de
+   *   fundido la reutilizan tal cual, porque la rotación vive DENTRO de
+   *   ella.
+   * - Orden: volteo en el espacio de la fuente, rotación horaria después
+   *   (`translate(centro); rotate(θ); scale(fx, fy)`); con 90°/270° el
+   *   destino local intercambia los ejes para que lo pintado llene
+   *   EXACTAMENTE la caja (ver `swapsAxes`).
+   * - Un clip neutral dibuja EXACTAMENTE como antes (una sola llamada de 5
+   *   argumentos): los proyectos guardados no cambian ni un píxel.
+   * - Emite exactamente UNA llamada `drawImage` (el filtro `ctx.filter`
+   *   vigente la cubre, como antes).
+   */
+  private drawClipImage(
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    element: CanvasImageSource,
+    x: number,
+    y: number,
+    centerX: number,
+    centerY: number,
+    boxW: number,
+    boxH: number,
+    visual: ResolvedClipVisual
+  ): void {
+    if (visual.neutral) {
+      ctx.drawImage(element, x, y, boxW, boxH);
+      return;
+    }
+    const intrinsic = this.intrinsicSizeInto(element, this.intrinsicScratch);
+    const hasSourceSize = intrinsic.w > 0 && intrinsic.h > 0;
+    const cropped =
+      visual.cropLeft > 0 || visual.cropRight > 0 || visual.cropTop > 0 || visual.cropBottom > 0;
+    const transformed =
+      visual.rotation !== 0 || visual.flipH || visual.flipV;
+    if (!transformed) {
+      // Solo recorte: origen recortado, destino en plano.
+      if (hasSourceSize && cropped) {
+        const rect = resolveCropSourceInto(
+          intrinsic.w,
+          intrinsic.h,
+          {
+            top: visual.cropTop,
+            right: visual.cropRight,
+            bottom: visual.cropBottom,
+            left: visual.cropLeft,
+          },
+          this.cropScratch
+        );
+        ctx.drawImage(element, rect.sx, rect.sy, rect.sw, rect.sh, x, y, boxW, boxH);
+        return;
+      }
+      ctx.drawImage(element, x, y, boxW, boxH);
+      return;
+    }
+    if (!Compositor.supportsClipTransform(ctx)) {
+      // Navegador antiguo: degrada al dibujado plano (con recorte si se
+      // puede), nunca rompe el frame.
+      if (hasSourceSize && cropped) {
+        const rect = resolveCropSourceInto(
+          intrinsic.w,
+          intrinsic.h,
+          {
+            top: visual.cropTop,
+            right: visual.cropRight,
+            bottom: visual.cropBottom,
+            left: visual.cropLeft,
+          },
+          this.cropScratch
+        );
+        ctx.drawImage(element, rect.sx, rect.sy, rect.sw, rect.sh, x, y, boxW, boxH);
+        return;
+      }
+      ctx.drawImage(element, x, y, boxW, boxH);
+      return;
+    }
+    // Con 90°/270° el destino local intercambia los ejes: lo pintado llena
+    // exactamente la caja tras la rotación. El save/restore aísla la
+    // transformación: las capas que se pintan después (temperatura, fundido)
+    // usan la caja axis-aligned y no deben heredarla.
+    const localW = swapsAxes(visual.rotation) ? boxH : boxW;
+    const localH = swapsAxes(visual.rotation) ? boxW : boxH;
+    ctx.save();
+    ctx.translate(centerX, centerY);
+    // Sin rotación no se llama a `rotate`: un volteo puro no necesita ni un
+    // radián (y los tests prueban que el camino neutral es mínimo).
+    if (visual.rotation !== 0) {
+      ctx.rotate((visual.rotation * Math.PI) / 180);
+    }
+    ctx.scale(visual.flipH ? -1 : 1, visual.flipV ? -1 : 1);
+    if (hasSourceSize && cropped) {
+      const rect = resolveCropSourceInto(
+        intrinsic.w,
+        intrinsic.h,
+        {
+          top: visual.cropTop,
+          right: visual.cropRight,
+          bottom: visual.cropBottom,
+          left: visual.cropLeft,
+        },
+        this.cropScratch
+      );
+      ctx.drawImage(
+        element,
+        rect.sx,
+        rect.sy,
+        rect.sw,
+        rect.sh,
+        -localW / 2,
+        -localH / 2,
+        localW,
+        localH
+      );
+    } else {
+      ctx.drawImage(element, -localW / 2, -localH / 2, localW, localH);
+    }
+    ctx.restore();
+  }
+
+  /**
    * Draws a media element (video or image) with aspect ratio fit, scale, position, opacity and transitions.
    */
   private drawMediaToCanvas(
@@ -1012,27 +1301,22 @@ export class Compositor {
     const baseAlpha = Math.max(0, Math.min(1, kf.opacity));
     ctx.globalAlpha = baseAlpha * transition.alphaMultiplier * crossfadeAlpha;
 
-    // Calculate aspect ratio fit
-    const srcAspect = sourceWidth / sourceHeight;
-    const canvasAspect = canvasWidth / canvasHeight;
-
-    let drawWidth = canvasWidth;
-    let drawHeight = canvasHeight;
-
-    if (srcAspect > canvasAspect) {
-      // Source is wider than canvas
-      drawWidth = canvasWidth;
-      drawHeight = canvasWidth / srcAspect;
-    } else {
-      // Source is taller than canvas
-      drawHeight = canvasHeight;
-      drawWidth = canvasHeight * srcAspect;
-    }
-
-    // Apply scale
-    const scale = kf.scale;
-    drawWidth *= scale;
-    drawHeight *= scale;
+    // Calculate aspect ratio fit (with the rotation: a 16:9 source rotated
+    // 90° fits like a 9:16 one, so the rotated box still fits the canvas —
+    // the box never grows). The crop does NOT reshape the box: the cropped
+    // region is stretched INTO it (that is what a crop is).
+    const visual = this.resolveClipVisual(clip);
+    const box = resolveFittedSizeInto(
+      canvasWidth,
+      canvasHeight,
+      sourceWidth,
+      sourceHeight,
+      kf.scale,
+      visual.rotation,
+      this.boxScratch
+    );
+    const drawWidth = box.w;
+    const drawHeight = box.h;
 
     // Apply position offset (from center) + transition slide offset
     const centerX = canvasWidth / 2 + kf.x + transition.offsetX;
@@ -1066,7 +1350,7 @@ export class Compositor {
     try {
       if (mediaElement instanceof HTMLVideoElement) {
         if (mediaElement.readyState >= 2) {
-          ctx.drawImage(mediaElement, x, y, drawWidth, drawHeight);
+          this.drawClipImage(ctx, mediaElement, x, y, centerX, centerY, drawWidth, drawHeight, visual);
           mediaSourcePool.storeVideoFrame(clip.id, mediaElement, media?.id, !isPlaying, sourceTime);
           hasDrawn = true;
         } else {
@@ -1081,13 +1365,13 @@ export class Compositor {
               ? mediaSourcePool.getLastFrameForSource(media.id, sourceTime)
               : null);
           if (cachedFrame) {
-            ctx.drawImage(cachedFrame, x, y, drawWidth, drawHeight);
+            this.drawClipImage(ctx, cachedFrame, x, y, centerX, centerY, drawWidth, drawHeight, visual);
             hasDrawn = true;
           } else if (media?.thumbnailUrl) {
             // ONLY on cold start while paused before any video frames have ever been rendered:
             const thumbImg = mediaSourcePool.getImageElement({ ...media, url: media.thumbnailUrl }, 'fallback_' + clip.id);
             if (thumbImg.complete && thumbImg.naturalWidth > 0) {
-              ctx.drawImage(thumbImg, x, y, drawWidth, drawHeight);
+              this.drawClipImage(ctx, thumbImg, x, y, centerX, centerY, drawWidth, drawHeight, visual);
               hasDrawn = true;
             } else if (!thumbImg.complete) {
               thumbImg.onload = () => {
@@ -1103,7 +1387,7 @@ export class Compositor {
         const isDecoded =
           typeof img.complete !== 'boolean' ? true : img.complete && (img.naturalWidth || 0) > 0;
         if (isDecoded) {
-          ctx.drawImage(mediaElement, x, y, drawWidth, drawHeight);
+          this.drawClipImage(ctx, mediaElement, x, y, centerX, centerY, drawWidth, drawHeight, visual);
           hasDrawn = true;
         }
       }

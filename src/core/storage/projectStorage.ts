@@ -6,6 +6,8 @@ import {
   MediaStatus,
   Track,
   Clip,
+  ClipCrop,
+  ClipRotation,
   AspectRatio,
   TrackType,
   OverlapPolicy,
@@ -1961,6 +1963,75 @@ function fadeOrUndefined(value: unknown): AudioFade | undefined {
   return value !== null && typeof value === 'object' ? (value as AudioFade) : undefined;
 }
 
+/**
+ * Sanea el recorte (encuadre) de un clip importado.
+ *
+ * Puro y estricto: el recorte debe ser un objeto de cuatro números finitos en
+ * `[0,1)` cuyas sumas por eje dejen algo visible (`left+right < 1` y
+ * `top+bottom < 1`). Un recorte inválido se DESCARTA (`undefined`), nunca se
+ * recorta a algo que no dibuja nada (ver `normalizeCrop`, que reescala: aquí
+ * no vale, porque un archivo editado a mano con `left+right >= 1` debe perder
+ * el recorte, no quedarse con un encuadre vacío). Un recorte neutral (todo a
+ * cero) tampoco añade clave (acarreo opcional, como los filtros).
+ */
+export function sanitizeImportedCrop(raw: unknown): ClipCrop | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const fuente = raw as Partial<ClipCrop>;
+  const lados: unknown[] = [fuente.top, fuente.right, fuente.bottom, fuente.left];
+  for (const lado of lados) {
+    if (typeof lado !== 'number' || !Number.isFinite(lado) || lado < 0 || lado >= 1) {
+      return undefined;
+    }
+  }
+  const top = fuente.top as number;
+  const right = fuente.right as number;
+  const bottom = fuente.bottom as number;
+  const left = fuente.left as number;
+  if (left + right >= 1 || top + bottom >= 1) return undefined;
+  if (top <= 0 && right <= 0 && bottom <= 0 && left <= 0) return undefined;
+  return { top, right, bottom, left };
+}
+
+/**
+ * Sanea la transformación visual importada de un clip (rotación / volteo /
+ * recorte). Pura y exportada para probarla sin IndexedDB (mismo patrón que
+ * `sanitizeMarkers`).
+ *
+ * - `rotation`: solo 0/90/180/270; presente pero inválida → 0 (el clip no se
+ *   pierde ni rompe el dibujado). Ausente → sin clave (acarreo opcional).
+ * - `flipH`/`flipV`: booleanos estrictos; lo no booleano se descarta.
+ * - `crop`: pasa por `sanitizeImportedCrop` (lo inválido se descarta).
+ */
+export function sanitizeImportedClipVisual(raw: unknown): {
+  rotation?: ClipRotation;
+  flipH?: boolean;
+  flipV?: boolean;
+  crop?: ClipCrop;
+} {
+  if (!raw || typeof raw !== 'object') return {};
+  const fuente = raw as Partial<Clip>;
+  const salida: {
+    rotation?: ClipRotation;
+    flipH?: boolean;
+    flipV?: boolean;
+    crop?: ClipCrop;
+  } = {};
+  if (fuente.rotation !== undefined) {
+    salida.rotation =
+      fuente.rotation === 0 ||
+      fuente.rotation === 90 ||
+      fuente.rotation === 180 ||
+      fuente.rotation === 270
+        ? fuente.rotation
+        : 0;
+  }
+  if (typeof fuente.flipH === 'boolean') salida.flipH = fuente.flipH;
+  if (typeof fuente.flipV === 'boolean') salida.flipV = fuente.flipV;
+  const recorte = sanitizeImportedCrop(fuente.crop);
+  if (recorte) salida.crop = recorte;
+  return salida;
+}
+
 export interface ProjectSanitizeResult {
   project: Project;
   warnings: string[];
@@ -2011,6 +2082,10 @@ export function sanitizeImportedProject(
     // from a hand-edited file means "no role", never a crash — and a track
     // without a role gains no key (optional carry, byte-identical shape).
     const role = normalizeTrackRole(t.role);
+    // El solo viaja con la pista (solo `true` cuenta: cualquier otro valor de
+    // un archivo editado a mano significa "sin solo"). Acarreo opcional como
+    // el rol: sin solo no hay clave nueva.
+    const solo = t.solo === true;
     tracks.push({
       id: t.id,
       name: typeof t.name === 'string' && t.name.length > 0 ? t.name : `Pista ${tracks.length + 1}`,
@@ -2019,6 +2094,7 @@ export function sanitizeImportedProject(
       isLocked: !!t.isLocked,
       isVisible: t.isVisible === undefined ? true : !!t.isVisible,
       ...(role ? { role } : {}),
+      ...(solo ? { solo: true as const } : {}),
     });
   }
 
@@ -2100,6 +2176,11 @@ export function sanitizeImportedProject(
     // clamped, neutral garbage is dropped (no key when the field is absent,
     // so the common shape does not change).
     const audioEffects = normalizeAudioEffects(c.audioEffects);
+    // La transformación visual (rotación / volteo / recorte) viaja con el
+    // clip, saneada por el helper puro: un archivo editado a mano no puede
+    // inyectar un ángulo libre ni un recorte vacío (acarreo opcional: sin
+    // valor no hay clave nueva).
+    const visual = sanitizeImportedClipVisual(c);
     clips.push({
       id: c.id,
       trackId: c.trackId,
@@ -2129,6 +2210,10 @@ export function sanitizeImportedProject(
       ...(audioFades.fadeIn ? { audioFadeIn: audioFades.fadeIn } : {}),
       ...(audioFades.fadeOut ? { audioFadeOut: audioFades.fadeOut } : {}),
       ...(audioEffects ? { audioEffects } : {}),
+      ...(visual.rotation !== undefined ? { rotation: visual.rotation } : {}),
+      ...(visual.flipH !== undefined ? { flipH: visual.flipH } : {}),
+      ...(visual.flipV !== undefined ? { flipV: visual.flipV } : {}),
+      ...(visual.crop ? { crop: visual.crop } : {}),
       text: typeof c.text === 'string' ? c.text : undefined,
       ...(textStyle ? { textStyle } : {}),
       ...(words ? { words } : {}),
@@ -2242,6 +2327,9 @@ export function sanitizeImportedProject(
       const trashTextStyle = sanitizeClipTextStyle(c.textStyle);
       const trashWords = sanitizeClipWords(c.words, duration);
       const trashAudioEffects = normalizeAudioEffects(c.audioEffects);
+      // La papelera se restaura tal cual al proyecto vivo: su transformación
+      // visual pasa por el MISMO saneador que la vía principal.
+      const trashVisual = sanitizeImportedClipVisual(c);
       const rebuiltTrashClip = {
         id: trashClipId,
         trackId: c.trackId,
@@ -2267,6 +2355,10 @@ export function sanitizeImportedProject(
         ...(trashKeyframes ? { keyframes: trashKeyframes } : {}),
         ...(trashTransition ? { transition: trashTransition } : {}),
         ...(trashAudioEffects ? { audioEffects: trashAudioEffects } : {}),
+        ...(trashVisual.rotation !== undefined ? { rotation: trashVisual.rotation } : {}),
+        ...(trashVisual.flipH !== undefined ? { flipH: trashVisual.flipH } : {}),
+        ...(trashVisual.flipV !== undefined ? { flipV: trashVisual.flipV } : {}),
+        ...(trashVisual.crop ? { crop: trashVisual.crop } : {}),
         text: typeof c.text === 'string' ? c.text : undefined,
         ...(trashTextStyle ? { textStyle: trashTextStyle } : {}),
         ...(trashWords ? { words: trashWords } : {}),

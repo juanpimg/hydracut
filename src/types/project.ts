@@ -160,6 +160,35 @@ export interface ClipEqSettings {
 }
 
 /**
+ * Rotación de un clip en grados (sentido horario).
+ *
+ * Solo ángulos rectos: una rotación libre es otra feature y queda fuera.
+ * El clip se dibuja rotado sobre su centro DENTRO de su caja (la caja no
+ * crece) y compone con posición/escala, fundidos y crossfade. `undefined`
+ * significa 0 (sin rotar), por compatibilidad con los proyectos guardados.
+ */
+export type ClipRotation = 0 | 90 | 180 | 270;
+
+/**
+ * Recorte (encuadre) de un clip: fracciones de la fuente (0..1) ELIMINADAS
+ * por cada lado.
+ *
+ * `left`/`right` son lo quitado a cada lado (no lo visible): el compositor
+ * muestra solo esa región de la fuente, estirada a la caja del clip.
+ * `undefined` significa «sin recortar» (la fuente completa).
+ */
+export interface ClipCrop {
+  /** Fracción eliminada por arriba (0..1). */
+  top: number;
+  /** Fracción eliminada por la derecha (0..1). */
+  right: number;
+  /** Fracción eliminada por abajo (0..1). */
+  bottom: number;
+  /** Fracción eliminada por la izquierda (0..1). */
+  left: number;
+}
+
+/**
  * Efectos de audio por clip (pan / EQ / ducking).
  *
  * Todo opcional por compatibilidad: un clip sin `audioEffects` suena
@@ -192,6 +221,38 @@ export interface Clip {
   positionX: number;      // Offset horizontal desde el centro en px
   positionY: number;      // Offset vertical desde el centro en px
   muted: boolean;
+
+  /**
+   * Rotación del clip (0 | 90 | 180 | 270, sentido horario).
+   *
+   * Opcional por compatibilidad: un clip sin rotación se dibuja como hoy.
+   * Se dibuja sobre el centro DENTRO de su caja (ver
+   * `src/core/utils/clipTransform.ts`): el preview y el export comparten el
+   * MISMO `Compositor`, así que ambos acuerdan por construcción. No la
+   * animan los keyframes (solo posición/escala/opacidad) y el trim y el
+   * movimiento la conservan (no tocan este campo).
+   */
+  rotation?: ClipRotation;
+  /**
+   * Volteo horizontal del clip (espejo izquierda/derecha).
+   *
+   * Se aplica en el espacio de la fuente, ANTES de la rotación: `flipH`
+   * siempre espeja la fuente original (ver `clipTransform.ts`).
+   */
+  flipH?: boolean;
+  /**
+   * Volteo vertical del clip (espejo arriba/abajo).
+   *
+   * Igual que `flipH`: primero el volteo, después la rotación.
+   */
+  flipV?: boolean;
+  /**
+   * Recorte (encuadre) del clip: lo eliminado por cada lado de la fuente.
+   *
+   * Opcional por compatibilidad: un clip sin recorte muestra la fuente
+   * completa, como hoy. El trim y el movimiento lo conservan.
+   */
+  crop?: ClipCrop;
 
   /**
    * F8 · Keyframes de animación de la transformación.
@@ -307,6 +368,13 @@ export interface Track {
   isVisible: boolean;
   /** Rol de la pista para el ducking (`undefined` = sin rol). */
   role?: TrackRole;
+  /**
+   * Solo (aislar la pista): cuando alguna pista lo trae, las que NO lo traen
+   * se silencian en la mezcla. No es lo mismo que silenciar: el silencio es
+   * por pista, el solo es monitorización y manda sobre las otras. Opcional
+   * por compatibilidad (`undefined` = sin solo).
+   */
+  solo?: boolean;
 }
 
 /**

@@ -54,17 +54,23 @@ export const EXPORT_PROGRESS_MILESTONE = 25;
  */
 export function describeExportProgress(
   progress: ExportProgress,
-  format: 'mp4' | 'webm' = 'mp4'
+  format: 'mp4' | 'webm' | 'wav' = 'mp4'
 ): string | null {
   switch (progress.state) {
     case 'idle':
       return null;
     case 'rendering': {
+      if (format === 'wav') {
+        const milestone = Math.floor(progress.progress / EXPORT_PROGRESS_MILESTONE) * EXPORT_PROGRESS_MILESTONE;
+        if (milestone <= 0) return 'Exportando audio…';
+        return `Exportando audio: ${milestone} %`;
+      }
       const milestone = Math.floor(progress.progress / EXPORT_PROGRESS_MILESTONE) * EXPORT_PROGRESS_MILESTONE;
       if (milestone <= 0) return 'Exportando vídeo…';
       return `Exportando vídeo: ${milestone} %`;
     }
     case 'muxing':
+      if (format === 'wav') return 'Generando el WAV…';
       return format === 'webm' ? 'Generando el archivo WebM final…' : 'Generando el archivo MP4 final…';
     case 'completed':
     case 'error':
@@ -87,14 +93,14 @@ export function describeExportProgress(
  */
 export interface BuildExportResultMessageInput {
   /** Formato que pidió el usuario en el modal. */
-  requestedFormat: 'mp4' | 'webm';
+  requestedFormat: 'mp4' | 'webm' | 'wav';
   /** `Blob.type` del fichero producido (la verdad sobre su contenido). */
   actualMime: string;
 }
 
 export interface BuildExportResultMessageResult {
   /** Formato real del fichero producido. */
-  actualFormat: 'mp4' | 'webm';
+  actualFormat: 'mp4' | 'webm' | 'wav';
   /** `true` cuando lo pedido y lo producido no coinciden. */
   isFormatMismatch: boolean;
   /** Texto en español para el modal (nunca afirma un formato falso). */
@@ -105,24 +111,30 @@ export function buildExportResultMessage(
   input: BuildExportResultMessageInput
 ): BuildExportResultMessageResult {
   const mime = input.actualMime ?? '';
-  const actualFormat: 'mp4' | 'webm' = mime.includes('mp4')
-    ? 'mp4'
-    : mime.includes('webm')
-      ? 'webm'
-      : input.requestedFormat;
+  const actualFormat: 'mp4' | 'webm' | 'wav' = mime.includes('wav')
+    ? 'wav'
+    : mime.includes('mp4')
+      ? 'mp4'
+      : mime.includes('webm')
+        ? 'webm'
+        : input.requestedFormat;
   const isFormatMismatch = actualFormat !== input.requestedFormat;
   let message: string;
   if (!isFormatMismatch) {
     message =
       actualFormat === 'webm'
         ? 'Tu video WebM ha sido descargado automáticamente.'
-        : 'Tu video MP4 ha sido descargado automáticamente.';
+        : actualFormat === 'wav'
+          ? 'Tu audio WAV ha sido descargado automáticamente.'
+          : 'Tu video MP4 ha sido descargado automáticamente.';
   } else if (input.requestedFormat === 'mp4') {
     message =
       'Has pedido MP4, pero este navegador no puede grabar MP4: ' +
       'se ha descargado un archivo WebM.';
-  } else {
+  } else if (input.requestedFormat === 'webm') {
     message = 'Has pedido WebM, pero se ha descargado un archivo MP4.';
+  } else {
+    message = 'Has pedido WAV, pero se ha descargado otro formato.';
   }
   return { actualFormat, isFormatMismatch, message };
 }
@@ -450,8 +462,11 @@ export const ExportModal: React.FC = () => {
    * - `mp4`: camino acelerado WebCodecs (H.264) con respaldo MediaRecorder.
    * - `webm`: SIEMPRE el grabador de respaldo (MediaRecorder, VP9/VP8), en
    *   tiempo real y sin aceleración GPU (ver el aviso bajo el selector).
+   * - `wav`: solo el audio, sin comprimir (PCM de 16 bits, ver
+   *   `src/core/export/wavExporter.ts`). Sin vídeo: los preajustes, la
+   *   resolución, los fps y la calidad no aplican y se ocultan.
    */
-  const [exportFormat, setExportFormat] = useState<'mp4' | 'webm'>('mp4');
+  const [exportFormat, setExportFormat] = useState<'mp4' | 'webm' | 'wav'>('mp4');
   /**
    * F10: the aspect ratio of the EXPORTED FILE.
    *
@@ -705,6 +720,80 @@ export const ExportModal: React.FC = () => {
   };
 
   const handleStartExport = async () => {
+    abortControllerRef.current = new AbortController();
+
+    // EX-08: a new export releases the object URL of the previous one, so the
+    // previous video does not stay in RAM.
+    revokeDownloadUrl();
+    setExportResult(null);
+
+    // Solo audio (WAV): sin vídeo, sin preajustes; la misma mezcla (volumen
+    // general + solo) que el export de vídeo, codificada a PCM de 16 bits.
+    if (exportFormat === 'wav') {
+      setProgressState({
+        state: 'rendering',
+        progress: 0,
+        currentFrame: 0,
+        totalFrames: 0,
+        etaSeconds: 0,
+      });
+      try {
+        const { exportAudioWav, buildWavFileName } = await import(
+          '../../core/export/wavExporter'
+        );
+        const blob = await exportAudioWav({
+          duration: exportDuration,
+          tracks: project.tracks,
+          clips: exportClips,
+          mediaPool: project.mediaPool,
+          signal: abortControllerRef.current.signal,
+        });
+
+        const url = URL.createObjectURL(blob);
+        downloadUrlRef.current = url;
+        const a = document.createElement('a');
+        a.href = url;
+        const rangeSuffix = range ? `_${formatSeconds(range.start)}-${formatSeconds(range.end)}` : '';
+        a.download = buildWavFileName(project.name, rangeSuffix);
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        setProgressState((prev) => ({
+          ...prev,
+          state: 'completed',
+          progress: 100,
+          etaSeconds: 0,
+          outputBlob: blob,
+          downloadUrl: url,
+        }));
+        setExportResult({ bytes: blob.size, durationSeconds: exportDuration });
+      } catch (err) {
+        const rawMessage = err instanceof Error ? err.message : String(err ?? '');
+        const errorName = (err as { name?: string } | null | undefined)?.name;
+        const isAbort =
+          errorName === 'AbortError' ||
+          errorName === 'TimeoutError' ||
+          /cancelad|canceled|cancelled|abort/i.test(rawMessage);
+        if (isAbort) {
+          setProgressState({
+            state: 'idle',
+            progress: 0,
+            currentFrame: 0,
+            totalFrames: 0,
+            etaSeconds: 0,
+          });
+        } else {
+          setProgressState((prev) => ({
+            ...prev,
+            state: 'error',
+            error: rawMessage || 'Error durante la exportación',
+          }));
+        }
+      }
+      return;
+    }
+
     const config: ExportConfig = {
       aspectRatio: exportAspectRatio,
       width: dims.width,
@@ -819,17 +908,22 @@ export const ExportModal: React.FC = () => {
   };
 
   // Subtítulo factual según la capacidad real (docs/copy.md §1.7).
+  const esAudio = exportFormat === 'wav';
   const capacitySubtitle =
-    exportFormat === 'webm'
-      ? 'WebM se graba en tiempo real: 10 s de proyecto tardan 10 s. Sin GPU.'
-      : !hasWebCodecs
-        ? 'Este navegador no codifica H.264: aunque pidas MP4, el archivo será WebM.'
-        : 'Codifica con WebCodecs y empaqueta en MP4.';
+    exportFormat === 'wav'
+      ? 'WAV sin comprimir (PCM de 16 bits): unos 11 MB por minuto en estéreo.'
+      : exportFormat === 'webm'
+        ? 'WebM se graba en tiempo real: 10 s de proyecto tardan 10 s. Sin GPU.'
+        : !hasWebCodecs
+          ? 'Este navegador no codifica H.264: aunque pidas MP4, el archivo será WebM.'
+          : 'Codifica con WebCodecs y empaqueta en MP4.';
   const showGpuBadge = hasWebCodecs && exportFormat === 'mp4';
 
-  // Tamaño estimado del archivo (bitrate pedido × duración): orientativo,
-  // el real se muestra al terminar.
-  const estimatedBytes = (bitrateMbps * 1_000_000) / 8 * exportDuration;
+  // Tamaño estimado del archivo: bitrate pedido × duración en vídeo;
+  // PCM sin comprimir en audio (orientativo, el real se muestra al terminar).
+  const estimatedBytes = esAudio
+    ? Math.ceil(exportDuration * 48000) * 2 * 2
+    : (bitrateMbps * 1_000_000) / 8 * exportDuration;
 
   return (
     <div
@@ -909,10 +1003,11 @@ export const ExportModal: React.FC = () => {
                   ariaLabel="Formato"
                   name="export-formato"
                   value={exportFormat}
-                  onChange={(v) => setExportFormat(v as 'mp4' | 'webm')}
+                  onChange={(v) => setExportFormat(v as 'mp4' | 'webm' | 'wav')}
                   options={[
                     { value: 'mp4', label: 'MP4' },
                     { value: 'webm', label: 'WebM' },
+                    { value: 'wav', label: 'Audio (WAV)' },
                   ]}
                 />
               </div>
@@ -924,10 +1019,20 @@ export const ExportModal: React.FC = () => {
               <div hidden aria-hidden="true">
                 <button type="button" tabIndex={-1} data-testid="export-format-mp4" aria-pressed={exportFormat === 'mp4'} onClick={() => setExportFormat('mp4')}>MP4</button>
                 <button type="button" tabIndex={-1} data-testid="export-format-webm" aria-pressed={exportFormat === 'webm'} onClick={() => setExportFormat('webm')}>WebM</button>
+                <button type="button" tabIndex={-1} data-testid="export-format-wav" aria-pressed={exportFormat === 'wav'} onClick={() => setExportFormat('wav')}>Audio (WAV)</button>
               </div>
+
+              {/* Solo audio: nota factual (sin preajustes ni vídeo que ajustar). */}
+              {esAudio && (
+                <p className="text-body-sm text-text-2">
+                  Solo el audio de la mezcla (volumen general y solo incluidos), sin comprimir:
+                  ideal para llevarte la voz en off a otro programa.
+                </p>
+              )}
 
               {/* F10: preajustes en dos líneas (etiqueta + especs completa y
                   legible: la espec nunca se recorta con ellipsis) */}
+              {!esAudio && (
               <div>
                 <span className="text-body-sm text-text-2">Preajuste:</span>
                 {/*
@@ -962,8 +1067,11 @@ export const ExportModal: React.FC = () => {
                   })}
                 </div>
               </div>
+              )}
 
-              {/* Resolución: una fila (etiqueta + segmentado) + línea de dimensiones */}
+              {/* Resolución: una fila (etiqueta + segmentado) + línea de dimensiones.
+                  Sin vídeo no hay fotograma que dimensionar: se oculta. */}
+              {!esAudio && (
               <div>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-body-sm text-text-2">Resolución:</span>
@@ -999,8 +1107,11 @@ export const ExportModal: React.FC = () => {
                   </p>
                 )}
               </div>
+              )}
 
-              {/* Fotogramas por segundo: una fila */}
+              {/* Fotogramas por segundo: una fila (sin vídeo no aplica). */}
+              {!esAudio && (
+              <>
               <div className="flex items-center justify-between gap-2">
                 <span className="text-body-sm text-text-2">Fotogramas por segundo:</span>
                 <SegmentedControl
@@ -1045,6 +1156,8 @@ export const ExportModal: React.FC = () => {
                 value={bitrateMbps}
                 onChange={(e) => setBitrateMbps(Number(e.target.value))}
               />
+              </>
+              )}
 
               {/* F10: rango en una fila + marcadores solo al personalizar */}
               <div>
@@ -1125,22 +1238,29 @@ export const ExportModal: React.FC = () => {
                   <span className="text-text-2"><span hidden aria-hidden="true">Duración de exportación:</span>Duración:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{formatearDuracion(exportDuration)}</span>
                 </div>
+                {!esAudio && (
                 <div className="flex justify-between gap-2">
                   <span className="text-text-2"><span hidden aria-hidden="true">Total de fotogramas:</span>Fotogramas:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{Math.round(exportDuration * fps)}</span>
                 </div>
+                )}
                 <div className="flex justify-between gap-2">
                   <span className="text-text-2"><span hidden aria-hidden="true">Clips en el timeline:</span>Clips:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{project.clips.length}</span>
                 </div>
+                {/* Sin vídeo no hay fotograma ni dimensiones que resumir. */}
+                {!esAudio && (
                 <div className="flex justify-between gap-2">
                   <span className="text-text-2">Dimensiones:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{dims.width} × {dims.height}</span>
                 </div>
+                )}
+                {!esAudio && (
                 <div className="flex justify-between gap-2">
                   <span className="text-text-2">Fps:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{fps}</span>
                 </div>
+                )}
                 <div className="flex justify-between gap-2">
                   <span className="text-text-2">Tamaño estimado:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{formatBytes(estimatedBytes)}</span>
@@ -1174,8 +1294,8 @@ export const ExportModal: React.FC = () => {
 
               <div className="flex items-center justify-between gap-2 text-body-sm">
                 <span className="truncate font-medium text-text-1">
-                  {progressState.state === 'rendering' && (exportFormat === 'webm' ? 'Grabando en tiempo real…' : 'Codificando…')}
-                  {progressState.state === 'muxing' && (exportFormat === 'webm' ? 'Generando el WebM…' : 'Generando el MP4…')}
+                  {progressState.state === 'rendering' && (exportFormat === 'wav' ? 'Exportando audio…' : exportFormat === 'webm' ? 'Grabando en tiempo real…' : 'Codificando…')}
+                  {progressState.state === 'muxing' && (exportFormat === 'wav' ? 'Generando el WAV…' : exportFormat === 'webm' ? 'Generando el WebM…' : 'Generando el MP4…')}
                   {progressState.state === 'completed' && (
                     <>
                       Exportación lista

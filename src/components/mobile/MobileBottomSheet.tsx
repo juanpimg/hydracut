@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef } from 'react';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { IconButton } from '../ui/IconButton';
+import { ControlVozEnOff } from '../media/MediaBin';
 import { X } from 'lucide-react';
 
 interface MobileBottomSheetProps {
@@ -161,6 +162,15 @@ export const MobileBottomSheet: React.FC<MobileBottomSheetProps> = ({
 
         {/* Sheet Scrollable Body */}
         <div className="flex-1 overflow-y-auto p-4">
+          {/* Voz en off en la hoja de Audio: su contenido vive en la
+              maquetación móvil (otro fichero), así que la puerta se ofrece
+              aquí, por título canónico (`Medios` la trae vía el bin, que esta
+              misma hoja monta). */}
+          {title === 'Audio' && (
+            <div className="mb-4">
+              <ControlVozEnOff compacto />
+            </div>
+          )}
           {children}
         </div>
       </div>

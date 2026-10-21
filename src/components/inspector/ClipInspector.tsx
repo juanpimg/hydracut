@@ -46,6 +46,16 @@ import {
   audioFadeFrameDuration,
 } from '../../core/utils/audioFades';
 import { evaluateKeyframes } from '../../core/utils/keyframes';
+import {
+  CROP_PRESET_LABELS,
+  CROP_PRESET_ORDER,
+  cropPresetForSource,
+  cropResultAspect,
+  formatCropAspect,
+  matchCropPreset,
+  normalizeCrop,
+  type CropPresetId,
+} from '../../core/utils/clipTransform';
 import { FADE_IN_OPTIONS, FADE_OUT_OPTIONS } from '../../core/utils/transitionOptions';
 import {
   BIQUAD_FILTER_UNSUPPORTED_MESSAGE,
@@ -166,6 +176,40 @@ const EQ_SLIDERS: ReadonlyArray<{
     label: 'Agudos',
     ariaLabel: 'Ecualizador de agudos del clip',
     hint: 'Realza o atenúa los agudos (highshelf a 3200 Hz).',
+  },
+];
+
+/**
+ * Los cuatro bordes del recorte (encuadre) de la sección "Transformación".
+ *
+ * A nivel de módulo (no dentro del componente) para no reasignarlos en cada
+ * render, igual que `COLOR_SLIDERS` y `EQ_SLIDERS`. Cada valor es el
+ * porcentaje ELIMINADO de ese lado de la fuente (0 = se ve todo ese lado).
+ */
+const CROP_SLIDERS: ReadonlyArray<{
+  key: 'top' | 'right' | 'bottom' | 'left';
+  label: string;
+  ariaLabel: string;
+}> = [
+  {
+    key: 'top',
+    label: 'Recorte superior:',
+    ariaLabel: 'Recorte superior del clip',
+  },
+  {
+    key: 'right',
+    label: 'Recorte derecho:',
+    ariaLabel: 'Recorte derecho del clip',
+  },
+  {
+    key: 'bottom',
+    label: 'Recorte inferior:',
+    ariaLabel: 'Recorte inferior del clip',
+  },
+  {
+    key: 'left',
+    label: 'Recorte izquierdo:',
+    ariaLabel: 'Recorte izquierdo del clip',
   },
 ];
 
@@ -636,6 +680,18 @@ export const ClipInspector: React.FC = () => {
   const mediaUnavailable = !isText && (!clipMedia || clipMedia.status === 'missing');
   const mediaBroken = !isText && !mediaUnavailable && clipMedia?.status === 'error';
 
+  // Rotación / volteo / recorte: la fuente da el aspecto para los presets de
+  // encuadre y el aspecto resultante que ve el usuario.
+  const cropSourceWidth = clipMedia?.width ?? 0;
+  const cropSourceHeight = clipMedia?.height ?? 0;
+  const hasCropSource = cropSourceWidth > 0 && cropSourceHeight > 0;
+  const matchedCropPreset: CropPresetId | null = hasCropSource
+    ? matchCropPreset(cropSourceWidth, cropSourceHeight, clip.crop)
+    : 'original';
+  const cropAspectLabel = hasCropSource
+    ? formatCropAspect(cropResultAspect(cropSourceWidth, cropSourceHeight, clip.crop))
+    : '—';
+
   const fontOptions = [
     { label: 'Inter (Sans-serif)', value: 'Inter, sans-serif' },
     { label: 'Montserrat (Display Bold)', value: 'Montserrat, sans-serif' },
@@ -1005,8 +1061,8 @@ export const ClipInspector: React.FC = () => {
       {(isVideoOrImage || isText) && (
         <Section
           titulo="Transformación"
-          alRestablecer={() => updateClip(clip.id, { scale: 1, opacity: 1, positionX: 0, positionY: 0 })}
-          etiquetaRestablecer="Restablecer transformación"
+          alRestablecer={() => updateClip(clip.id, { scale: 1, opacity: 1, positionX: 0, positionY: 0, rotation: 0, flipH: false, flipV: false, crop: undefined })}
+          etiquetaRestablecer="Restablecer la transformación del clip"
         >
 
           {/* F8 · Cuando hay un keyframe seleccionado, estos controles lo
@@ -1100,6 +1156,173 @@ export const ClipInspector: React.FC = () => {
               />
             </div>
           </div>
+
+          {/* Rotación / volteo / recorte (solo vídeo e imagen: el texto no
+              rota; la rotación vive dentro de la caja del clip y compone con
+              la posición y la escala de arriba). */}
+          {isVideoOrImage && (
+            <div className="space-y-2 border-t border-border-subtle pt-2">
+              <p className="text-[10px] leading-snug text-text-3">
+                La rotación, el volteo y el recorte no se animan con keyframes:
+                siempre editan el clip.
+              </p>
+
+              {/* Rotación en ángulos rectos (botones nativos: teclado gratis) */}
+              <div>
+                <span id={`clip-rotation-label-${clip.id}`} className="mb-1 block text-[11px] text-text-2">
+                  Rotación:
+                </span>
+                <div
+                  role="group"
+                  aria-labelledby={`clip-rotation-label-${clip.id}`}
+                  className="grid grid-cols-4 gap-1.5"
+                >
+                  {([0, 90, 180, 270] as const).map((angle) => {
+                    const isActive = (clip.rotation ?? 0) === angle;
+                    return (
+                      <button
+                        key={angle}
+                        type="button"
+                        data-testid={`clip-rotation-${angle}`}
+                        aria-label={`Rotar el clip a ${angle} grados`}
+                        aria-pressed={isActive}
+                        title={`Rotar a ${angle}°`}
+                        onClick={() => updateClip(clip.id, { rotation: angle })}
+                        className={`rounded border py-1 font-mono text-xs transition ${
+                          isActive
+                            ? 'border-accent-fill bg-accent-fill font-bold text-white'
+                            : 'border-border bg-panel text-text-2 hover:bg-raised hover:text-text-1'
+                        }`}
+                      >
+                        {angle}°
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Volteo horizontal / vertical */}
+              <div>
+                <span id={`clip-flip-label-${clip.id}`} className="mb-1 block text-[11px] text-text-2">
+                  Volteo:
+                </span>
+                <div
+                  role="group"
+                  aria-labelledby={`clip-flip-label-${clip.id}`}
+                  className="grid grid-cols-2 gap-1.5"
+                >
+                  <button
+                    type="button"
+                    data-testid="clip-flip-h"
+                    aria-label="Voltear horizontalmente el clip"
+                    aria-pressed={clip.flipH === true}
+                    title="Espejo izquierda/derecha"
+                    onClick={() => updateClip(clip.id, { flipH: !(clip.flipH === true) })}
+                    className={`rounded border py-1 text-xs transition ${
+                      clip.flipH === true
+                        ? 'border-accent-fill bg-accent-fill font-bold text-white'
+                        : 'border-border bg-panel text-text-2 hover:bg-raised hover:text-text-1'
+                    }`}
+                  >
+                    Horizontal
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="clip-flip-v"
+                    aria-label="Voltear verticalmente el clip"
+                    aria-pressed={clip.flipV === true}
+                    title="Espejo arriba/abajo"
+                    onClick={() => updateClip(clip.id, { flipV: !(clip.flipV === true) })}
+                    className={`rounded border py-1 text-xs transition ${
+                      clip.flipV === true
+                        ? 'border-accent-fill bg-accent-fill font-bold text-white'
+                        : 'border-border bg-panel text-text-2 hover:bg-raised hover:text-text-1'
+                    }`}
+                  >
+                    Vertical
+                  </button>
+                </div>
+              </div>
+
+              {/* Recorte (encuadre): presets + bordes + aspecto resultante */}
+              <div data-testid="clip-crop-section" className="space-y-2 rounded border border-border-subtle bg-raised p-2.5">
+                <div>
+                  <label htmlFor={`clip-crop-preset-${clip.id}`} className="mb-1 block text-[11px] text-text-2">
+                    Preajuste de encuadre:
+                  </label>
+                  <select
+                    id={`clip-crop-preset-${clip.id}`}
+                    data-testid="clip-crop-preset"
+                    aria-label="Preajuste de encuadre del clip"
+                    disabled={!hasCropSource}
+                    value={matchedCropPreset ?? 'custom'}
+                    onChange={(e) => {
+                      const preset = e.target.value as CropPresetId;
+                      if (preset === 'original') {
+                        updateClip(clip.id, { crop: undefined });
+                        return;
+                      }
+                      updateClip(clip.id, { crop: cropPresetForSource(cropSourceWidth, cropSourceHeight, preset) });
+                    }}
+                    className="w-full rounded border border-border bg-panel p-1.5 text-xs text-text-1 disabled:opacity-50"
+                  >
+                    {CROP_PRESET_ORDER.map((presetId) => (
+                      <option key={presetId} value={presetId}>
+                        {CROP_PRESET_LABELS[presetId]}
+                      </option>
+                    ))}
+                    {matchedCropPreset === null && <option value="custom">Personalizado</option>}
+                  </select>
+                  {!hasCropSource && (
+                    <p className="mt-1 text-[10px] leading-snug text-text-3">
+                      Sin dimensiones de la fuente no se puede encuadrar.
+                    </p>
+                  )}
+                </div>
+
+                {CROP_SLIDERS.map((slider) => (
+                  <Slider
+                    key={slider.key}
+                    label={slider.label}
+                    value={Math.round((clip.crop?.[slider.key] ?? 0) * 100)}
+                    min={0}
+                    max={50}
+                    step={1}
+                    unit="%"
+                    testid={`clip-crop-${slider.key}`}
+                    ariaLabel={slider.ariaLabel}
+                    disabled={!hasCropSource}
+                    onChange={(v) => {
+                      const next = { top: 0, right: 0, bottom: 0, left: 0, ...(clip.crop ?? {}) };
+                      next[slider.key] = v / 100;
+                      updateClip(clip.id, { crop: normalizeCrop(next) });
+                    }}
+                  />
+                ))}
+
+                <p
+                  role="status"
+                  data-testid="clip-crop-aspect"
+                  className="text-[11px] leading-snug text-text-2"
+                >
+                  Encuadre resultante: <span className="font-mono font-semibold text-text-1">{cropAspectLabel}</span>
+                  {matchedCropPreset === null && ' (personalizado)'}
+                </p>
+
+                {clip.crop && (
+                  <button
+                    type="button"
+                    onClick={() => updateClip(clip.id, { crop: undefined })}
+                    data-testid="clip-crop-reset"
+                    aria-label="Quitar el recorte del clip"
+                    className="w-full rounded border border-border bg-panel py-1.5 text-[11px] font-medium text-text-2 transition hover:text-text-1"
+                  >
+                    Quitar recorte
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
         </Section>
       )}

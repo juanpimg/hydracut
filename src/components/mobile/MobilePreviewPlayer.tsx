@@ -7,13 +7,19 @@ import {
   Maximize2,
   Minimize2,
   Volume2,
-  VolumeX
+  VolumeX,
+  Activity
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { compositor, computeRenderScale } from '../../core/engine/Compositor';
 import { masterClock } from '../../core/engine/MasterClock';
 import { audioEngine } from '../../core/engine/AudioEngine';
 import { readMasterVolume, subscribeMasterVolume, writeMasterVolume } from '../../core/utils/masterVolume';
+import {
+  escribirMedidorVisible,
+  leerMedidorVisible,
+  useMedidorNivel,
+} from '../../core/utils/levelMeter';
 import {
   computeSafeAreaLayout,
   readSafeAreasVisible,
@@ -107,6 +113,45 @@ const MobileTimecodeDisplay: React.FC<{ fps: number; duration: number }> = ({ fp
   );
 };
 
+/**
+ * Medidor de pico del master (paridad con el transporte del escritorio).
+ *
+ * Imperativo (`useMedidorNivel`: rAF + escrituras en `ref`, sin `setState`
+ * por fotograma). La barra se oculta bajo 400 px para no robar sitio al
+ * volumen en pantallas estrechas; el interruptor queda siempre.
+ */
+const MedidorNivelMovil: React.FC = () => {
+  const barraRef = useRef<HTMLDivElement>(null);
+  const recorteRef = useRef<HTMLDivElement>(null);
+  useMedidorNivel(barraRef, recorteRef, () => audioEngine.getAnalyserNode());
+
+  return (
+    <div
+      data-testid="medidor-nivel"
+      role="img"
+      aria-label="Medidor de nivel del master"
+      title="Nivel de salida (el testigo rojo marca recorte)"
+      className="hidden min-[400px]:flex min-h-[44px] items-center gap-1 shrink-0"
+    >
+      <div className="h-3 w-12 overflow-hidden rounded-sm border border-border-subtle bg-app">
+        <div
+          ref={barraRef}
+          aria-hidden="true"
+          className="h-full w-full origin-left bg-accent"
+          style={{ transform: 'scaleX(0)' }}
+        />
+      </div>
+      <div
+        ref={recorteRef}
+        aria-hidden="true"
+        title="Recorte"
+        className="h-1.5 w-1.5 rounded-full bg-danger"
+        style={{ opacity: 0 }}
+      />
+    </div>
+  );
+};
+
 export const MobilePreviewPlayer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -133,6 +178,11 @@ export const MobilePreviewPlayer: React.FC = () => {
    */
   const [masterVolume, setMasterVolume] = useState<number>(() => readMasterVolume());
   const [isMasterMuted, setIsMasterMuted] = useState<boolean>(false);
+  /**
+   * Medidor de nivel (opcional, paridad con el escritorio): `useState` de
+   * clic, nunca por fotograma (el nivel se pinta por `ref`).
+   */
+  const [medidorVisible, setMedidorVisible] = useState<boolean>(() => leerMedidorVisible());
 
   /**
    * Applies the persisted volume on mount and follows live changes from the
@@ -145,6 +195,15 @@ export const MobilePreviewPlayer: React.FC = () => {
     return subscribeMasterVolume((next) => {
       setMasterVolume(next);
     });
+  }, []);
+
+  /**
+   * El motor solo enruta toda la mezcla cuando el medidor está visible
+   * (paridad con el escritorio: con el medidor oculto el camino es el
+   * histórico).
+   */
+  useEffect(() => {
+    audioEngine.setMeterEnabled(leerMedidorVisible());
   }, []);
 
   // Landscape / short viewports (the compact CapCut shell).
@@ -394,6 +453,15 @@ export const MobilePreviewPlayer: React.FC = () => {
       setIsMasterMuted(true);
       audioEngine.setMasterVolume(0);
     }
+  };
+
+  const etiquetaMedidor = medidorVisible ? 'Ocultar medidor de nivel' : 'Mostrar medidor de nivel';
+  const alternarMedidor = () => {
+    setMedidorVisible((visible) => {
+      const siguiente = escribirMedidorVisible(!visible);
+      audioEngine.setMeterEnabled(siguiente);
+      return siguiente;
+    });
   };
 
   const handleFullscreen = () => {
@@ -667,6 +735,20 @@ export const MobilePreviewPlayer: React.FC = () => {
             <span aria-hidden="true" className="shrink-0 w-10 text-right font-mono text-[11px] text-text-2">
               {Math.round((isMasterMuted ? 0 : masterVolume) * 100)}%
             </span>
+            {/* Medidor de pico (opcional): interruptor siempre, barra solo en
+                ancho suficiente (no roba sitio al volumen en estrecho). */}
+            <IconButton
+              size="sm"
+              onClick={alternarMedidor}
+              aria-label={etiquetaMedidor}
+              title={etiquetaMedidor}
+              aria-pressed={medidorVisible}
+              active={medidorVisible}
+              className="min-h-[44px] min-w-[44px] shrink-0"
+            >
+              <Activity size={16} />
+            </IconButton>
+            {medidorVisible && <MedidorNivelMovil />}
           </div>
         </div>
         ) : (
@@ -748,6 +830,20 @@ export const MobilePreviewPlayer: React.FC = () => {
             <span aria-hidden="true" className="shrink-0 w-10 text-right font-mono text-[11px] text-text-2">
               {Math.round((isMasterMuted ? 0 : masterVolume) * 100)}%
             </span>
+            {/* Medidor de pico (opcional): interruptor siempre, barra solo en
+                ancho suficiente (no roba sitio al volumen en estrecho). */}
+            <IconButton
+              size="sm"
+              onClick={alternarMedidor}
+              aria-label={etiquetaMedidor}
+              title={etiquetaMedidor}
+              aria-pressed={medidorVisible}
+              active={medidorVisible}
+              className="min-h-[44px] min-w-[44px] shrink-0"
+            >
+              <Activity size={16} />
+            </IconButton>
+            {medidorVisible && <MedidorNivelMovil />}
           </div>
         </div>
         </>

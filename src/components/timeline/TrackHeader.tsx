@@ -42,6 +42,7 @@ export const NOMBRE_TIPO_PISTA: Record<TrackType, string> = {
 
 export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
   const toggleTrackMute = useProjectStore((s) => s.toggleTrackMute);
+  const toggleTrackSolo = useProjectStore((s) => s.toggleTrackSolo);
   const toggleTrackLock = useProjectStore((s) => s.toggleTrackLock);
   const toggleTrackVisibility = useProjectStore((s) => s.toggleTrackVisibility);
   const removeTrack = useProjectStore((s) => s.removeTrack);
@@ -66,6 +67,19 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
   const tituloVisibilidad = track.isVisible ? 'Ocultar pista' : 'Mostrar pista';
   const tituloSonido = track.isMuted ? 'Activar sonido' : 'Silenciar pista';
   const tituloBloqueo = track.isLocked ? 'Desbloquear pista' : 'Bloquear pista';
+
+  /**
+   * Solo (aislar la pista): no es lo mismo que silenciar. Cuando alguna pista
+   * está en solo, las demás se silencian en la mezcla (preview y export).
+   */
+  const enSolo = track.solo === true;
+  const otraEnSolo = tracks.some((t) => t.id !== track.id && t.solo === true);
+  const silenciadaPorSolo = track.type !== 'text' && !enSolo && otraEnSolo;
+  const tituloSolo = enSolo
+    ? 'Quitar el solo'
+    : silenciadaPorSolo
+      ? 'Solo (esta pista calla por el solo de otra)'
+      : 'Solo (aislar la pista)';
 
   const devolverFoco = () => menuBtnRef.current?.focus();
 
@@ -92,9 +106,9 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
       </div>
 
       {/*
-        Fila 2 · Como mucho 3 micro-controles + el disparador del menú.
-        Por debajo de 400 px solo quedan visibilidad y menú en línea; sonido y
-        bloqueo se mudan al menú para no pintar sobre los carriles.
+        Fila 2 · Micro-controles + el disparador del menú. Por debajo de 400 px
+        solo quedan visibilidad y menú en línea; sonido, solo y bloqueo se
+        mudan al menú para no pintar sobre los carriles.
       */}
       <div className="flex items-center gap-0.5 shrink-0">
         <IconButton
@@ -122,6 +136,26 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
             className={`hidden min-[400px]:inline-flex ${track.isMuted ? 'text-danger' : ''}`}
           >
             {track.isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+          </IconButton>
+        )}
+
+        {/* Solo: el glifo es la «S» de los NLE (como el «-1f» del transporte).
+            Activo persistente (accent-soft) cuando aísla; atenuado cuando calla
+            por el solo de otra pista. */}
+        {track.type !== 'text' && (
+          <IconButton
+            size="sm"
+            aria-label={tituloSolo}
+            aria-pressed={enSolo}
+            title={tituloSolo}
+            active={enSolo}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleTrackSolo(track.id);
+            }}
+            className={`hidden min-[400px]:inline-flex ${silenciadaPorSolo ? 'opacity-50' : ''}`}
+          >
+            <span aria-hidden="true" className="font-mono text-[11px] font-bold">S</span>
           </IconButton>
         )}
 
@@ -181,6 +215,19 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
             }}
           >
             {tituloSonido}
+          </MenuItem>
+        )}
+        {/* Solo: misma mudanza al menú en estrecho (el inline vive ≥ 400 px). */}
+        {track.type !== 'text' && (
+          <MenuItem
+            className="min-[400px]:hidden"
+            data-testid={`track-menu-solo-${track.id}`}
+            onClick={() => {
+              toggleTrackSolo(track.id);
+              devolverFoco();
+            }}
+          >
+            {tituloSolo}
           </MenuItem>
         )}
         <MenuItem

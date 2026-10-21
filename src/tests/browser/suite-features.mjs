@@ -45,6 +45,17 @@
  *   SAFE-AREA-GUIDES-GEOMETRY     toggling the safe-area guides does NOT move
  *                                 or rescale the preview canvas
  *
+ *   AUDIO-SOLO-MUTES-OTHERS       the S button solos the track (aria-pressed,
+ *                                 the other track shows silenced-by-solo) and
+ *                                 the exported audio (WAV and MP4) only carries
+ *                                 the soloed track (RMS per region)
+ *   AUDIO-METER-TOGGLE            the meter appears, toggles with aria-pressed
+ *                                 and does not move the preview canvas
+ *   EXPORT-WAV-FORMAT             "Audio (WAV)" downloads a `*_audio.wav` and
+ *                                 ffprobe reports `pcm_s16le` + project duration
+ *   VISUAL-TRANSFORM-EXPORT       a clip rotated 90° + flipped + cropped paints
+ *                                 the same pixels in preview and exported MP4
+ *
  * Every case reuses the sample media generated ONCE per browser context (the
  * generation takes ~2,4 s) and runs in its own incognito context.
  *
@@ -58,6 +69,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import {
   bootApp,
@@ -77,6 +89,9 @@ import {
   waitForPersistedProject,
   reloadWithRetry,
   readMp4VideoTrackSize,  readMp4MovieDuration,
+  isFfprobeAvailable,
+  isFfmpegAvailable,
+  resolveFfprobePath,
   navCount,
   delay,
   EXPORT_DIALOG_SELECTOR,
@@ -2515,6 +2530,776 @@ async function caseWave({ browser, report, baseUrl }) {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * 8. Los cabos sueltos de la ola (W-K): solo + medidor + WAV + encuadre
+ *
+ *   AUDIO-SOLO-MUTES-OTHERS  el botón S aísla la pista (aria-pressed, la otra
+ *                            pista se muestra callada por el solo) y el audio
+ *                            exportado — WAV y MP4 — solo trae la pista en solo
+ *   AUDIO-METER-TOGGLE       el medidor aparece, conmuta con aria-pressed y no
+ *                            le quita el sitio al visor (el canvas no se mueve)
+ *   EXPORT-WAV-FORMAT        «Audio (WAV)» descarga un `*_audio.wav` y ffprobe
+ *                            dice `pcm_s16le` con la duración del proyecto
+ *   VISUAL-TRANSFORM-EXPORT  un clip rotado 90° + volteado + recortado pinta
+ *                            los mismos píxeles en el preview y en el MP4
+ *
+ * Un solo contexto y tres descargas (WAV sin solo, WAV con solo, MP4 con
+ * solo + encuadre): el MP4 demuestra a la vez los píxeles y que el export de
+ * vídeo honra el solo.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Los 4 checks del escenario (usados cuando una recarga del dev server
+ * aborta el escenario: entonces se reportan como fallos, nunca se omiten en
+ * silencio). Sin ffmpeg/ffprobe el de píxeles no tiene evidencia y se omite
+ * (como hace suite-recent): la lista esperada se recorta igual.
+ */
+const LOOSE_ENDS_EXPECTED = [
+  { id: 'AUDIO-SOLO-MUTES-OTHERS', title: 'El solo aísla la pista en el preview y en el audio exportado' },
+  { id: 'AUDIO-METER-TOGGLE', title: 'El medidor conmuta con aria-pressed sin mover el visor' },
+  { id: 'EXPORT-WAV-FORMAT', title: '«Audio (WAV)» descarga un *_audio.wav en pcm_s16le' },
+  { id: 'VISUAL-TRANSFORM-EXPORT', title: 'Rotación + volteo + recorte: preview y MP4 pintan lo mismo' },
+];
+
+/** Lee un WAV PCM de 16 bits y devuelve su formato + el RMS por tramo. */
+function parseWavPcm(filePath) {
+  const buf = fs.readFileSync(filePath);
+  const text = (o, n) => buf.toString('ascii', o, o + n);
+  if (buf.length < 44 || text(0, 4) !== 'RIFF' || text(8, 4) !== 'WAVE') {
+    return { error: 'no es un RIFF/WAVE' };
+  }
+  let pos = 12;
+  let audioFormat = null;
+  let numChannels = null;
+  let sampleRate = null;
+  let bitsPerSample = null;
+  let dataPos = null;
+  let dataLen = null;
+  while (pos + 8 <= buf.length) {
+    const id = text(pos, 4);
+    const len = buf.readUInt32LE(pos + 4);
+    if (id === 'fmt ') {
+      audioFormat = buf.readUInt16LE(pos + 8);
+      numChannels = buf.readUInt16LE(pos + 10);
+      sampleRate = buf.readUInt32LE(pos + 12);
+      bitsPerSample = buf.readUInt16LE(pos + 22);
+    } else if (id === 'data') {
+      dataPos = pos + 8;
+      dataLen = len;
+    }
+    pos += 8 + len + (len % 2);
+  }
+  if (audioFormat !== 1 || bitsPerSample !== 16 || !sampleRate || !numChannels || dataPos === null) {
+    return { error: `formato inesperado (fmt=${audioFormat}, bits=${bitsPerSample}, canales=${numChannels})` };
+  }
+  const bytesPerFrame = numChannels * 2;
+  const totalFrames = Math.floor(dataLen / bytesPerFrame);
+  const sampleAt = (frame) => buf.readInt16LE(dataPos + frame * bytesPerFrame) / 32768;
+  const rms = (fromSec, toSec) => {
+    const from = Math.max(0, Math.floor(fromSec * sampleRate));
+    const to = Math.min(totalFrames, Math.ceil(toSec * sampleRate));
+    if (to <= from) return null;
+    let sum = 0;
+    for (let i = from; i < to; i++) {
+      const s = sampleAt(i);
+      sum += s * s;
+    }
+    return Math.sqrt(sum / (to - from));
+  };
+  return {
+    audioFormat,
+    numChannels,
+    sampleRate,
+    bitsPerSample,
+    durationSeconds: totalFrames / sampleRate,
+    rms,
+  };
+}
+
+/** `ffprobe -show_streams -of json` (el mismo patrón que suite-recent). */
+function ffprobeStreams(filePath) {
+  const out = execFileSync(
+    'ffprobe',
+    ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', filePath],
+    { encoding: 'utf8', timeout: 30_000 }
+  );
+  return JSON.parse(out);
+}
+
+/** Extrae un fotograma RGB24 crudo a `seconds`, reescalado a `w×h`. */
+function extractRawFrame(filePath, seconds, outPath, w, h) {
+  execFileSync(
+    'ffmpeg',
+    [
+      '-y', '-v', 'error',
+      '-ss', String(seconds),
+      '-i', filePath,
+      '-frames:v', '1',
+      '-f', 'rawvideo', '-pix_fmt', 'rgb24',
+      '-s', `${w}x${h}`,
+      outPath,
+    ],
+    { timeout: 30_000 }
+  );
+}
+
+/** Extrae el audio a PCM mono s16le y devuelve el Buffer. */
+function extractPcm(filePath, outPath) {
+  execFileSync(
+    'ffmpeg',
+    [
+      '-y', '-v', 'error',
+      '-i', filePath,
+      '-vn', '-ac', '1', '-ar', '44100',
+      '-f', 's16le', '-acodec', 'pcm_s16le',
+      outPath,
+    ],
+    { timeout: 60_000 }
+  );
+  return fs.readFileSync(outPath);
+}
+
+/** RMS de muestras s16le en [from, to) (índices de muestra). */
+function rmsOfPcm(buffer, from, to) {
+  const n = Math.max(0, Math.min(Math.floor(buffer.length / 2), to) - Math.max(0, from));
+  if (n <= 0) return null;
+  let sum = 0;
+  for (let i = Math.max(0, from); i < Math.max(0, from) + n; i++) {
+    const s = buffer.readInt16LE(i * 2) / 32768;
+    sum += s * s;
+  }
+  return Math.sqrt(sum / n);
+}
+
+/**
+ * Histograma grueso (16 cubos × 3 canales) de un fotograma RGB24, con la
+ * MISMA receta que `readPreviewPixels`: los píxeles de fondo no cuentan.
+ */
+function frameHistogram(raw, w, h, bg, tol = 6) {
+  let painted = 0;
+  const hist = new Array(48).fill(0);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 3;
+      const r = raw[i];
+      const g = raw[i + 1];
+      const b = raw[i + 2];
+      if (
+        Math.abs(r - bg.r) <= tol &&
+        Math.abs(g - bg.g) <= tol &&
+        Math.abs(b - bg.b) <= tol
+      ) {
+        continue;
+      }
+      painted++;
+      hist[Math.min(15, r >> 4)]++;
+      hist[16 + Math.min(15, g >> 4)]++;
+      hist[32 + Math.min(15, b >> 4)]++;
+    }
+  }
+  return { painted, hist };
+}
+
+async function caseLooseEnds({ browser, report, baseUrl }) {
+  // ffprobe + ffmpeg solo existen donde hay ffmpeg instalado: sin ellos el
+  // check de píxeles no tiene evidencia y se omite (no es un fallo).
+  const canInspect = isFfprobeAvailable() && isFfmpegAvailable();
+  const expected = canInspect
+    ? LOOSE_ENDS_EXPECTED
+    : LOOSE_ENDS_EXPECTED.filter((e) => e.id !== 'VISUAL-TRANSFORM-EXPORT');
+  const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-cut-loose-ends-'));
+  const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-cut-loose-work-'));
+  try {
+    const outcome = await runScenario(async () => {
+      const { context, page } = await bootApp(browser, { width: 1440, height: 900, baseUrl });
+      try {
+        const navBefore = navCount(page);
+        const checks = [];
+        const decide = (id, title, ok, message, details) =>
+          checks.push({ id, title, ok: Boolean(ok), message, details });
+        const cleanDir = () => {
+          for (const name of fs.readdirSync(downloadDir)) {
+            fs.rmSync(path.join(downloadDir, name), { force: true });
+          }
+        };
+        cleanDir();
+        const capture = await setupDownloadCapture(browser, context, downloadDir);
+
+        await generateSampleMedia(page);
+
+        /* --- timeline determinista ---------------------------------- */
+        // Dos clips del mismo timbre en dos pistas de audio (A: 0–2 s en la
+        // primera, B: 2–4 s en la segunda) + un clip de vídeo para el visor.
+        // Sin solo ambas regiones suenan; con solo en A solo suena A.
+        const setup = await safeEvaluate(page, () => {
+          const store = window.__projectStore;
+          if (!store) return { ok: false, reason: 'la app no expone window.__projectStore' };
+          for (const c of [...store.getState().project.clips]) {
+            store.getState().removeClip(c.id);
+          }
+          const pool = store.getState().project.mediaPool;
+          const chime = pool.find((m) => m.type === 'audio');
+          const video = pool.find((m) => m.type === 'video') || pool.find((m) => m.type === 'image');
+          if (!chime) return { ok: false, reason: 'el pool no tiene ningún medio de audio' };
+          if (!video) return { ok: false, reason: 'el pool no tiene ningún medio de vídeo/imagen' };
+          store.getState().addTrack('audio', 'Audio A2');
+          const audioTracks = store.getState().project.tracks.filter((t) => t.type === 'audio');
+          if (audioTracks.length < 2) return { ok: false, reason: 'no se pudo crear la segunda pista de audio' };
+          const videoTrack = store.getState().project.tracks.find((t) => t.type === 'video');
+          if (!videoTrack) return { ok: false, reason: 'no hay pista de vídeo' };
+          const rA = store.getState().addClipFromMedia(chime, audioTracks[0].id, 0);
+          if (!rA.ok) return { ok: false, reason: `no se pudo colocar A: ${rA.reason}` };
+          store.getState().updateClip(rA.clipId, { duration: 2 });
+          const rB = store.getState().addClipFromMedia(chime, audioTracks[1].id, 2);
+          if (!rB.ok) return { ok: false, reason: `no se pudo colocar B: ${rB.reason}` };
+          store.getState().updateClip(rB.clipId, { duration: 2 });
+          const rV = store.getState().addClipFromMedia(video, videoTrack.id, 0);
+          if (!rV.ok) return { ok: false, reason: `no se pudo colocar V: ${rV.reason}` };
+          return {
+            ok: true,
+            trackA: audioTracks[0].id,
+            trackB: audioTracks[1].id,
+            clipA: rA.clipId,
+            clipB: rB.clipId,
+            clipV: rV.clipId,
+            duration: store.getState().project.duration,
+          };
+        });
+
+        if (!setup || !setup.ok) {
+          const msg = `No se pudo preparar el timeline: ${setup ? setup.reason : 'sin respuesta del store'}`;
+          for (const item of expected) decide(item.id, item.title, false, msg);
+          return { reloaded: navCount(page) !== navBefore, checks };
+        }
+
+        /* --- AUDIO-METER-TOGGLE ------------------------------------- */
+        // El medidor está visible POR DEFECTO (`MEDIDOR_VISIBLE_POR_DEFECTO`):
+        // el escenario no asume el estado inicial, lo lee y lo lleva a cada
+        // lado del interruptor.
+        const readMeter = () => safeEvaluate(page, () => {
+          const bar = document.querySelector('[data-testid="medidor-nivel"]');
+          const btn = document.querySelector(
+            'button[aria-label="Mostrar medidor de nivel"], button[aria-label="Ocultar medidor de nivel"]'
+          );
+          const barRect = bar ? bar.getBoundingClientRect() : null;
+          return {
+            barShown: Boolean(
+              bar && barRect && barRect.width > 0 && barRect.height > 0 &&
+              getComputedStyle(bar).display !== 'none'
+            ),
+            pressed: btn ? btn.getAttribute('aria-pressed') : null,
+            label: btn ? (btn.getAttribute('aria-label') || '') : null,
+          };
+        });
+        const readCanvasBox = () => safeEvaluate(page, () => {
+          const canvas = document.querySelector('div.shadow-2xl canvas');
+          if (!canvas) return null;
+          const rect = canvas.getBoundingClientRect();
+          return {
+            x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+            backingWidth: canvas.width, backingHeight: canvas.height,
+          };
+        });
+        const clickMeterToggle = () => safeEvaluate(page, () => {
+          const btn = document.querySelector(
+            'button[aria-label="Mostrar medidor de nivel"], button[aria-label="Ocultar medidor de nivel"]'
+          );
+          if (!btn) return false;
+          btn.click();
+          return true;
+        });
+        const waitMeter = async (shown, timeout = 5000) => {
+          const deadline = Date.now() + timeout;
+          let last = null;
+          while (Date.now() < deadline) {
+            last = await readMeter();
+            if (last && last.barShown === shown) return last;
+            await delay(150);
+          }
+          return last;
+        };
+        const meterInitial = await readMeter();
+        const canvasBefore = await readCanvasBox();
+        // Estado conocido: esconderlo primero (si ya está visible).
+        let hideFirst = true;
+        if (meterInitial && !meterInitial.barShown) {
+          hideFirst = true;
+        } else {
+          hideFirst = await clickMeterToggle();
+          const hidden = await waitMeter(false);
+          hideFirst = Boolean(hideFirst && hidden && hidden.barShown === false);
+        }
+        // Mostrar: aparece con aria-pressed="true".
+        const showClicked = await clickMeterToggle();
+        const meterOn = await waitMeter(true);
+        const canvasWithMeter = await readCanvasBox();
+        // Ocultar: desaparece con aria-pressed="false".
+        const hideClicked = await clickMeterToggle();
+        const meterOff = await waitMeter(false);
+        // El canvas del visor no debe ceder su sitio al medidor: se comparan
+        // muestras con el medidor visible contra muestras con el medidor
+        // oculto (3 de cada lado: el layout se asienta ~2 px entre lecturas)
+        // con la tolerancia de las guías (CSS 2,5 px, respaldo 4 px). Si el
+        // medidor robara sitio, el salto sería de ~66 px (la barra) y
+        // persistente.
+        const sampleBoxes = async () => {
+          const samples = [];
+          for (let i = 0; i < 3; i++) {
+            samples.push(await readCanvasBox());
+            await delay(200);
+          }
+          return samples.filter(Boolean);
+        };
+        // A estas alturas el medidor está oculto (paso anterior): las
+        // muestras "sin medidor" se toman ahora; las "con medidor" son las
+        // dos lecturas de arriba (inicial + con el medidor recién mostrado:
+        // el medidor está visible por defecto, así que ambas lo tienen).
+        const boxesHidden = await sampleBoxes();
+        const boxesShown = [canvasBefore, canvasWithMeter].filter(Boolean);
+        const CSS_TOL = 2.5;
+        const BACKING_TOL = 4;
+        const boxesClose = (a, b) => Boolean(
+          a && b &&
+          Math.abs(a.x - b.x) <= CSS_TOL &&
+          Math.abs(a.y - b.y) <= CSS_TOL &&
+          Math.abs(a.width - b.width) <= CSS_TOL &&
+          Math.abs(a.height - b.height) <= CSS_TOL &&
+          Math.abs(a.backingWidth - b.backingWidth) <= BACKING_TOL &&
+          Math.abs(a.backingHeight - b.backingHeight) <= BACKING_TOL
+        );
+        let canvasSame = boxesShown.length === 2 && boxesHidden.length === 3;
+        if (canvasSame) {
+          for (const a of boxesShown) {
+            for (const b of boxesHidden) {
+              if (!boxesClose(a, b)) {
+                canvasSame = false;
+                break;
+              }
+            }
+            if (!canvasSame) break;
+          }
+        }
+        decide(
+          'AUDIO-METER-TOGGLE',
+          'El medidor aparece, conmuta con aria-pressed y no le quita el sitio al visor',
+          Boolean(
+            canvasBefore && meterInitial &&
+            hideFirst && showClicked &&
+            meterOn && meterOn.barShown === true && meterOn.pressed === 'true' &&
+            canvasSame &&
+            hideClicked && meterOff && meterOff.barShown === false && meterOff.pressed === 'false'
+          ),
+          `estado inicial: visible=${meterInitial?.barShown} (aria-pressed=${meterInitial?.pressed}) | ` +
+          `mostrar: clic=${showClicked}, visible=${meterOn?.barShown} (aria-pressed=${meterOn?.pressed}) | ` +
+          `canvas del visor idéntico con el medidor=${canvasSame} (${JSON.stringify(canvasBefore)} → ${JSON.stringify(canvasWithMeter)}) | ` +
+          `ocultar: clic=${hideClicked}, fuera=${meterOff && !meterOff.barShown} (aria-pressed=${meterOff?.pressed})`,
+          { meterInitial, boxesShown, boxesHidden, meterOn, meterOff }
+        );
+
+        /* --- EXPORT-WAV-FORMAT (WAV #1, sin solo) -------------------- */
+        await openExportModal(page);
+        const wavOption = await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="export-format-wav"]');
+          if (!btn) return null;
+          const label = (btn.textContent || '').trim();
+          btn.click();
+          return { label, pressed: btn.getAttribute('aria-pressed') };
+        });
+        await delay(300);
+        const wavPressed = await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="export-format-wav"]');
+          return btn ? btn.getAttribute('aria-pressed') : null;
+        });
+        await clickButtonByText(page, 'Comenzar Exportación');
+        let wavPlain = null;
+        {
+          const deadline = Date.now() + 60_000;
+          while (Date.now() < deadline && !wavPlain) {
+            wavPlain = await capture.waitForFile({
+              timeoutMs: 1500,
+              match: (n) => n.toLowerCase().endsWith('.wav'),
+              minBytes: 44,
+            });
+            if (wavPlain) break;
+            if (navCount(page) !== navBefore) break;
+            await delay(400);
+          }
+        }
+        let wavFormatOk = false;
+        let wavFormatMsg = '';
+        let wavFormatDetail = { wavOption, wavPressed };
+        let rmsPlainA = null;
+        let rmsPlainB = null;
+        if (!wavPlain) {
+          wavFormatMsg = 'No se descargó ningún .wav en 60 s.';
+        } else {
+          const nameOk = wavPlain.name.toLowerCase().endsWith('_audio.wav');
+          const parsed = parseWavPcm(wavPlain.filePath);
+          if (parsed.error) {
+            wavFormatMsg = `El fichero "${wavPlain.name}" no es un WAV válido: ${parsed.error}.`;
+            wavFormatDetail = { ...wavFormatDetail, file: wavPlain.name, size: wavPlain.size };
+          } else {
+            rmsPlainA = parsed.rms(0, 2);
+            rmsPlainB = parsed.rms(2, 4);
+            if (isFfprobeAvailable()) {
+              let probe = null;
+              let probeError = null;
+              try {
+                probe = ffprobeStreams(wavPlain.filePath);
+              } catch (err) {
+                probeError = err && err.message ? err.message : String(err);
+              }
+              const stream = probe && probe.streams ? probe.streams[0] || {} : {};
+              const fmtDuration = probe && probe.format ? Number(probe.format.duration) : null;
+              const codecOk = stream.codec_name === 'pcm_s16le';
+              const durationOk = typeof fmtDuration === 'number' && Number.isFinite(fmtDuration) &&
+                Math.abs(fmtDuration - setup.duration) <= 0.5;
+              wavFormatOk = Boolean(
+                nameOk && codecOk && durationOk &&
+                wavOption && wavOption.label === 'Audio (WAV)' && wavPressed === 'true'
+              );
+              wavFormatMsg =
+                `opción «${wavOption?.label}» (aria-pressed=${wavPressed}) | ` +
+                `fichero "${wavPlain.name}" (sufijo _audio.wav=${nameOk}, ${wavPlain.size} bytes) | ` +
+                `ffprobe: codec=${stream.codec_name} (pcm_s16le=${codecOk}), ` +
+                `duración=${fmtDuration !== null ? fmtDuration.toFixed(2) : 'n/d'} s (proyecto=${setup.duration} s)`;
+              wavFormatDetail = {
+                ...wavFormatDetail, file: wavPlain.name, size: wavPlain.size,
+                codec: stream.codec_name, fmtDuration, probeError,
+                rmsPlainA, rmsPlainB,
+              };
+            } else {
+              const durationOk = Math.abs(parsed.durationSeconds - setup.duration) <= 0.5;
+              wavFormatOk = Boolean(
+                nameOk && parsed.audioFormat === 1 && parsed.bitsPerSample === 16 && durationOk &&
+                wavOption && wavOption.label === 'Audio (WAV)' && wavPressed === 'true'
+              );
+              wavFormatMsg =
+                `opción «${wavOption?.label}» (aria-pressed=${wavPressed}) | ` +
+                `fichero "${wavPlain.name}" (sufijo _audio.wav=${nameOk}) | ` +
+                `sin ffprobe ("${resolveFfprobePath()}"): cabecera RIFF propia (PCM=${parsed.audioFormat === 1}, ` +
+                `16 bits=${parsed.bitsPerSample === 16}, ${parsed.numChannels} canales a ${parsed.sampleRate} Hz, ` +
+                `duración=${parsed.durationSeconds.toFixed(2)} s, proyecto=${setup.duration} s)`;
+              wavFormatDetail = {
+                ...wavFormatDetail, file: wavPlain.name, size: wavPlain.size,
+                parsed: { ...parsed, rms: undefined }, rmsPlainA, rmsPlainB,
+              };
+            }
+          }
+        }
+        decide(
+          'EXPORT-WAV-FORMAT',
+          '«Audio (WAV)» descarga un *_audio.wav en pcm_s16le con la duración del proyecto',
+          wavFormatOk,
+          wavFormatMsg,
+          wavFormatDetail
+        );
+        try {
+          await closeExportModal(page);
+        } catch {
+          /* el modal puede haberse cerrado solo */
+        }
+
+        /* --- AUDIO-SOLO-MUTES-OTHERS, mitad 1: el solo en la UI ------ */
+        // El botón S cambia su etiqueta al aislar («Solo (aislar la pista)» →
+        // «Quitar el solo»): se localiza por su glifo, no por el prefijo del
+        // aria-label. Solo el botón EN LÍNEA (≥ 400 px) lleva aria-pressed.
+        const soloClicked = await safeEvaluate(page, (trackId) => {
+          const candidates = Array.from(
+            document.querySelectorAll(`[data-testid="track-header-${trackId}"] button`)
+          ).filter((el) => (el.textContent || '').trim() === 'S');
+          const visible = candidates.find((el) => {
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          });
+          if (!visible) return false;
+          visible.click();
+          return true;
+        }, setup.trackA);
+        const readSoloUi = (ids) => safeEvaluate(page, (ids) => {
+          const store = window.__projectStore;
+          if (!store) return null;
+          const tracks = store.getState().project.tracks;
+          const a = tracks.find((t) => t.id === ids.trackA);
+          const b = tracks.find((t) => t.id === ids.trackB);
+          const pick = (trackId) => {
+            const candidates = Array.from(
+              document.querySelectorAll(`[data-testid="track-header-${trackId}"] button`)
+            ).filter((el) => (el.textContent || '').trim() === 'S');
+            return candidates.find((el) => {
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            }) || null;
+          };
+          const btnA = pick(ids.trackA);
+          const btnB = pick(ids.trackB);
+          return {
+            soloA: a ? a.solo === true : null,
+            soloB: b ? b.solo === true : null,
+            pressedA: btnA ? btnA.getAttribute('aria-pressed') : null,
+            etiquetaA: btnA ? (btnA.getAttribute('aria-label') || '') : null,
+            tituloB: btnB ? (btnB.getAttribute('title') || btnB.getAttribute('aria-label') || '') : null,
+          };
+        }, ids);
+        let soloState = null;
+        {
+          const deadline = Date.now() + 8000;
+          while (Date.now() < deadline) {
+            soloState = await readSoloUi({ trackA: setup.trackA, trackB: setup.trackB });
+            if (soloState && soloState.soloA === true && soloState.pressedA === 'true') break;
+            await delay(150);
+          }
+        }
+        const uiSoloOk = Boolean(
+          soloClicked && soloState &&
+          soloState.soloA === true && soloState.soloB !== true &&
+          soloState.pressedA === 'true' && soloState.etiquetaA === 'Quitar el solo' &&
+          typeof soloState.tituloB === 'string' && soloState.tituloB.includes('calla por el solo')
+        );
+
+        /* --- AUDIO-SOLO-MUTES-OTHERS, mitad 2: WAV #2 con solo ------- */
+        cleanDir();
+        await openExportModal(page);
+        await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="export-format-wav"]');
+          if (btn) btn.click();
+        });
+        await delay(300);
+        await clickButtonByText(page, 'Comenzar Exportación');
+        let wavSolo = null;
+        {
+          const deadline = Date.now() + 60_000;
+          while (Date.now() < deadline && !wavSolo) {
+            wavSolo = await capture.waitForFile({
+              timeoutMs: 1500,
+              match: (n) => n.toLowerCase().endsWith('.wav'),
+              minBytes: 44,
+            });
+            if (wavSolo) break;
+            if (navCount(page) !== navBefore) break;
+            await delay(400);
+          }
+        }
+        let wavSoloOk = false;
+        let wavSoloMsg = 'Sin archivo WAV con solo.';
+        let rmsSoloA = null;
+        let rmsSoloB = null;
+        if (wavSolo) {
+          const parsed = parseWavPcm(wavSolo.filePath);
+          if (!parsed.error) {
+            rmsSoloA = parsed.rms(0, 2);
+            rmsSoloB = parsed.rms(2, 4);
+            // Sin solo ambas regiones suenan (referencia honesta del WAV #1);
+            // con solo en A, B debe callar y A seguir sonando.
+            wavSoloOk = Boolean(
+              rmsPlainB !== null && rmsPlainB > 0.01 &&
+              rmsSoloA !== null && rmsSoloA > 0.005 &&
+              rmsSoloB !== null && rmsSoloB < 0.001
+            );
+            wavSoloMsg =
+              `WAV sin solo: RMS(A 0–2 s)=${rmsPlainA !== null ? rmsPlainA.toFixed(4) : 'n/d'}, ` +
+              `RMS(B 2–4 s)=${rmsPlainB !== null ? rmsPlainB.toFixed(4) : 'n/d'} (ambas audibles) | ` +
+              `WAV con solo en A: RMS(A)=${rmsSoloA !== null ? rmsSoloA.toFixed(4) : 'n/d'} (> 0,005), ` +
+              `RMS(B)=${rmsSoloB !== null ? rmsSoloB.toFixed(4) : 'n/d'} (< 0,001: calla)`;
+          } else {
+            wavSoloMsg = `El WAV con solo no es válido: ${parsed.error}.`;
+          }
+        }
+        try {
+          await closeExportModal(page);
+        } catch {
+          /* el modal puede haberse cerrado solo */
+        }
+
+        /* --- VISUAL-TRANSFORM-EXPORT: preview con encuadre ----------- */
+        // El clip de vídeo rota 90° por UI, se voltea por UI y se recorta por
+        // store (los deslizadores de recorte son incómodos por UI).
+        const plainPreview = await (async () => {
+          await seekTo(page, 1);
+          return measureStablePreview(page);
+        })();
+        const transformSet = await safeEvaluate(page, (clipId) => {
+          const rot = document.querySelector('[data-testid="clip-rotation-90"]');
+          const sel = document.querySelector(`[data-clip-id="${clipId}"]`);
+          if (sel) {
+            sel.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          }
+          return { hasRot: Boolean(rot), hasClip: Boolean(sel) };
+        }, setup.clipV);
+        await delay(300);
+        const rotClicked = await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="clip-rotation-90"]');
+          if (!btn || btn.disabled) return false;
+          btn.click();
+          return true;
+        });
+        await delay(200);
+        const flipClicked = await safeEvaluate(page, () => {
+          const btn = document.querySelector('[data-testid="clip-flip-h"]');
+          if (!btn || btn.disabled) return false;
+          btn.click();
+          return true;
+        });
+        await safeEvaluate(page, (clipId) => {
+          window.__projectStore.getState().updateClip(clipId, {
+            crop: { top: 0.1, right: 0.1, bottom: 0.1, left: 0.1 },
+          });
+        }, setup.clipV);
+        let clipVisual = null;
+        for (let i = 0; i < 40; i++) {
+          clipVisual = await safeEvaluate(page, (clipId) => {
+            const store = window.__projectStore;
+            if (!store) return null;
+            const clip = store.getState().project.clips.find((c) => c.id === clipId);
+            return clip
+              ? { rotation: clip.rotation ?? null, flipH: clip.flipH ?? null, crop: clip.crop ?? null }
+              : null;
+          }, setup.clipV);
+          if (clipVisual && clipVisual.rotation === 90 && clipVisual.flipH === true && clipVisual.crop) break;
+          await delay(150);
+        }
+        await seekTo(page, 1);
+        const framedPreview = await measureStablePreview(page);
+        const canvasSize = await safeEvaluate(page, () => {
+          const canvas = document.querySelector('div.shadow-2xl canvas');
+          return canvas ? { w: canvas.width, h: canvas.height } : null;
+        });
+        const changeDistance = histogramDistance(plainPreview && plainPreview.hist, framedPreview && framedPreview.hist);
+        const transformReal = Boolean(
+          plainPreview && framedPreview &&
+          plainPreview.painted >= 500 && framedPreview.painted >= 500 &&
+          changeDistance > 0.05
+        );
+
+        /* --- el MP4 (píxeles + audio con solo) ------------------------ */
+        cleanDir();
+        await openExportModal(page);
+        await clickButtonByText(page, '720p HD', { exact: true });
+        await clickButtonByText(page, '30 FPS', { exact: true });
+        await clickButtonByText(page, 'Comenzar Exportación');
+        let mp4 = null;
+        let modalState = null;
+        {
+          const deadline = Date.now() + 120_000;
+          while (Date.now() < deadline && !mp4) {
+            mp4 = await capture.waitForFile({
+              timeoutMs: 1500,
+              match: (n) => n.toLowerCase().endsWith('.mp4'),
+              minBytes: 1024,
+            });
+            if (mp4) break;
+            if (navCount(page) !== navBefore) break;
+            modalState = await safeEvaluate(page, (sel) => {
+              const modal = document.querySelector(sel);
+              if (!modal) return 'el modal se cerró';
+              return modal.innerText.replace(/\s+/g, ' ').slice(0, 220);
+            }, EXPORT_DIALOG_SELECTOR);
+            await delay(400);
+          }
+        }
+        if (navCount(page) !== navBefore) {
+          return { reloaded: true, checks: [] };
+        }
+
+        // AUDIO-SOLO-MUTES-OTHERS, mitad 3: el MP4 también honra el solo.
+        let mp4AudioOk = false;
+        let mp4AudioMsg = '';
+        let mp4RmsA = null;
+        let mp4RmsB = null;
+        if (!mp4) {
+          mp4AudioMsg = `No se descargó ningún .mp4 en 120 s | último estado del modal: ${modalState || 'n/d'}.`;
+        } else if (!canInspect) {
+          mp4AudioMsg =
+            `MP4 descargado ("${mp4.name}", ${mp4.size} bytes) pero sin ffmpeg no se puede ` +
+            `inspeccionar su audio: la mitad de vídeo del solo se omite (no es un fallo).`;
+          mp4AudioOk = true;
+        } else {
+          const probe = ffprobeStreams(mp4.filePath);
+          const streams = probe.streams || [];
+          const audioStream = streams.find((s) => s.codec_type === 'audio');
+          if (!audioStream) {
+            mp4AudioMsg = `El MP4 no trae pista de audio (streams: ${JSON.stringify(streams.map((s) => s.codec_type))}).`;
+          } else {
+            const pcmPath = path.join(workdir, 'solo.pcm');
+            const pcm = extractPcm(mp4.filePath, pcmPath);
+            // El WAV es estéreo a 48 kHz; el PCM extraído es mono a 44,1 kHz:
+            // las regiones se miden en segundos de cada fichero.
+            mp4RmsA = rmsOfPcm(pcm, 0, Math.floor(44100 * 2));
+            mp4RmsB = rmsOfPcm(pcm, Math.floor(44100 * 2), Math.floor(44100 * 4));
+            mp4AudioOk = Boolean(
+              mp4RmsA !== null && mp4RmsA > 0.005 &&
+              mp4RmsB !== null && mp4RmsB < 0.003
+            );
+            mp4AudioMsg =
+              `pista de audio presente (${audioStream.codec_name}) | ` +
+              `RMS(A 0–2 s)=${mp4RmsA !== null ? mp4RmsA.toFixed(4) : 'n/d'} (> 0,005), ` +
+              `RMS(B 2–4 s)=${mp4RmsB !== null ? mp4RmsB.toFixed(4) : 'n/d'} (< 0,003: calla con el solo)`;
+          }
+        }
+        decide(
+          'AUDIO-SOLO-MUTES-OTHERS',
+          'El solo aísla la pista: la otra calla en la UI y el audio exportado (WAV y MP4) solo trae la pista en solo',
+          Boolean(uiSoloOk && wavSoloOk && mp4AudioOk),
+          `UI: clic en S=${soloClicked}, pista A en solo=${soloState?.soloA} (aria-pressed=${soloState?.pressedA}, etiqueta=«${soloState?.etiquetaA}») | ` +
+          `pista B muestra «${soloState?.tituloB}» | ${wavSoloMsg} | MP4: ${mp4AudioMsg}`,
+          { soloState, rmsPlainA, rmsPlainB, rmsSoloA, rmsSoloB, mp4RmsA, mp4RmsB }
+        );
+
+        // VISUAL-TRANSFORM-EXPORT: el fotograma exportado a t=1 s, reescalado
+        // al tamaño del canvas del preview, pinta lo mismo que el preview.
+        if (canInspect) {
+          let visualOk = false;
+          let visualMsg = '';
+          let visualDetail = { clipVisual, canvasSize, changeDistance };
+          if (!mp4) {
+            visualMsg = `Sin MP4 no hay píxeles que comparar: ${mp4AudioMsg}`;
+          } else if (!transformReal || !canvasSize) {
+            visualMsg =
+              `El encuadre no llegó al preview (rotación por UI=${rotClicked}, volteo por UI=${flipClicked}, ` +
+              `store=${JSON.stringify(clipVisual)}, lienzo=${JSON.stringify(transformSet)}, ` +
+              `distancia preview plano→encuadrado=${changeDistance.toFixed(4)}: debe ser > 0,05).`;
+          } else {
+            const rawPath = path.join(workdir, 'encuadre.raw');
+            extractRawFrame(mp4.filePath, 1, rawPath, canvasSize.w, canvasSize.h);
+            const raw = fs.readFileSync(rawPath);
+            const exported = frameHistogram(raw, canvasSize.w, canvasSize.h, BACKGROUND);
+            const distance = histogramDistance(framedPreview.hist, exported.hist);
+            visualOk = Boolean(
+              exported.painted >= 500 && distance <= 0.2
+            );
+            visualMsg =
+              `clip: rotación=${clipVisual.rotation}, flipH=${clipVisual.flipH}, recorte=${JSON.stringify(clipVisual.crop)} | ` +
+              `píxeles pintados: preview=${framedPreview.painted}, MP4=${exported.painted} | ` +
+              `distancia entre histogramas=${distance.toFixed(4)} (<= 0,2)`;
+            visualDetail = {
+              ...visualDetail, paintedPreview: framedPreview.painted,
+              paintedExport: exported.painted, distance,
+            };
+          }
+          decide(
+            'VISUAL-TRANSFORM-EXPORT',
+            'Un clip rotado 90° + volteado + recortado pinta los mismos píxeles en el preview y en el MP4',
+            visualOk,
+            visualMsg,
+            visualDetail
+          );
+        }
+
+        return { reloaded: navCount(page) !== navBefore, checks };
+      } finally {
+        await context.close();
+      }
+    }, { expected });
+
+    for (const check of outcome.checks) {
+      report.check(check.id, check.title, check.ok, check.message, check.details);
+    }
+  } finally {
+    fs.rmSync(downloadDir, { recursive: true, force: true });
+    fs.rmSync(workdir, { recursive: true, force: true });
+  }
+}
+
 /* ------------------------------------------------------------------ */
 
 export async function run(ctx) {
@@ -2525,4 +3310,5 @@ export async function run(ctx) {
   await caseStorage(ctx);
   await caseMultiSelect(ctx);
   await caseWave(ctx);
+  await caseLooseEnds(ctx);
 }
