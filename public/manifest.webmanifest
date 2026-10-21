@@ -1,0 +1,26 @@
+{
+  "name": "HydraCut Studio — editor de vídeo en tu navegador",
+  "short_name": "HydraCut",
+  "description": "Editor de vídeo multitrack 100 % en tu navegador: tus vídeos no salen de este navegador.",
+  "lang": "es",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "theme_color": "#06b6d4",
+  "background_color": "#0d1117",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

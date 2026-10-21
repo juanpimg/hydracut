@@ -4,7 +4,6 @@ import { Timeline } from '../timeline/Timeline';
 import { MobileBottomBar, MobileSheetType } from './MobileBottomBar';
 import { MobileBottomSheet } from './MobileBottomSheet';
 import { MediaItemCard } from '../media/MediaItemCard';
-import { ClipInspector } from '../inspector/ClipInspector';
 import { WelcomeModal } from '../modals/WelcomeModal';
 import { useProjectStore } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -37,6 +36,22 @@ const MobilePreviewPlayer = lazy(() => import('./MobilePreviewPlayer'));
 const ProjectsModal = lazy(() => import('../modals/ProjectsModal'));
 const ShortcutsModal = lazy(() => import('../modals/ShortcutsModal'));
 const MediaBin = lazy(() => import('../media/MediaBin'));
+
+/**
+ * División del bundle inicial: el inspector del escritorio ya vive en su
+ * propio chunk (`InspectorPanel` lo carga con `React.lazy`) y la vista móvil
+ * lo reutiliza aquí. Sin este `lazy`, la vista móvil arrastraría el
+ * inspector al chunk inicial a través de su importación estática.
+ */
+const ClipInspector = lazy(() => import('../inspector/ClipInspector'));
+
+/**
+ * Ranura del inspector dentro de una hoja: caja estable (misma altura
+ * mínima que el contenido) para que la carga del chunk no mueva la hoja.
+ */
+const ClipInspectorSheetFallback: React.FC = () => (
+  <div aria-hidden="true" className="min-h-[240px] animate-pulse rounded-md bg-raised" />
+);
 
 const MediaBinSheetFallback: React.FC = () => (
   <div aria-hidden="true" className="h-full min-h-[240px]">
@@ -349,7 +364,9 @@ export const MobileCapCutLayout: React.FC = () => {
 
             {selectedClip && selectedClip.type === 'text' && (
               <div className="mt-4 pt-4 border-t border-border-subtle">
-                <ClipInspector />
+                <Suspense fallback={<ClipInspectorSheetFallback />}>
+                  <ClipInspector />
+                </Suspense>
               </div>
             )}
           </div>
@@ -359,7 +376,9 @@ export const MobileCapCutLayout: React.FC = () => {
             per-clip mute, text properties…) was unreachable on mobile. */}
         {activeSheet === 'inspector' && (
           <div className="-mx-4 -my-4 h-full">
-            <ClipInspector />
+            <Suspense fallback={<ClipInspectorSheetFallback />}>
+              <ClipInspector />
+            </Suspense>
           </div>
         )}
 
@@ -656,3 +675,11 @@ export const MobileCapCutLayout: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * División del bundle inicial: el escritorio nunca monta esta vista, así que
+ * `MainLayout` la carga con `React.lazy`. La exportación por defecto existe
+ * solo para ese `lazy` (los tests siguen usando la nombrada y las constantes
+ * de paridad móvil).
+ */
+export default MobileCapCutLayout;

@@ -2232,3 +2232,11 @@ export const ClipInspector: React.FC = () => {
     </div>
   );
 };
+
+/**
+ * División del bundle inicial: el inspector solo se necesita con un clip
+ * seleccionado, así que `InspectorPanel` (y la vista móvil) lo cargan con
+ * `React.lazy`. La exportación por defecto existe solo para ese `lazy` (el
+ * resto del código sigue usando la nombrada).
+ */
+export default ClipInspector;

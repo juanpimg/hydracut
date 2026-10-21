@@ -6,7 +6,6 @@ import { PreviewPlayer } from '../player/PreviewPlayer';
 import { PlayerControls } from '../player/PlayerControls';
 import { Timeline } from '../timeline/Timeline';
 import { WelcomeModal } from '../modals/WelcomeModal';
-import { MobileCapCutLayout } from '../mobile/MobileCapCutLayout';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { useProjectStore, resolveDeleteKind } from '../../store/useProjectStore';
 import { useUIStore } from '../../store/useUIStore';
@@ -35,6 +34,26 @@ const ExportModal = lazy(() => import('../export/ExportModal'));
  */
 const ProjectsModal = lazy(() => import('../modals/ProjectsModal'));
 const ShortcutsModal = lazy(() => import('../modals/ShortcutsModal'));
+
+/**
+ * División del bundle inicial: la vista móvil (y todo lo que solo ella
+ * alcanza: `MobileHeader`, `MobileBottomBar`, `MobileBottomSheet`,
+ * `MediaBin`, `MediaItemCard`) no la paga el escritorio. Vive en su propio
+ * chunk y solo se descarga en viewports estrechos.
+ */
+const MobileCapCutLayout = lazy(() => import('../mobile/MobileCapCutLayout'));
+
+/**
+ * Ranura de la vista móvil: ocupa todo el viewport con el fondo de la app
+ * para que la carga del chunk nunca deje un flash blanco ni mueva nada.
+ */
+const MobileLayoutFallback: React.FC = () => (
+  <div
+    aria-hidden="true"
+    className="flex flex-col h-screen w-screen overflow-hidden bg-app"
+    style={{ height: '100dvh' }}
+  />
+);
 
 /**
  * F7: the clipboard shortcut of a keyboard event.
@@ -446,7 +465,9 @@ export const MainLayout: React.FC = () => {
   if (isMobile) {
     return (
       <>
-        <MobileCapCutLayout />
+        <Suspense fallback={<MobileLayoutFallback />}>
+          <MobileCapCutLayout />
+        </Suspense>
         {/* F7: the refusals of the store are visible in the mobile layout too. */}
         <StoreErrorBanner />
       </>
