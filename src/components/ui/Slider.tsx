@@ -30,6 +30,12 @@ export interface SliderProps {
   ariaLabel?: string;
   /** Consejo nativo (`title`) del deslizador. */
   title?: string;
+  /**
+   * Oculta la etiqueta visible bajo `lg` (1024 px): el transporte de
+   * escritorio no da para etiqueta + deslizador + campo en el ancho mínimo,
+   * pero el control y su nombre accesible (`ariaLabel`) se conservan.
+   */
+  labelHiddenBelowLg?: boolean;
 }
 
 /** Limita el valor al rango [min, max]. */
@@ -56,6 +62,7 @@ export function Slider({
   testid,
   ariaLabel,
   title,
+  labelHiddenBelowLg = false,
 }: SliderProps) {
   // El campo muestra texto libre mientras se edita; solo se confirma al salir.
   const [texto, setTexto] = useState<string | null>(null);
@@ -79,7 +86,7 @@ export function Slider({
     <div className="flex items-center gap-2">
       <label
         htmlFor={idCampo}
-        className="flex-1 truncate text-body-sm text-text-2 select-none"
+        className={`flex-1 truncate text-body-sm text-text-2 select-none ${labelHiddenBelowLg ? 'hidden lg:block' : ''}`}
       >
         {label}
       </label>

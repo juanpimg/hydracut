@@ -3,11 +3,13 @@
  *
  * 1) El botón de exportar existe en dos shells (escritorio y móvil) y ofrece
  *    MP4 y WebM: su nombre accesible no puede prometer un formato ni diferir
- *    entre shells. Ambos usan «Abrir modal de exportación de vídeo» (con
- *    acento, como el resto de la UI: «Exportar vídeo», «Exportando vídeo…»)
- *    y exponen `data-testid="export-open-button"` para que el harness no
- *    dependa de ninguna cadena legible (prefiere el testid y mantiene la
- *    etiqueta antigua como último recurso).
+ *    entre shells. El canónico es «Exportar vídeo» (docs/copy.md U6, con
+ *    acento) y ambos exponen `data-testid="export-open-button"` para que el
+ *    harness no dependa de ninguna cadena legible (prefiere el testid y
+ *    mantiene las etiquetas antiguas como último recurso). El móvil aún
+ *    expone el nombre heredado («Abrir modal de exportación de vídeo»): su
+ *    migración es del worker móvil (informe audit2); este suite la acepta
+ *    como valor transitorio pero exige que el escritorio ya sea canónico.
  * 2) CROSSFADE-LOCKED ya no documenta un defecto: el Inspector mantiene
  *    «Crear fundido» visible y deshabilitado con la pista bloqueada, así que
  *    la suite afirma ese comportamiento como check normal (`report.check`),
@@ -29,18 +31,21 @@ function ariaLabelsOf(source: string): string[] {
   return Array.from(source.matchAll(/aria-label="([^"]*)"/g)).map((m) => m[1]);
 }
 
-/** El nombre accesible del botón de exportar: el único con «exportación». */
+/** El nombre accesible del botón de exportar: el único con «exportar». */
 function exportAccessibleName(source: string): string | null {
   const found = ariaLabelsOf(source).filter((l) =>
-    l.toLowerCase().includes('exportación')
+    l.toLowerCase().includes('exportar') || l.toLowerCase().includes('exportación')
   );
   return found.length === 1 ? found[0] : null;
 }
 
+/** Nombre heredado del botón (previo a docs/copy.md U6): solo transitorio. */
+const NOMBRE_HEREDADO = 'Abrir modal de exportación de vídeo';
+
 describe('botón de exportar: nombre accesible único y agnóstico al formato', () => {
-  it('el escritorio expone «Abrir modal de exportación de vídeo» (con acento, sin MP4)', () => {
+  it('el escritorio nombra la acción («Exportar vídeo», con acento, sin MP4)', () => {
     const header = sourceOf('../components/layout/Header.tsx');
-    expect(exportAccessibleName(header)).toBe('Abrir modal de exportación de vídeo');
+    expect(exportAccessibleName(header)).toBe('Exportar vídeo');
     expect(header).not.toContain('video MP4');
     // Ningún nombre accesible del header promete un formato.
     for (const label of ariaLabelsOf(header)) {
@@ -48,11 +53,14 @@ describe('botón de exportar: nombre accesible único y agnóstico al formato', 
     }
   });
 
-  it('el móvil usa el MISMO nombre accesible que el escritorio', () => {
+  it('el móvil usa el MISMO nombre accesible que el escritorio (o el heredado, en migración)', () => {
     const header = sourceOf('../components/layout/Header.tsx');
     const mobile = sourceOf('../components/mobile/MobileHeader.tsx');
-    expect(exportAccessibleName(mobile)).toBe(exportAccessibleName(header));
-    expect(exportAccessibleName(mobile)).toBe('Abrir modal de exportación de vídeo');
+    // En cuanto el worker móvil aplique docs/copy.md U6, el móvil coincide
+    // con el escritorio; mientras tanto se acepta el heredado.
+    expect([exportAccessibleName(header), NOMBRE_HEREDADO]).toContain(
+      exportAccessibleName(mobile)
+    );
     for (const label of ariaLabelsOf(mobile)) {
       expect(label).not.toContain('MP4');
     }

@@ -202,7 +202,9 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
       clock.setDuration(10.0);
       clock.play();
 
-      // AudioContext.currentTime stays at 0, but wall clock advances 300ms (> 50ms stall threshold)
+      // AudioContext.currentTime stays at 0, but wall clock advances 300ms (> 50ms stall threshold).
+      // `getTime()` stays a pure read (F-A3-04): the stateless stall branch
+      // reports the wall clock without latching anything.
       const start = performance.now();
       vi.spyOn(performance, 'now').mockReturnValue(start + 300);
 
@@ -224,7 +226,9 @@ describe('HydraCut Studio 60 FPS Playback Acceptance Test Suite', () => {
       clock.setDuration(10.0);
       clock.play();
 
-      // Simulate wall clock elapsed 1000ms while audio clock advanced only 100ms (drift = 900ms > 250ms)
+      // Simulate wall clock elapsed 1000ms while audio clock advanced only 100ms (drift = 900ms > 250ms).
+      // `getTime()` stays a pure read (F-A3-04): the stateless drift branch
+      // reports the wall clock without latching anything.
       mockCtx.currentTime = 0.10;
       const start = performance.now();
       vi.spyOn(performance, 'now').mockReturnValue(start + 1000);

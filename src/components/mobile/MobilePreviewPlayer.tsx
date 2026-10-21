@@ -3,7 +3,6 @@ import {
   Play,
   Pause,
   SkipBack,
-  Scissors,
   Maximize2,
   Minimize2,
   Volume2,
@@ -17,9 +16,7 @@ import { readMasterVolume, subscribeMasterVolume, writeMasterVolume } from '../.
 import { mediaSourcePool } from '../../core/engine/MediaSourcePool';
 import { formatTimecode } from '../../core/utils/time';
 import { useIsCompactHeight } from '../../hooks/useIsMobile';
-import { canSplitAtTime } from '../timeline/TimelineToolbar';
 import { IconButton } from '../ui/IconButton';
-import { Button } from '../ui/Button';
 
 /**
  * Mobile/desktop parity helpers (pure logic, unit-tested in
@@ -108,7 +105,6 @@ export const MobilePreviewPlayer: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
   /** Scale applied to the project space to fill the backing store (KI-02). */
   const renderScaleRef = useRef<number>(1);
-  const clipsRef = useRef(useProjectStore.getState().project.clips);
 
   const duration = useProjectStore((s) => s.project.duration);
   const aspectRatio = useProjectStore((s) => s.project.aspectRatio);
@@ -118,8 +114,6 @@ export const MobilePreviewPlayer: React.FC = () => {
   const mediaPool = useProjectStore((s) => s.project.mediaPool);
   const isPlaying = useProjectStore((s) => s.isPlaying);
   const fps = useProjectStore((s) => s.project.fps);
-  const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
-  const [canSplit, setCanSplit] = useState(false);
   const [aPantallaCompleta, setAPantallaCompleta] = useState(false);
 
   /**
@@ -148,8 +142,6 @@ export const MobilePreviewPlayer: React.FC = () => {
 
   // Landscape / short viewports (the compact CapCut shell).
   const isCompact = useIsCompactHeight();
-
-  clipsRef.current = clips;
 
   useEffect(() => {
     masterClock.setDuration(duration);
@@ -332,34 +324,10 @@ export const MobilePreviewPlayer: React.FC = () => {
   }, [resolution.width, resolution.height, renderCurrentFrame]);
 
   /**
-   * UI-27: "Dividir" must not be a silent no-op.
-   *
-   * `splitAtPlayhead()` does nothing when the playhead is outside every
-   * clip, so the button is disabled while there is nothing to split.
+   * H1 · «Dividir» vive solo en la tira: este transporte ya no lo duplica
+   * (antes, segunda puerta con `canSplitAtTime`). El estado `canSplit` y su
+   * efecto se eliminan con el botón.
    */
-  useEffect(() => {
-    const compute = () => {
-      const can = canSplitAtTime(clipsRef.current, masterClock.getTime());
-      setCanSplit((prev) => (prev === can ? prev : can));
-    };
-
-    compute();
-
-    let lastCheck = 0;
-    const unsubTime = masterClock.subscribeTime(() => {
-      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
-      if (!masterClock.getIsPlaying() || now - lastCheck >= 150) {
-        lastCheck = now;
-        compute();
-      }
-    });
-    const unsubState = masterClock.subscribeState(() => compute());
-
-    return () => {
-      unsubTime();
-      unsubState();
-    };
-  }, [clips]);
 
   // Estado de la pantalla completa (para alternar el icono).
   useEffect(() => {
@@ -493,19 +461,92 @@ export const MobilePreviewPlayer: React.FC = () => {
       </div>
 
       {/*
-        Transporte compacto: UNA fila de transporte (timecode discreto +
-        inicio · −1f · reproducir · +1f) y UNA fila de volumen general.
-        Todo el transporte cabe en ≤ 120 px. En apaisado la columna se
-        superpone al borde inferior del visor para no robarle altura al
-        lienzo (el requisito son 150 px visibles).
+        Transporte: UNA fila de transporte (timecode discreto + inicio ·
+        −1f · reproducir · +1f) y UNA fila de volumen general en vertical;
+        UNA sola fila con todo en apaisado (el alto no da para dos).
+        H2: el transporte siempre va apilado BAJO el lienzo, nunca flotando
+        sobre el vídeo. H1: sin botón Dividir (vive solo en la tira).
       */}
-      <div
-        className={`w-full max-w-sm flex flex-col px-1 pt-1 gap-0.5 ${
-          isCompact
-            ? 'absolute bottom-0 left-0 right-0 mx-auto bg-black/70 z-20'
-            : ''
-        }`}
-      >
+      <div className="w-full max-w-sm flex flex-col px-1 pt-1 gap-0.5">
+        {isCompact ? (
+        /* Apaisado: una fila de 44 px (timecode + transporte + volumen). */
+        <div className="w-full min-h-[44px] flex items-center gap-1">
+          <MobileTimecodeDisplay fps={fps} duration={duration} />
+
+          <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Transporte">
+            <IconButton
+              size="sm"
+              onClick={handleToStart}
+              aria-label="Ir al inicio"
+              title="Ir al inicio"
+              className="min-h-[44px] min-w-[44px]"
+            >
+              <SkipBack size={16} />
+            </IconButton>
+
+            <IconButton
+              size="sm"
+              onClick={handleStepBack}
+              aria-label="Retroceder 1 fotograma"
+              title="Retroceder 1 fotograma"
+              className="min-h-[44px] min-w-[44px]"
+            >
+              <span className="font-mono text-[11px] font-bold">-1f</span>
+            </IconButton>
+
+            <IconButton
+              size="sm"
+              onClick={handleTogglePlay}
+              aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+              title={isPlaying ? 'Pausar' : 'Reproducir'}
+              aria-pressed={isPlaying}
+              className="min-h-[44px] min-w-[44px]"
+            >
+              {/* El acento vive solo en el icono, nunca en un relleno. */}
+              <span className="text-accent flex items-center justify-center">
+                {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+              </span>
+            </IconButton>
+
+            <IconButton
+              size="sm"
+              onClick={handleStepForward}
+              aria-label="Avanzar 1 fotograma"
+              title="Avanzar 1 fotograma"
+              className="min-h-[44px] min-w-[44px]"
+            >
+              <span className="font-mono text-[11px] font-bold">+1f</span>
+            </IconButton>
+          </div>
+
+          <div className="flex min-w-0 flex-1 items-center gap-1.5" role="group" aria-label="Volumen general">
+            <IconButton
+              size="sm"
+              onClick={handleToggleMasterMute}
+              aria-label={isMasterMuted ? 'Activar sonido general' : 'Silenciar sonido general'}
+              title={isMasterMuted ? 'Activar sonido' : 'Silenciar'}
+              className="min-h-[44px] min-w-[44px] shrink-0"
+            >
+              {isMasterMuted || masterVolume === 0 ? <VolumeX size={16} /> : <Volume2 size={16} />}
+            </IconButton>
+
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={isMasterMuted ? 0 : masterVolume}
+              onChange={handleMasterVolumeChange}
+              aria-label="Volumen general"
+              className="flex-1 min-w-0 min-h-[44px] accent-accent cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            />
+            <span aria-hidden="true" className="shrink-0 w-10 text-right font-mono text-[11px] text-text-2">
+              {Math.round((isMasterMuted ? 0 : masterVolume) * 100)}%
+            </span>
+          </div>
+        </div>
+        ) : (
+        <>
         {/* Fila 1: timecode + transporte (44 px). */}
         <div className="w-full min-h-[44px] flex items-center gap-1">
           <MobileTimecodeDisplay fps={fps} duration={duration} />
@@ -557,22 +598,8 @@ export const MobilePreviewPlayer: React.FC = () => {
           </div>
         </div>
 
-        {/* Fila 2: dividir + volumen general (44 px). */}
+        {/* Fila 2: volumen general (44 px). */}
         <div className="w-full min-h-[44px] flex items-center gap-2">
-          {/* UI-27: deshabilitado cuando no hay nada que dividir, con motivo. */}
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<Scissors size={14} aria-hidden="true" />}
-            onClick={splitAtPlayhead}
-            disabled={!canSplit}
-            aria-label="Dividir clip en el cabezal"
-            title={canSplit ? 'Dividir en el cabezal' : 'Sin clip bajo el cabezal'}
-            className="min-h-[44px] shrink-0"
-          >
-            Dividir
-          </Button>
-
           <div className="flex min-w-0 flex-1 items-center gap-1.5" role="group" aria-label="Volumen general">
             <IconButton
               size="sm"
@@ -599,6 +626,8 @@ export const MobilePreviewPlayer: React.FC = () => {
             </span>
           </div>
         </div>
+        </>
+        )}
       </div>
     </div>
   );

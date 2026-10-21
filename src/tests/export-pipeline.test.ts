@@ -1127,7 +1127,7 @@ describe('F8 · el modal normaliza los errores que no son Error (EX-23)', () => 
     const { formatExportEta } = await import('../components/export/ExportModal');
     expect(formatExportEta('completed', 0)).toBeNull();
     expect(formatExportEta('completed', 12)).toBeNull();
-    expect(formatExportEta('rendering', 5)).toBe('~5s');
+    expect(formatExportEta('rendering', 5)).toBe('~5 s');
     expect(formatExportEta('rendering', 0)).toBe('Calculando...');
   });
 });

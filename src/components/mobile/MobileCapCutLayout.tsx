@@ -103,6 +103,25 @@ export function transitionDurationMax(clipDuration: number): number {
 }
 
 /**
+ * Vista del conmutador apaisado (C4): en vertical no hay conmutador y se
+ * ven las dos bandas; en apaisado solo la vista elegida ocupa la pantalla.
+ */
+export type VistaPaisaje = 'visor' | 'linea';
+
+/**
+ * Decide si una banda se monta. Pura y unit-testeada en
+ * `src/tests/mobile-ux.test.ts`.
+ */
+export function debeMostrarBanda(
+  isCompacto: boolean,
+  vista: VistaPaisaje,
+  banda: VistaPaisaje
+): boolean {
+  if (!isCompacto) return true;
+  return vista === banda;
+}
+
+/**
  * Estructura móvil (DESIGN.md): barra de la app de 48 px · VISOR 38 % ·
  * LÍNEA DE TIEMPO 30 % · tira de herramientas contextual. Nunca paneles
  * laterales: el inspector es una hoja inferior. Superficies planas con
@@ -111,6 +130,12 @@ export function transitionDurationMax(clipDuration: number): number {
 export const MobileCapCutLayout: React.FC = () => {
   const [activeSheet, setActiveSheet] = useState<MobileSheetType>(null);
   const isCompact = useIsCompactHeight(500);
+  /**
+   * C4 · Vista apaisada: el alto no da para visor + línea de tiempo con
+   * blancos de 44 px, así que el apaisado conmuta (visor por defecto, la
+   * vista que muestra el lienzo que exige la suite de navegador).
+   */
+  const [vistaPaisaje, setVistaPaisaje] = useState<VistaPaisaje>('visor');
   const announcement = useLiveAnnouncement();
 
   const selectedClip = useProjectStore((s) => s.project.clips.find((c) => c.id === s.selectedClipId));
@@ -176,9 +201,10 @@ export const MobileCapCutLayout: React.FC = () => {
         <MobileHeader />
       </div>
 
-      {/* 2. VISOR (38 % en vertical; flexible con mínimo en apaisado) */}
+      {/* 2. VISOR (38 % en vertical; toda la banda en la vista «visor» apaisada) */}
+      {debeMostrarBanda(isCompact, vistaPaisaje, 'visor') && (
       <div className={isCompact
-        ? "flex-1 min-h-[140px] flex flex-col overflow-hidden"
+        ? "flex-1 min-h-[150px] flex flex-col overflow-hidden"
         : "min-h-0 flex-[38] flex flex-col overflow-hidden"
       }>
         {/*
@@ -197,18 +223,26 @@ export const MobileCapCutLayout: React.FC = () => {
           <MobilePreviewPlayer />
         </Suspense>
       </div>
+      )}
 
-      {/* 3. LÍNEA DE TIEMPO TÁCTIL (30 % en vertical; 76 px en apaisado) */}
+      {/* 3. LÍNEA DE TIEMPO TÁCTIL (30 % en vertical; ≥ 120 px en la vista «línea» apaisada) */}
+      {debeMostrarBanda(isCompact, vistaPaisaje, 'linea') && (
       <div className={isCompact
-        ? "h-[76px] shrink-0 flex flex-col overflow-hidden"
+        ? "flex-1 min-h-[120px] flex flex-col overflow-hidden"
         : "min-h-0 flex-[30] flex flex-col overflow-hidden"
       }>
         <Timeline />
       </div>
+      )}
 
       {/* 4. TIRA DE HERRAMIENTAS CONTEXTUAL (la tira se dimensiona sola) */}
       <div className="shrink-0">
-        <MobileBottomBar onOpenSheet={(sheet) => setActiveSheet(sheet)} />
+        <MobileBottomBar
+          onOpenSheet={(sheet) => setActiveSheet(sheet)}
+          mostrarConmutadorVista={isCompact}
+          vistaPaisaje={vistaPaisaje}
+          onCambiarVista={setVistaPaisaje}
+        />
       </div>
 
       {/* 5. HOJAS INFERIORES MODULARES */}

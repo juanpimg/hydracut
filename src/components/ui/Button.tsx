@@ -37,6 +37,10 @@ const SIZE_CLASSES: Record<ButtonSize, string> = {
 /**
  * Botón de la familia única de botones (radio 4, sin gradientes ni brillos).
  * Reenvía `ref` y propaga el resto de props al `<button>` nativo.
+ *
+ * Táctil (C1/C3): con puntero grueso un `::after` invisible expande el área
+ * de golpe a 44 px como mínimo (`-inset-3` sobre el tamaño visual), sin
+ * mover el trazado: el glifo y la caja visual no cambian en el escritorio.
  */
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = 'secondary', size = 'md', icon, loading = false, disabled, children, className = '', type = 'button', ...rest },
@@ -48,7 +52,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       type={type}
       disabled={disabled ?? loading}
       aria-busy={loading || undefined}
-      className={`inline-flex items-center justify-center rounded font-medium transition select-none disabled:opacity-40 disabled:cursor-not-allowed ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
+      className={`relative inline-flex items-center justify-center rounded font-medium transition select-none disabled:opacity-40 disabled:cursor-not-allowed [@media(pointer:coarse)]:after:absolute [@media(pointer:coarse)]:after:-inset-3 [@media(pointer:coarse)]:after:content-[''] ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
       {...rest}
     >
       {loading ? (

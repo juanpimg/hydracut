@@ -1,5 +1,6 @@
 import { Clip, ClipKeyframe, MediaItem, Track } from '../../types/project';
 import { mediaSourcePool } from './MediaSourcePool';
+import { resolvePlayback } from '../utils/playbackRate';
 import {
   createCrossfadeIndexCache,
   crossfadeInGain,
@@ -57,13 +58,19 @@ export interface RenderOptions {
 /**
  * Hard ceiling for the number of pixels the PREVIEW may rasterise.
  *
- * The preview used to always allocate a canvas as big as the project
- * (1920x1080 = 2 073 600 px) even when the canvas was displayed inside a
- * 200x110 box: 100x more pixels than the display could ever show, at 60 fps
- * (KI-02). The preview now renders at the size of the display; this ceiling
- * only protects the pathological cases (a 4K project shown full screen).
+ * Regla efectiva (lo que el código hace, medido):
+ * - el preview se rasteriza a la resolución del DISPLAY (CSS × DPR), nunca
+ *   por encima de la resolución del proyecto;
+ * - Y nunca por encima de este techo: un proyecto 4K a pantalla completa
+ *   necesitaría 8,3 M px, pero el backing store se queda en 2,1 M px.
+ *
+ * El techo cubre un proyecto 1080p completo (2 073 600 px) con margen, así
+ * que los timelines 1080p se ven nítidos en cualquier display: solo los
+ * casos patológicos (4K a pantalla completa y displays enormes) pierden
+ * nitidez, a cambio de no fundir la GPU con un pase de filtros por cada
+ * clip y frame. Ver `computeRenderScale` (paso 3).
  */
-export const MAX_PREVIEW_PIXELS = 1_300_000;
+export const MAX_PREVIEW_PIXELS = 2_100_000;
 
 export interface RenderScaleInput {
   /** Project width in pixels (the logical space). */
@@ -154,10 +161,12 @@ function crispCoverage(
  *      → the preview is NEVER rendered above the project resolution (a 4K
  *        project shown in a small box is downscaled, not upscaled).
  *   3. `scale = min(scale, sqrt(pixelBudget / (logicalWidth * logicalHeight)))`
- *      with `pixelBudget = max(maxPixels, min(devicePixels, projectPixels))`
- *      → the absolute pixel ceiling is enforced, but it never forces the
- *        preview below the resolution the display actually needs (that would
- *        blur a HiDPI preview) and never above the project resolution.
+ *      with `pixelBudget = maxPixels` (techo DURO: el backing store nunca
+ *      supera `maxPixels`, aunque el display pudiera mostrar más — un
+ *      proyecto 4K a pantalla completa se rasteriza a `maxPixels`, no a
+ *      8,3 M px). Los timelines 1080p siguen nítidos en cualquier display
+ *      porque el techo por defecto (2,1 M px) cubre un 1080p completo; solo
+ *      los proyectos mayores en displays enormes cambian nitidez por GPU.
   *   4. Each axis snaps to an EVEN number (H.264 friendly): every axis offers
   *      its floor-even and ceil-even neighbours, and the combination with the
   *      smallest project-aspect error wins among those that fit the pixel
@@ -190,10 +199,9 @@ export function computeRenderScale(input: RenderScaleInput): RenderScaleResult {
   // 2. Never render above the project resolution.
   scale = Math.min(scale, 1);
 
-  // 3. Absolute pixel ceiling (never below what the display needs).
+  // 3. Absolute pixel ceiling (HARD: it always binds the backing store).
   const projectPixels = logicalWidth * logicalHeight;
-  const neededPixels = Math.min(deviceWidth * deviceHeight, projectPixels);
-  const pixelBudget = Math.max(maxPixels, neededPixels);
+  const pixelBudget = maxPixels;
   scale = Math.min(scale, Math.sqrt(pixelBudget / projectPixels));
 
   if (!Number.isFinite(scale) || scale <= 0) scale = 1;
@@ -334,6 +342,38 @@ export class Compositor {
   private prewarmKeys: Set<string> = new Set();
 
   /**
+   * P3 · Clave del pool (`${mediaId}_${clipId}`) por clip, cacheada.
+   *
+   * `getVideoElement` se llama 2 veces por clip y frame (pre-chequeo +
+   * dibujado) y cada llamada reconstruía la cadena (~60 cadenas/frame con 20
+   * clips). La caché se valida contra el `mediaId`: un clip reasignado a otro
+   * medio reconstruye su clave exactamente una vez.
+   */
+  private videoKeyCache: Map<string, { mediaId: string; key: string }> = new Map();
+
+  /**
+   * Clave del pool para un clip, sin asignar en estado estable.
+   */
+  private poolKeyFor(mediaId: string, clipId: string): string {
+    const cached = this.videoKeyCache.get(clipId);
+    if (cached && cached.mediaId === mediaId) return cached.key;
+    const key = `${mediaId}_${clipId}`;
+    this.videoKeyCache.set(clipId, { mediaId, key });
+    return key;
+  }
+
+  /**
+   * Drops the cached video keys of the clips that no longer exist.
+   */
+  private pruneVideoKeyCache(clips: Clip[]): void {
+    const alive = new Set<string>();
+    for (let i = 0; i < clips.length; i++) alive.add(clips[i].id);
+    for (const id of this.videoKeyCache.keys()) {
+      if (!alive.has(id)) this.videoKeyCache.delete(id);
+    }
+  }
+
+  /**
    * F5 · Índice de crossfades, reconstruido UNA vez por cambio de clips.
    *
    * `refreshCrossfadeIndex` no asigna nada cuando el contenido relevante no
@@ -418,6 +458,7 @@ export class Compositor {
     this.lastHadUnreadyVideo = false;
     this.activeVideoKeys.clear();
     this.prewarmKeys.clear();
+    this.videoKeyCache.clear();
     this.filterCache.clear();
     this.keyframeCache.clear();
     this.crossfadeCache = createCrossfadeIndexCache();
@@ -664,6 +705,11 @@ export class Compositor {
       this.pruneKeyframeCache(clips);
     }
 
+    // P3: same rule for the cached video pool keys.
+    if (this.videoKeyCache.size > clips.length * 2 + 32) {
+      this.pruneVideoKeyCache(clips);
+    }
+
     // Single-pass visual readiness & active clip pre-check
     let hasActiveVisualClip = false;
     let hasActiveTextClip = false;
@@ -687,10 +733,17 @@ export class Compositor {
         if (!media) continue;
         hasActiveVisualClip = true;
         if (clip.type === 'video') {
-          const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
+          const videoEl = mediaSourcePool.getVideoElement(
+            media,
+            clip.id,
+            clip.sourceStart,
+            this.poolKeyFor(media.id, clip.id)
+          );
           // The very same source time the draw pass will ask for, so the
           // "is the frame ready" decision and the draw pass always agree.
-          const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+          // F-A3-03: la velocidad es la RESUELTA (la misma del audio y del
+          // export), nunca el `speed` crudo del clip.
+          const speed = resolvePlayback(clip).rate;
           const rawOffset = clip.sourceStart + (time - clip.start) * speed;
           const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
           const clampedOffset = Math.max(0, Math.min(maxSourceTime, rawOffset));
@@ -777,9 +830,12 @@ export class Compositor {
           if (!media) continue;
 
           if (clip.type === 'video') {
-            const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart);
-            this.activeVideoKeys.add(`${media.id}_${clip.id}`);
-            const speed = clip.speed && clip.speed > 0 ? clip.speed : 1;
+            const poolKey = this.poolKeyFor(media.id, clip.id);
+            const videoEl = mediaSourcePool.getVideoElement(media, clip.id, clip.sourceStart, poolKey);
+            this.activeVideoKeys.add(poolKey);
+            // F-A3-03: la velocidad es la RESUELTA (la misma del audio y del
+            // export), nunca el `speed` crudo del clip.
+            const speed = resolvePlayback(clip).rate;
             const sourceOffset = clip.sourceStart + (time - clip.start) * speed;
             const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
             const clampedOffset = Math.max(0, Math.min(maxSourceTime, sourceOffset));
@@ -849,7 +905,7 @@ export class Compositor {
       for (let i = 0; i < clips.length; i++) {
         const c = clips[i];
         if (c.type === 'video' && c.start > time && c.start <= time + 2.5) {
-          this.prewarmKeys.add(`${c.mediaId}_${c.id}`);
+          this.prewarmKeys.add(this.poolKeyFor(c.mediaId, c.id));
         }
       }
       mediaSourcePool.pauseInactiveVideos(this.activeVideoKeys, this.prewarmKeys);

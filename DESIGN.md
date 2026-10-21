@@ -39,18 +39,23 @@ todo, seis colores de acento, voz de marketing). Ese híbrido es exactamente lo 
 | `border-subtle` | `#21262D` | separadores internos, wells |
 | `border` | `#30363D` | hairlines de 1 px |
 
-### Texto (3 pasos, contraste ≥ 4.5:1)
+### Texto (3 pasos, contraste ≥ 4.5:1 sobre `panel` y `raised`)
 | Token | Hex | Uso |
 |---|---|---|
 | `text-1` | `#F0F3F6` | primario |
 | `text-2` | `#9AA4B2` | etiquetas secundarias, metadatos |
-| `text-3` | `#636C76` | deshabilitado, placeholder |
+| `text-3` | `#8B949E` | hints, metadatos tenues, deshabilitado |
+
+Medido (WCAG 2.1): `text-3` sobre `panel` = 5.62:1 y sobre `raised` = 5.06:1;
+`text-2` sobre `panel` = 6.86:1. `text-3` nunca es cuerpo de lectura: solo
+hints, metadatos tenues y estados deshabilitados. (Corrección audit2 H4: el
+`#636C76` anterior solo daba 3.24:1 sobre `panel` y no cumplía lo prometido.)
 
 ### Acento — **uno solo**, y significa siempre lo mismo
 | Rol | Hex | Dónde |
 |---|---|---|
 | `accent` | `#22D3EE` | cabezal, anillo de selección, foco, enlaces, icono activo |
-| `accent-fill` | `#0891B2` | relleno de botón primario (mismo tono, un peso menos) |
+| `accent-fill` | `#06748F` | relleno de botón primario (mismo tono, un peso menos; blanco sobre el relleno = 5.38:1, sigue leyéndose cian) |
 | `accent-soft` | `rgba(34,211,238,.12)` | fondo de estado activo, chip |
 
 El acento **nunca** decora: no tiñe tarjetas, no colorea iconos por gusto, no pinta headings.
@@ -156,11 +161,16 @@ Una familia por función, sin variantes ad-hoc:
 | `Badge` | `neutral` `accent` `danger` `warning` `success` | **nunca** como color decorativo de estado rutinario |
 | `Tooltip` | — | delay 400 ms, también en `title` para teclado |
 | `Toast` | `info` `error` `success` | esquina inferior, **nunca encima del contenido**, auto-dismiss 5 s |
-| `Dialog` / `Sheet` | — | máx. 560 px de alto, **sin scroll**, un `✕` y `Esc` |
+| `Dialog` / `Sheet` | — | máx. 560 px de alto (`max-h-[min(560px,calc(100dvh-3rem))]`), un `✕` y `Esc`; **sin scroll, salvo diálogos-lista** |
 | `Menu` | — | en portal, `overlay`, sombra única `0 8px 24px rgba(0,0,0,.5)` |
 | `MediaCard` | — | miniatura 16:9, nombre en 2 líneas, **una** acción de añadir, borrar en menú |
 | `TrackHeader` | — | 48–64 px, nombre corto legible, 2–3 micro-controles |
 | `Clip` | — | radio 6, filmstrip en vídeo, waveform en audio, badges de fx |
+
+Alcance de la regla «sin scroll» (corrección audit2 L6): vale para los
+diálogos que caben —exportar, bienvenida, atajos—. Una galería con N
+proyectos es un diálogo-lista y no puede cumplirla: lleva su propia cota
+(`max-h-[90dvh]`) con desplazamiento interno y queda exenta.
 
 ## Movimiento
 

@@ -37,16 +37,19 @@ export default {
           subtle: '#21262D',
           DEFAULT: '#30363D',
         },
-        // Texto en 3 pasos (contraste ≥ 4.5:1).
+        // Texto en 3 pasos (contraste ≥ 4.5:1 sobre panel y raised,
+        // medido: text-3/panel 5.62, text-3/raised 5.06).
         text: {
           1: '#F0F3F6',
           2: '#9AA4B2',
-          3: '#636C76',
+          3: '#8B949E',
         },
-        // Un solo acento frío, con un único significado.
+        // Un solo acento frío, con un único significado. El relleno es lo
+        // bastante oscuro para que el blanco alcance 4.5:1 (medido: 5.38) sin
+        // dejar de leerse cian: es el único acento de la app.
         accent: {
           DEFAULT: '#22D3EE',
-          fill: '#0891B2',
+          fill: '#06748F',
           soft: 'rgba(34,211,238,.12)',
         },
         // Semánticos: solo cuando significan algo.
@@ -73,7 +76,7 @@ export default {
           750: '#262D38', // = overlay
           700: '#30363D', // = border
           600: '#30363D', // = border
-          500: '#636C76', // = text-3
+          500: '#8B949E', // = text-3
         },
       },
       fontFamily: {

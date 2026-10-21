@@ -97,7 +97,9 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           `title`): así la lectura compacta del zoom siempre cabe en 320 px
           sin recortes ni scroll. */}
       <div className="flex items-center gap-1 shrink-0" role="group" aria-label="Herramientas de la línea de tiempo">
-        {/* F1 · Un solo nombre para dividir: «Dividir» (la «Cuchilla» duplicada se eliminó). */}
+        {/* F1 · Un solo nombre para dividir: «Dividir» (la «Cuchilla» duplicada se eliminó).
+            H1: en táctil la única puerta es la tira móvil, así que estas
+            tijeras se ocultan con puntero grueso (el escritorio las conserva). */}
         <Button
           size="sm"
           icon={<Scissors size={14} aria-hidden="true" />}
@@ -105,6 +107,7 @@ export const TimelineToolbar: React.FC<TimelineToolbarProps> = ({ onFitToScreen,
           disabled={!canSplit}
           aria-label="Dividir en el cabezal (S)"
           title={canSplit ? 'Dividir en el cabezal (S)' : 'Sin clip bajo el cabezal'}
+          className="[@media(pointer:coarse)]:hidden"
         >
           <span className="hidden min-[560px]:inline">Dividir</span>
         </Button>

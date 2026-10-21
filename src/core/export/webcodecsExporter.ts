@@ -3,7 +3,8 @@ import { Clip, ExportConfig, ExportProgress, MediaItem, Track } from '../../type
 import { Compositor } from '../engine/Compositor';
 import { MediaSourcePool, mediaSourcePool } from '../engine/MediaSourcePool';
 import { applyDetuneToParam, resolvePlayback } from '../utils/playbackRate';
-import { buildAudioFadeAutomation } from '../utils/audioFades';
+import { buildAudioFadeAutomation, fadeDurationScale } from '../utils/audioFades';
+import { readMasterVolume } from '../utils/masterVolume';
 import {
   buildDuckAutomation,
   computeDialogueIntervals,
@@ -28,6 +29,16 @@ export interface ExportParams {
   mediaPool: MediaItem[];
   onProgress: (progress: ExportProgress) => void;
   signal?: AbortSignal;
+  /**
+   * F-A3-02 · Volumen general (0..1) aplicado como ganancia de mezcla.
+   *
+   * Decisión de semántica: el master ES parte del export (preview ≡ export).
+   * El preview multiplica cada clip por el master en `AudioEngine`, así que
+   * el export multiplica la misma ganancia base por el mismo master.
+   * Opcional por compatibilidad: cuando se omite se lee el valor persistido
+   * (`readMasterVolume`, el que ambas barras de volumen escriben).
+   */
+  masterVolume?: number;
 }
 
 /**
@@ -851,6 +862,71 @@ async function readMediaArrayBuffer(media: MediaItem): Promise<ArrayBuffer> {
 }
 
 /**
+ * Resuelve el volumen general efectivo del export (0..1).
+ *
+ * Un valor explícito fuera de rango se recorta (la misma regla que
+ * `AudioEngine.setMasterVolume`); sin valor explícito se lee el persistido,
+ * que es el que el usuario escucha en el preview. Nunca lanza: ante la duda,
+ * el export suena al 100 %.
+ */
+export function resolveExportMasterVolume(explicit?: number): number {
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) {
+    return Math.max(0, Math.min(1, explicit));
+  }
+  try {
+    const stored = readMasterVolume();
+    if (typeof stored === 'number' && Number.isFinite(stored)) {
+      return Math.max(0, Math.min(1, stored));
+    }
+  } catch {
+    // Almacenamiento ilegible: al 100 %.
+  }
+  return 1;
+}
+
+/**
+ * Frecuencia de muestreo del render offline de audio (fija).
+ */
+export const OFFLINE_AUDIO_SAMPLE_RATE = 48000;
+
+/**
+ * Duración máxima (segundos) cuyo audio se renderiza en memoria.
+ *
+ * P9: el búfer estéreo a 48 kHz ocupa `duración × 384 000 B/s`; 10 min son
+ * ~230 MB de búfer más el PCM decodificado (~400–500 MB transitorios) y
+ * 60 min ~1,4 GB (OOM de la pestaña). Por encima de este umbral (20 min ≈
+ * 460 MB solo de búfer) la exportación se rechaza ANTES de asignar nada, con
+ * un mensaje que ofrece el «Rango personalizado» del modal (la misma
+ * funcionalidad que ya permite exportar por partes).
+ */
+export const MAX_EXPORT_DURATION_SECONDS = 20 * 60;
+
+/**
+ * Bytes estimados del búfer renderizado para `duration` segundos de audio
+ * estéreo a `OFFLINE_AUDIO_SAMPLE_RATE` (Float32 por canal).
+ */
+export function estimateOfflineAudioBytes(duration: number): number {
+  const safe = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  return Math.ceil(safe * OFFLINE_AUDIO_SAMPLE_RATE) * 2 * 4;
+}
+
+/**
+ * Rechaza las duraciones que agotarían la memoria ANTES de asignar el
+ * `OfflineAudioContext`. El mensaje es accionable y en español: dice cuánto
+ * pediría y cómo exportar por rangos.
+ */
+export function assertExportAudioBudget(duration: number): void {
+  if (!Number.isFinite(duration) || duration <= MAX_EXPORT_DURATION_SECONDS) return;
+  const minutes = duration / 60;
+  const mb = Math.round(estimateOfflineAudioBytes(duration) / (1024 * 1024));
+  throw new Error(
+    `La exportación es demasiado larga (${minutes.toFixed(0)} min): solo el audio ` +
+      `necesitaría ~${mb} MB de memoria y el navegador podría quedarse sin memoria. ` +
+      `Exporta por rangos más cortos con «Rango personalizado» en el modal de exportación.`
+  );
+}
+
+/**
  * Mixes audio from all audio/video clips into an AudioBuffer using OfflineAudioContext.
  *
  * F5: two clips that share a deliberate crossfade overlap are BOTH started
@@ -858,14 +934,23 @@ async function readMediaArrayBuffer(media: MediaItem): Promise<ArrayBuffer> {
  * elements audible) and their gains follow the LINEAR crossfade curve shared
  * with the preview (`buildCrossfadeAudioSchedule`). Exported for the
  * regression tests so the offline mix can be asserted directly.
+ *
+ * F-A3-02: `masterVolume` (0..1, por defecto 1) multiplica la ganancia base
+ * de cada clip: el master es ganancia de mezcla y el export lo obedece como
+ * el preview.
  */
 export async function renderOfflineAudio(
   totalDuration: number,
   tracks: Track[],
   clips: Clip[],
   mediaPool: MediaItem[],
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  masterVolume: number = 1
 ): Promise<AudioBuffer | null> {
+  // P9: la guarda dispara ANTES de asignar el búfer (que es lo que agota la
+  // memoria), no después.
+  assertExportAudioBudget(totalDuration);
+
   const trackMap = new Map<string, Track>();
   for (const t of tracks) trackMap.set(t.id, t);
 
@@ -880,10 +965,13 @@ export async function renderOfflineAudio(
   });
   if (audioClips.length === 0 || totalDuration <= 0) return null;
 
-  const sampleRate = 48000;
+  const sampleRate = OFFLINE_AUDIO_SAMPLE_RATE;
   const offlineCtx = new OfflineAudioContext(2, Math.ceil(totalDuration * sampleRate), sampleRate);
   const mediaMap = new Map<string, MediaItem>();
   for (const m of mediaPool) mediaMap.set(m.id, m);
+
+  // F-A3-02: el master es ganancia de mezcla (la misma regla que el preview).
+  const master = Number.isFinite(masterVolume) ? Math.max(0, Math.min(1, masterVolume)) : 1;
 
   let hasValidAudio = false;
 
@@ -945,7 +1033,7 @@ export async function renderOfflineAudio(
       applyDetuneToParam(sourceNode.detune, playback.detuneCents);
 
       const gainNode = offlineCtx.createGain();
-      const baseVol = clip.volume ?? 1;
+      const baseVol = (clip.volume ?? 1) * master;
 
       // F5: a clip inside a deliberate crossfade overlap follows the shared
       // linear curve (the preview multiplies the same curve per frame, so
@@ -962,9 +1050,14 @@ export async function renderOfflineAudio(
         }
       } else if (clip.transition) {
         const { fadeInType, fadeInDuration, fadeOutType, fadeOutDuration } = clip.transition;
-        const totalFade =
-          (fadeInDuration > 0 ? fadeInDuration : 0) + (fadeOutDuration > 0 ? fadeOutDuration : 0);
-        const scale = totalFade > clip.duration ? clip.duration / totalFade : 1;
+        // F-A3-01: la MISMA reescala que el preview (`fadeDurationScale`, la
+        // función compartida): si `in + out` supera la duración, ambas
+        // ventanas se encogen en proporción.
+        const scale = fadeDurationScale(
+          fadeInDuration > 0 ? fadeInDuration : 0,
+          fadeOutDuration > 0 ? fadeOutDuration : 0,
+          clip.duration
+        );
         const effectiveIn = (fadeInDuration || 0) * scale;
         const effectiveOut = (fadeOutDuration || 0) * scale;
 
@@ -1398,7 +1491,7 @@ export interface RecorderStartOptions {
 
 /** Superficie mínima de un grabador que `startRecorderWithFallback` necesita. */
 export interface StartableRecorder {
-  start(): void;
+  start(timeslice?: number): void;
   readonly mimeType?: string;
 }
 
@@ -1416,6 +1509,10 @@ export interface StartableRecorder {
  * Si se agotan los candidatos se prueba una última vez con los defaults del
  * navegador (sin `mimeType`); si tampoco arranca se lanza un error accionable
  * en español (ver `buildRecorderFallbackError`).
+ *
+ * El arranque usa un `timeslice` de 1 s: sin él el navegador entrega TODO en
+ * un único `ondataavailable` al parar (~450 MB a los 10 min de una tacada) y
+ * el sumidero no podría ir escribiendo a disco por el camino (P10).
  *
  * La fábrica es inyectable para poder testearla en node sin DOM. En Chrome,
  * donde todos los candidatos arrancan, el elegido es el primero de la lista,
@@ -1442,7 +1539,7 @@ export function startRecorderWithFallback<R extends StartableRecorder>(
       continue;
     }
     try {
-      recorder.start();
+      recorder.start(RECORDER_TIMESLICE_MS);
     } catch (err) {
       // El constructor aceptó pero start() rechaza el stream (p. ej. vp8 con
       // audio en Firefox): el grabador queda inactivo, el stream intacto.
@@ -1458,7 +1555,7 @@ export function startRecorderWithFallback<R extends StartableRecorder>(
       stream,
       videoBitsPerSecond !== undefined ? { videoBitsPerSecond } : undefined
     );
-    recorder.start();
+    recorder.start(RECORDER_TIMESLICE_MS);
     return { recorder, mimeType: recorder.mimeType || '' };
   } catch (err) {
     lastError = err;
@@ -1574,7 +1671,10 @@ export async function seekActiveVideoClips(
       const media = mediaMap.get(vc.mediaId);
       if (!media) return Promise.resolve();
       const videoEl = getVideoElement(media, vc.id, vc.sourceStart);
-      const speed = vc.speed && vc.speed > 0 ? vc.speed : 1;
+      // F-A3-03: la ventana de fuente avanza a la velocidad RESUELTA (la
+      // misma del audio, del preview y del export de audio), nunca al `speed`
+      // crudo del clip.
+      const speed = resolvePlayback(vc).rate;
       const sourceOffset = vc.sourceStart + (time - vc.start) * speed;
       const maxSourceTime = Math.max(0, (media.duration || 1000) - 0.05);
       const clampedOffset = Math.max(0, Math.min(maxSourceTime, sourceOffset));
@@ -1649,6 +1749,10 @@ export function createExportPoolIsolation(): ExportPoolIsolation {
  */
 export async function exportVideo(params: ExportParams): Promise<Blob> {
   const fps = Math.max(1, Math.round(params.config.fps || 30));
+  // P9/P10: la guarda de duración dispara antes de probar encoders, de
+  // reservar el lienzo y de grabar nada (el MediaRecorder también retiene la
+  // grabación entera en RAM).
+  assertExportAudioBudget(params.duration);
   const totalFrames = Math.max(1, Math.round(params.duration * fps));
   const startTime = performance.now();
   const format: ExportContainerFormat = params.config.format === 'webm' ? 'webm' : 'mp4';
@@ -1902,7 +2006,14 @@ async function exportWithWebCodecs(
     // 1. Prepare offline audio if available
     let renderedAudio: AudioBuffer | null = null;
     try {
-      renderedAudio = await renderOfflineAudio(duration, tracks, clips, mediaPool, signal);
+      renderedAudio = await renderOfflineAudio(
+        duration,
+        tracks,
+        clips,
+        mediaPool,
+        signal,
+        resolveExportMasterVolume(params.masterVolume)
+      );
     } catch (err) {
       if (signal?.aborted || isAbortLikeError(err)) throw err;
       console.warn('Offline audio render failed, exporting video without audio:', err);
@@ -2268,11 +2379,239 @@ async function exportWithWebCodecs(
 }
 
 /**
+ * Intervalo (ms) con el que el grabador de respaldo entrega fragmentos.
+ * Ver `startRecorderWithFallback`.
+ */
+export const RECORDER_TIMESLICE_MS = 1000;
+
+/**
  * Maximum time we wait for `MediaRecorder.onstop` to fire after `stop()`.
  * Without it a broken recorder leaves the export promise pending forever and
  * the UI stuck in "rendering" (EX-11).
  */
 export const RECORDER_STOP_TIMEOUT_MS = 10_000;
+
+/**
+ * Sumidero de los fragmentos del grabador de respaldo (P10).
+ *
+ * P10: el respaldo retenía TODA la grabación en RAM (`chunks: Blob[]`, ~450 MB
+ * a los 10 min @6 Mbps) y al ensamblar (`new Blob(chunks)`) el pico se
+ * duplicaba (retenido + copia final). El sumidero escribe cada fragmento a
+ * disco (OPFS) cuando el navegador lo permite, así que durante la grabación
+ * no se retiene casi nada en RAM y el pico final es una sola copia en vez de
+ * dos. Sin OPFS degrada al array en RAM de siempre (una copia retenida, como
+ * hoy, pero sin copiar los bytes hasta el ensamblado final: `new Blob` con
+ * partes `Blob` ya es una sola copia).
+ */
+export interface RecorderChunkSink {
+  /** Guarda un fragmento (ignora los vacíos). Nunca lanza. */
+  push(chunk: Blob): void;
+  /** Bytes guardados hasta ahora. */
+  readonly bytes: number;
+  /** Fragmentos guardados hasta ahora. */
+  readonly count: number;
+  /** Ensambla el archivo final (una sola copia). */
+  finalize(mimeType: string, emptyTypeFallback: string): Promise<Blob>;
+  /** Descarta lo guardado (borra el temporal de disco si lo hay). */
+  discard(): Promise<void>;
+}
+
+/** Sumidero en RAM (el comportamiento histórico, sin copiar hasta el final). */
+export function createRamRecorderChunkSink(): RecorderChunkSink {
+  const parts: Blob[] = [];
+  let bytes = 0;
+  return {
+    push(chunk: Blob): void {
+      try {
+        if (!chunk || chunk.size <= 0) return;
+        parts.push(chunk);
+        bytes += chunk.size;
+      } catch {
+        // Un fragmento corrupto no puede tumbar la exportación.
+      }
+    },
+    get bytes(): number {
+      return bytes;
+    },
+    get count(): number {
+      return parts.length;
+    },
+    async finalize(mimeType: string, emptyTypeFallback: string): Promise<Blob> {
+      // `new Blob` con partes `Blob` concatena en UNA copia (ya verificado:
+      // no hay duplicado intermedio; el pico es retenido + final).
+      return new Blob(parts as BlobPart[], { type: mimeType || emptyTypeFallback });
+    },
+    async discard(): Promise<void> {
+      parts.length = 0;
+      bytes = 0;
+    },
+  };
+}
+
+interface OpfsDirectoryHandle {
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<{
+    createWritable(): Promise<{
+      write(chunk: Blob): Promise<void>;
+      close(): Promise<void>;
+      abort(): Promise<void>;
+    }>;
+    getFile(): Promise<Blob>;
+  }>;
+  removeEntry(name: string): Promise<void>;
+}
+
+/** Sumidero en OPFS, o `null` cuando no está disponible (degrada a RAM). */
+async function createOpfsRecorderChunkSink(): Promise<RecorderChunkSink | null> {
+  try {
+    const storage = (
+      globalThis as unknown as { navigator?: { storage?: { getDirectory?: () => Promise<OpfsDirectoryHandle> } } }
+    ).navigator?.storage;
+    if (!storage || typeof storage.getDirectory !== 'function') return null;
+    const dir = await storage.getDirectory();
+    const name = `hydra-export-${Date.now()}-${Math.floor(Math.random() * 1e9)}.tmp`;
+    const handle = await dir.getFileHandle(name, { create: true });
+    const writable = await handle.createWritable();
+    let totalBytes = 0;
+    let count = 0;
+    let settled = false;
+    // Si una escritura a disco falla (cuota, OPFS capado, motor sin soporte
+    // real), el sumidero NO pierde el fragmento: lo guarda en RAM y todo lo
+    // siguiente va a RAM también. Al finalizar se ensambla el prefijo de
+    // disco más el sufijo de RAM, en orden. Nunca un archivo corrupto.
+    let ramFallback = false;
+    const ramParts: Blob[] = [];
+    let diskBytes = 0;
+    // Las escrituras se encadenan: el stream no admite `write` concurrentes.
+    // La cadena conserva el orden aunque falle una escritura (el fragmento
+    // fallido y los siguientes van al sufijo de RAM, en orden).
+    let tail: Promise<void> = Promise.resolve();
+    return {
+      push(chunk: Blob): void {
+        try {
+          if (settled || !chunk || chunk.size <= 0) return;
+          totalBytes += chunk.size;
+          count++;
+          if (ramFallback) {
+            ramParts.push(chunk);
+            return;
+          }
+          tail = tail.then(
+            () =>
+              writable.write(chunk).then(
+                () => {
+                  diskBytes += chunk.size;
+                },
+                () => {
+                  ramFallback = true;
+                  ramParts.push(chunk);
+                }
+              ),
+            () => {
+              ramFallback = true;
+              ramParts.push(chunk);
+            }
+          );
+        } catch {
+          // Ignorado (ver `push` de RAM).
+        }
+      },
+      get bytes(): number {
+        return totalBytes;
+      },
+      get count(): number {
+        return count;
+      },
+      async finalize(mimeType: string, emptyTypeFallback: string): Promise<Blob> {
+        settled = true;
+        await tail;
+        try {
+          await writable.close();
+        } catch {
+          // El cierre puede fallar si el stream ya murió: el ensamblado de
+          // abajo verifica los bytes de todos modos.
+        }
+        const type = mimeType || emptyTypeFallback;
+        if (!ramFallback && ramParts.length === 0) {
+          // Camino rápido: todo está en disco. Los bytes se materializan
+          // ANTES de borrar el temporal (un `Blob` sobre un fichero borrado
+          // puede leerse vacío en algunos motores: lectura perezosa).
+          const file = await handle.getFile();
+          if (file.size !== totalBytes) {
+            throw new Error(
+              `el temporal de disco quedó incompleto (${file.size} de ${totalBytes} B)`
+            );
+          }
+          const bytes = await file.arrayBuffer();
+          try {
+            await dir.removeEntry(name);
+          } catch {
+            // El temporal ya no existe: nada que limpiar.
+          }
+          return new Blob([bytes], { type });
+        }
+        // Híbrido: prefijo de disco + sufijo de RAM, en orden, verificado.
+        let prefix: Blob | null = null;
+        if (diskBytes > 0) {
+          const file = await handle.getFile();
+          if (file.size !== diskBytes) {
+            throw new Error(
+              `el temporal de disco quedó incompleto (${file.size} de ${diskBytes} B)`
+            );
+          }
+          prefix = new Blob([await file.arrayBuffer()]);
+        }
+        try {
+          await dir.removeEntry(name);
+        } catch {
+          // Ignorado.
+        }
+        const assembled = new Blob(
+          (prefix ? [prefix, ...ramParts] : [...ramParts]) as BlobPart[],
+          { type }
+        );
+        if (assembled.size !== totalBytes) {
+          throw new Error(
+            `el ensamblado quedó incompleto (${assembled.size} de ${totalBytes} B)`
+          );
+        }
+        return assembled;
+      },
+      async discard(): Promise<void> {
+        settled = true;
+        try {
+          await tail;
+        } catch {
+          // Ignorado.
+        }
+        try {
+          await writable.abort();
+        } catch {
+          try {
+            await writable.close();
+          } catch {
+            // Ignorado.
+          }
+        }
+        ramParts.length = 0;
+        try {
+          await dir.removeEntry(name);
+        } catch {
+          // Ignorado.
+        }
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Crea el sumidero de fragmentos: OPFS cuando se puede (casi nada en RAM),
+ * RAM cuando no (comportamiento histórico). Nunca lanza.
+ */
+export async function createRecorderChunkSink(): Promise<RecorderChunkSink> {
+  return (await createOpfsRecorderChunkSink()) ?? createRamRecorderChunkSink();
+}
 
 /**
  * Fallback export using MediaRecorder.
@@ -2317,7 +2656,14 @@ async function exportWithMediaRecorder(
   // Render offline audio if available and attach to MediaStream
   let offlineAudioCtx: AudioContext | null = null;
   try {
-    const renderedAudio = await renderOfflineAudio(duration, tracks, clips, mediaPool, signal);
+    const renderedAudio = await renderOfflineAudio(
+      duration,
+      tracks,
+      clips,
+      mediaPool,
+      signal,
+      resolveExportMasterVolume(params.masterVolume)
+    );
     if (renderedAudio) {
       const AudioCtx =
         window.AudioContext ||
@@ -2372,10 +2718,12 @@ async function exportWithMediaRecorder(
     isolation.restore();
     throw err instanceof Error ? err : new Error(toErrorMessage(err));
   }
-  const chunks: Blob[] = [];
+  // P10: los fragmentos van al sumidero (OPFS cuando se puede: casi nada en
+  // RAM durante la grabación) en vez de retenerse todos en un array.
+  const sink = await createRecorderChunkSink();
 
   recorder.ondataavailable = (e) => {
-    if (e.data && e.data.size > 0) chunks.push(e.data);
+    if (e.data && e.data.size > 0) sink.push(e.data);
   };
 
   // El grabador ya arrancó dentro de `startRecorderWithFallback`: si estamos
@@ -2411,6 +2759,9 @@ async function exportWithMediaRecorder(
       } catch {
         // ignore
       }
+      // El temporal de disco del sumidero (si lo hay) se borra aquí en todos
+      // los caminos de salida; tras un `finalize` con éxito ya no existe.
+      void sink.discard().catch(() => {});
       if (offlineAudioCtx) {
         const ctx = offlineAudioCtx;
         offlineAudioCtx = null;
@@ -2469,31 +2820,44 @@ async function exportWithMediaRecorder(
         clearTimeout(stopTimeout);
         stopTimeout = null;
       }
-      // EX-10: an "empty" recording must not be reported as a success.
-      if (chunks.length === 0) {
-        rejectOnce(
-          new Error(
-            'La grabación de respaldo no produjo ningún dato de video (0 bytes). ' +
-              'Prueba con una resolución menor (720p) o con otro navegador.'
-          )
-        );
-        return;
-      }
-      const finalBlob = new Blob(chunks, {
-        // WebM sin MIME detectado: el blob debe declararse webm para que la
-        // descarga lleve la extensión correcta. El camino MP4 se queda EXACTO
-        // como estaba (`mimeType`, aunque venga vacío).
-        type: mimeType || (params.config.format === 'webm' ? 'video/webm' : mimeType),
-      });
-      onProgress({
-        state: 'completed',
-        progress: 100,
-        currentFrame: totalFrames,
-        totalFrames,
-        etaSeconds: 0,
-        outputBlob: finalBlob,
-      });
-      resolveOnce(finalBlob);
+      void (async () => {
+        // EX-10: an "empty" recording must not be reported as a success.
+        if (sink.bytes === 0) {
+          rejectOnce(
+            new Error(
+              'La grabación de respaldo no produjo ningún dato de video (0 bytes). ' +
+                'Prueba con una resolución menor (720p) o con otro navegador.'
+            )
+          );
+          return;
+        }
+        let finalBlob: Blob;
+        try {
+          finalBlob = await sink.finalize(
+            mimeType,
+            // WebM sin MIME detectado: el blob debe declararse webm para que la
+            // descarga lleve la extensión correcta. El camino MP4 se queda EXACTO
+            // como estaba (`mimeType`, aunque venga vacío).
+            params.config.format === 'webm' ? 'video/webm' : mimeType
+          );
+        } catch (err) {
+          rejectOnce(
+            new Error(
+              `No se pudo ensamblar la grabación de respaldo: ${toErrorMessage(err)}`
+            )
+          );
+          return;
+        }
+        onProgress({
+          state: 'completed',
+          progress: 100,
+          currentFrame: totalFrames,
+          totalFrames,
+          etaSeconds: 0,
+          outputBlob: finalBlob,
+        });
+        resolveOnce(finalBlob);
+      })();
     };
 
     recorder.onerror = (ev) => {

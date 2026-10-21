@@ -55,6 +55,7 @@ import {
   getBiquadFilterSupport,
   getStereoPannerSupport,
 } from '../../core/utils/audioEffects';
+import { formatearDuracion } from '../../utils/formato';
 
 /**
  * The six sliders of the "Color" section (F9).
@@ -230,11 +231,11 @@ function commonValue<T>(clips: Clip[], read: (clip: Clip) => T): T | null {
 
   return (
     <div data-testid="inspector-multi-selection">
-      {/* Header */}
+      {/* Cabecera de lote (la única cabecera «Inspector» es la del panel). */}
       <div className="flex items-center justify-between border-b border-border-subtle px-3 pt-3 pb-2">
         <div className="flex items-center gap-2">
           <CheckSquare size={16} className="text-text-2" />
-          <span className="text-sm font-semibold text-text-1">Inspector</span>
+          <span className="text-sm font-semibold text-text-1">Selección múltiple</span>
         </div>
         <button
           onClick={() => {
@@ -304,14 +305,14 @@ function commonValue<T>(clips: Clip[], read: (clip: Clip) => T): T | null {
               data-testid="batch-volume"
               aria-label="Volumen de los clips seleccionados"
               onChange={(e) => setSelectedClipsVolume(parseFloat(e.target.value))}
-              className="h-1.5 flex-1 cursor-pointer rounded bg-overlay accent-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+              className="h-1.5 flex-1 cursor-pointer rounded bg-overlay accent-accent disabled:cursor-not-allowed disabled:opacity-40"
             />
             <button
               onClick={() => setSelectedClipsMuted(!mutedValue)}
               disabled={!mutedOp.enabled}
               data-testid="batch-mute"
               aria-label={mutedValue ? 'Activar sonido de los clips seleccionados' : 'Silenciar los clips seleccionados'}
-              className={`rounded p-1.5 transition focus-visible:outline-none disabled:opacity-40 ${
+              className={`rounded p-1.5 transition disabled:opacity-40 ${
                 mutedValue
                   ? 'border border-danger/50 bg-danger/15 text-danger'
                   : 'bg-raised text-text-2 hover:text-text-1'
@@ -356,7 +357,7 @@ function commonValue<T>(clips: Clip[], read: (clip: Clip) => T): T | null {
             data-testid="batch-opacity"
             aria-label="Opacidad de los clips seleccionados"
             onChange={(e) => setSelectedClipsOpacity(parseFloat(e.target.value))}
-            className="h-1.5 w-full cursor-pointer rounded bg-overlay accent-accent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            className="h-1.5 w-full cursor-pointer rounded bg-overlay accent-accent disabled:cursor-not-allowed disabled:opacity-40"
           />
           {!opacityOp.enabled && (
             <p
@@ -555,7 +556,7 @@ export const ClipInspector: React.FC = () => {
           data-testid="overlap-policy-select"
           value={overlapPolicy}
           onChange={(e) => setOverlapPolicy(e.target.value as OverlapPolicy)}
-          className="w-full rounded border border-border bg-panel p-1.5 text-xs text-text-1 outline-none"
+          className="w-full rounded border border-border bg-panel p-1.5 text-xs text-text-1"
         >
           <option value="block">Bloquear (recomendado)</option>
           <option value="overwrite">Sobrescribir</option>
@@ -642,11 +643,14 @@ export const ClipInspector: React.FC = () => {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-panel select-none">
-      {/* Header */}
+      {/* Fila del clip: subtítulo con su nombre (la única cabecera
+          «Inspector» es la del panel). */}
       <div className="mb-0 flex items-center justify-between border-b border-border-subtle px-3 pt-3 pb-2">
-        <div className="flex items-center gap-2">
-          <Sliders size={16} className="text-text-2" />
-          <span className="text-sm font-semibold text-text-1">Inspector</span>
+        <div className="flex min-w-0 items-center gap-2">
+          <Sliders size={16} className="shrink-0 text-text-2" />
+          <span className="truncate text-sm font-semibold text-text-1" title={clip.name}>
+            {clip.name}
+          </span>
         </div>
         <button
           onClick={() => {
@@ -705,7 +709,7 @@ export const ClipInspector: React.FC = () => {
               value={clip.text || ''}
               onChange={(e) => updateClip(clip.id, { text: e.target.value, name: e.target.value.slice(0, 20) || 'Texto' })}
               rows={3}
-              className="w-full resize-none rounded border border-border bg-raised p-2 text-xs font-medium text-text-1 outline-none"
+              className="w-full resize-none rounded border border-border bg-raised p-2 text-xs font-medium text-text-1"
             />
           </div>
 
@@ -721,7 +725,7 @@ export const ClipInspector: React.FC = () => {
                     textStyle: { ...(clip.textStyle || { fontSize: 48, color: '#ffffff', backgroundColor: 'transparent', fontFamily: 'Inter, sans-serif', textAlign: 'center', fontWeight: 'bold' }), fontFamily: e.target.value },
                   })
                 }
-                className="w-full rounded border border-border bg-raised p-1.5 text-xs text-text-1 outline-none"
+                className="w-full rounded border border-border bg-raised p-1.5 text-xs text-text-1"
               >
                 {fontOptions.map((f) => (
                   <option key={f.value} value={f.value}>
@@ -851,7 +855,7 @@ export const ClipInspector: React.FC = () => {
                         applyTextPreset(clip.id, preset.id);
                       }
                     }}
-                    className={`rounded border p-1.5 text-left transition focus-visible:outline-none ${
+                    className={`rounded border p-1.5 text-left transition ${
                       isActive
                         ? 'border-accent bg-accent-soft'
                         : 'border-border bg-raised hover:border-text-3'
@@ -904,7 +908,7 @@ export const ClipInspector: React.FC = () => {
                   },
                 })
               }
-              className="w-full rounded border border-border bg-raised p-1.5 text-xs text-text-1 outline-none"
+              className="w-full rounded border border-border bg-raised p-1.5 text-xs text-text-1"
             >
               <option value="none">Sin animación</option>
               <option value="karaoke-fill">Karaoke</option>
@@ -1030,7 +1034,7 @@ export const ClipInspector: React.FC = () => {
                     ? updateKeyframe(clip.id, selectedKeyframe.t, { x: parseInt(e.target.value) })
                     : updateClip(clip.id, { positionX: parseInt(e.target.value) })
                 }
-                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer"
               />
             </div>
             <div>
@@ -1050,7 +1054,7 @@ export const ClipInspector: React.FC = () => {
                     ? updateKeyframe(clip.id, selectedKeyframe.t, { y: parseInt(e.target.value) })
                     : updateClip(clip.id, { positionY: parseInt(e.target.value) })
                 }
-                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer"
               />
             </div>
           </div>
@@ -1094,7 +1098,7 @@ export const ClipInspector: React.FC = () => {
               }}
               data-testid="keyframe-add"
               aria-label="Añadir keyframe en el cabezal de reproducción"
-              className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition focus-visible:outline-none"
+              className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition"
             >
               Añadir keyframe
             </button>
@@ -1144,7 +1148,7 @@ export const ClipInspector: React.FC = () => {
                               : `Seleccionar keyframe de ${kf.t.toFixed(2)} segundos para editarlo`
                           }
                           aria-pressed={isSelected}
-                          className={`flex-1 text-left text-[11px] rounded px-1 py-0.5 focus-visible:outline-none ${
+                          className={`flex-1 text-left text-[11px] rounded px-1 py-0.5 ${
                             isSelected ? 'text-accent font-semibold' : 'text-text-2 hover:text-white'
                           }`}
                         >
@@ -1158,7 +1162,7 @@ export const ClipInspector: React.FC = () => {
                           }}
                           data-testid="keyframe-remove"
                           aria-label={`Eliminar keyframe de ${kf.t.toFixed(2)} segundos`}
-                          className="p-1.5 text-danger hover:text-danger hover:bg-danger/10 rounded transition focus-visible:outline-none"
+                          className="p-1.5 text-danger hover:text-danger hover:bg-danger/10 rounded transition"
                         >
                           <Trash2 size={13} />
                         </button>
@@ -1171,7 +1175,7 @@ export const ClipInspector: React.FC = () => {
                     onClick={() => setSelectedKeyframeT(null)}
                     data-testid="keyframe-deselect"
                     aria-label="Volver a editar los valores fijos del clip"
-                    className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
+                    className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition"
                   >
                     Volver a los valores fijos
                   </button>
@@ -1185,7 +1189,7 @@ export const ClipInspector: React.FC = () => {
                   }}
                   data-testid="keyframe-clear"
                   aria-label="Borrar todos los keyframes del clip"
-                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition"
                 >
                   Borrar keyframes
                 </button>
@@ -1204,19 +1208,19 @@ export const ClipInspector: React.FC = () => {
         </Section>
       )}
 
-      {/* F9 · COLOR FILTERS */}
+      {/* F9 · COLOR FILTERS (términos aprobados: «Color» / «Preajuste»). */}
       {isVideoOrImage && (
-        <Section titulo="Color del Clip">
+        <Section titulo="Color">
           <div data-testid="inspector-color-section" className="space-y-2 rounded border border-border-subtle bg-raised p-2.5">
             {/* Preset */}
             <div>
               <label htmlFor={`clip-color-preset-${clip.id}`} className="text-[11px] text-text-2 block mb-1">
-                Preset de color:
+                Preajuste de color:
               </label>
               <select
                 id={`clip-color-preset-${clip.id}`}
                 data-testid="clip-color-preset"
-                aria-label="Preset de color del clip"
+                aria-label="Preajuste de color del clip"
                 disabled={!colorFiltersEnabled}
                 value={selectedColorPreset ?? 'custom'}
                 onChange={(e) => {
@@ -1226,7 +1230,7 @@ export const ClipInspector: React.FC = () => {
                     filters: preset.id === 'original' ? undefined : { ...preset.filters },
                   });
                 }}
-                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none disabled:opacity-50"
+                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 disabled:opacity-50"
               >
                 {COLOR_FILTER_PRESET_ORDER.map((presetId) => (
                   <option key={presetId} value={presetId}>
@@ -1269,7 +1273,7 @@ export const ClipInspector: React.FC = () => {
               data-testid="clip-color-reset"
               aria-label="Restablecer los filtros de color del clip"
               disabled={!colorFiltersEnabled}
-              className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none disabled:opacity-50"
+              className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition disabled:opacity-50"
             >
               Restablecer color
             </button>
@@ -1311,7 +1315,7 @@ export const ClipInspector: React.FC = () => {
             <button
               onClick={() => updateClip(clip.id, { muted: !clip.muted })}
               aria-label={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
-              className={`shrink-0 p-1.5 rounded transition focus-visible:outline-none ${
+              className={`shrink-0 p-1.5 rounded transition ${
                 clip.muted ? 'bg-danger/10 text-danger border border-danger/50' : 'bg-raised text-text-2 hover:text-white'
               }`}
               title={clip.muted ? 'Activar sonido del clip' : 'Silenciar clip'}
@@ -1326,7 +1330,7 @@ export const ClipInspector: React.FC = () => {
               <Volume2 size={13} className="text-text-3" />
               <span>Fundidos de audio</span>
             </div>
-            <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-3">
+            <div className="bg-raised p-2.5 rounded-md border border-border-subtle space-y-3">
               <p className="text-[10px] leading-snug text-text-3">
                 El volumen sube al inicio y baja al final del clip. La curva de potencia igual
                 mantiene la sonoridad constante durante la rampa.
@@ -1358,7 +1362,7 @@ export const ClipInspector: React.FC = () => {
                           : { duration: v, curve: clip.audioFadeIn?.curve ?? DEFAULT_AUDIO_FADE_CURVE },
                     });
                   }}
-                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer"
                 />
                 <label htmlFor={`audio-fade-in-curve-${clip.id}`} className="text-[10px] text-text-3 block mt-1 mb-1">
                   Curva de entrada:
@@ -1380,7 +1384,7 @@ export const ClipInspector: React.FC = () => {
                       },
                     });
                   }}
-                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
+                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5"
                 >
                   <option value="equalPower">Potencia igual (recomendada)</option>
                   <option value="linear">Lineal</option>
@@ -1413,7 +1417,7 @@ export const ClipInspector: React.FC = () => {
                           : { duration: v, curve: clip.audioFadeOut?.curve ?? DEFAULT_AUDIO_FADE_CURVE },
                     });
                   }}
-                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer"
                 />
                 <label htmlFor={`audio-fade-out-curve-${clip.id}`} className="text-[10px] text-text-3 block mt-1 mb-1">
                   Curva de salida:
@@ -1435,7 +1439,7 @@ export const ClipInspector: React.FC = () => {
                       },
                     });
                   }}
-                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
+                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5"
                 >
                   <option value="equalPower">Potencia igual (recomendada)</option>
                   <option value="linear">Lineal</option>
@@ -1447,7 +1451,7 @@ export const ClipInspector: React.FC = () => {
                   onClick={() => updateClip(clip.id, { audioFadeIn: undefined, audioFadeOut: undefined })}
                   data-testid="audio-fade-clear"
                   aria-label="Quitar fundidos de audio"
-                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition"
                 >
                   Quitar fundidos
                 </button>
@@ -1461,7 +1465,7 @@ export const ClipInspector: React.FC = () => {
               <Sliders size={13} className="text-text-3" />
               <span>Efectos de audio</span>
             </div>
-            <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-3">
+            <div className="bg-raised p-2.5 rounded-md border border-border-subtle space-y-3">
               <p className="text-[10px] leading-snug text-text-3">
                 El paneo coloca el clip en el campo estéreo y la EQ ajusta graves, medios y
                 agudos. El ducking baja este clip automáticamente mientras hay voz en otra
@@ -1582,7 +1586,7 @@ export const ClipInspector: React.FC = () => {
                     const value = e.target.value;
                     setTrackRole(track.id, value === '' ? undefined : (value as TrackRole));
                   }}
-                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
+                  className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5"
                 >
                   <option value="">Sin rol</option>
                   <option value="dialogue">{TRACK_ROLE_LABELS.dialogue}</option>
@@ -1601,7 +1605,7 @@ export const ClipInspector: React.FC = () => {
                   onClick={() => updateClip(clip.id, { audioEffects: undefined })}
                   data-testid="clip-audio-effects-reset"
                   aria-label="Restablecer los efectos de audio del clip"
-                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none"
+                  className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition"
                 >
                   Restablecer efectos de audio
                 </button>
@@ -1619,7 +1623,7 @@ export const ClipInspector: React.FC = () => {
           etiquetaRestablecer="Restablecer la velocidad del clip"
         >
 
-          <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
+          <div className="bg-raised p-2.5 rounded-md border border-border-subtle space-y-2">
             <div className="flex justify-between items-center text-xs">
               <span className="text-text-2">Velocidad:</span>
               <span className="font-mono text-accent font-semibold">{clip.speed || 1}x</span>
@@ -1693,11 +1697,11 @@ export const ClipInspector: React.FC = () => {
       <Section titulo="Fundidos" abiertaPorDefecto={false}>
 
         {/* Fade In */}
-        <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
+        <div className="bg-raised p-2.5 rounded-md border border-border-subtle space-y-2">
           <div className="flex justify-between items-center text-xs">
             <span className="font-medium text-text-1">Fundido de entrada:</span>
             <span className="text-[11px] font-mono text-text-2">
-              {(clip.transition?.fadeInDuration ?? 0).toFixed(1)}s
+              {formatearDuracion(clip.transition?.fadeInDuration ?? 0)}
             </span>
           </div>
 
@@ -1718,7 +1722,7 @@ export const ClipInspector: React.FC = () => {
                     },
                   });
                 }}
-                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none"
+                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5"
               >
                 {FADE_IN_OPTIONS.map((o) => (
                   <option key={o.id} value={o.id}>
@@ -1748,18 +1752,18 @@ export const ClipInspector: React.FC = () => {
                     },
                   })
                 }
-                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer mt-2 disabled:opacity-40"
               />
             </div>
           </div>
         </div>
 
         {/* Fade Out */}
-        <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
+        <div className="bg-raised p-2.5 rounded-md border border-border-subtle space-y-2">
           <div className="flex justify-between items-center text-xs">
             <span className="font-medium text-text-1">Fundido de salida:</span>
             <span className="text-[11px] font-mono text-text-2">
-              {(clip.transition?.fadeOutDuration ?? 0).toFixed(1)}s
+              {formatearDuracion(clip.transition?.fadeOutDuration ?? 0)}
             </span>
           </div>
 
@@ -1780,7 +1784,7 @@ export const ClipInspector: React.FC = () => {
                     },
                   });
                 }}
-                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5 outline-none focus-visible:outline-none"
+                className="w-full bg-panel border border-border text-text-1 text-xs rounded p-1.5"
               >
                 {FADE_OUT_OPTIONS.map((o) => (
                   <option key={o.id} value={o.id}>
@@ -1810,17 +1814,19 @@ export const ClipInspector: React.FC = () => {
                     },
                   })
                 }
-                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer mt-2 disabled:opacity-40 focus-visible:outline-none"
+                className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer mt-2 disabled:opacity-40"
               />
             </div>
           </div>
         </div>
       </Section>
 
-      {/* F5 · FUNDIDO DE CRUCE */}
+      {/* F5 · FUNDIDO DE CRUCE (arranca abierto: la suite de navegador
+          exige sus avisos visibles con la pista bloqueada; con Keyframes y
+          Fundidos cerrados el inspector ya cumple el máx. de 5). */}
       <Section titulo="Fundido de cruce">
         <div data-testid="crossfade-section">
-        <div className="bg-raised p-2.5 rounded-lg border border-border-subtle space-y-2">
+        <div className="bg-raised p-2.5 rounded-md border border-border-subtle space-y-2">
           {crossfadeInfo.activePair && crossfadeInfo.neighbour ? (
             <>
               <p className="text-[11px] leading-snug text-text-2" data-testid="crossfade-active-label">
@@ -1845,7 +1851,7 @@ export const ClipInspector: React.FC = () => {
                   disabled={!crossfadeInfo.canCreate}
                   aria-label="Duración del fundido de cruce"
                   onChange={(e) => setCrossfadeDuration(clip.id, parseFloat(e.target.value))}
-                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 />
               </div>
               <button
@@ -1853,7 +1859,7 @@ export const ClipInspector: React.FC = () => {
                 disabled={!crossfadeInfo.canRemove}
                 data-testid="crossfade-remove"
                 aria-label="Eliminar fundido de cruce"
-                className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-text-2 hover:text-white bg-raised hover:bg-raised rounded border border-border transition disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Eliminar fundido
               </button>
@@ -1889,7 +1895,7 @@ export const ClipInspector: React.FC = () => {
                   disabled={!crossfadeInfo.canCreate}
                   aria-label="Duración del fundido de cruce a crear"
                   onChange={(e) => setDesiredCrossfade(parseFloat(e.target.value))}
-                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="w-full h-1.5 bg-overlay accent-accent rounded cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 />
               </div>
               <button
@@ -1906,7 +1912,7 @@ export const ClipInspector: React.FC = () => {
                 disabled={!crossfadeInfo.canCreate}
                 data-testid="crossfade-create"
                 aria-label="Crear fundido de cruce"
-                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Crear fundido
               </button>
@@ -1931,7 +1937,7 @@ export const ClipInspector: React.FC = () => {
                 data-testid="crossfade-create"
                 aria-label="Crear fundido de cruce"
                 title={crossfadeInfo.createReason ?? 'La pista está bloqueada'}
-                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition focus-visible:outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className="w-full text-center py-1.5 text-[11px] font-medium text-white bg-accent-fill hover:brightness-110 rounded border border-accent-fill transition disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Crear fundido
               </button>

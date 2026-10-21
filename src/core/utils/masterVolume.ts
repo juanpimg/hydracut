@@ -8,8 +8,11 @@
  *
  * This module is the single source of truth both controls read and write:
  *
- * - persisted in `localStorage` (a preview preference, NOT a project
- *   setting: it never affects the export, which uses the per-clip volumes);
+ * - persisted in `localStorage` (a preview preference, not a project
+ *   setting: it is NOT saved inside the project file, but it **does** apply
+ *   to the export, which multiplies the rendered mix by it — see
+ *   `resolveExportMasterVolume` in the exporter. Before that, the preview
+ *   honoured it and the export ignored it, and the two diverged);
  * - live-synced through a subscribe/notify mechanism, so the two controls
  *   show the same value and update each other when one changes;
  * - the ONLY audio path stays `audioEngine.setMasterVolume` (this module

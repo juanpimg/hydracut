@@ -275,7 +275,7 @@ export async function startDevServer({
   url = BASE_URL,
   host = DEV_HOST,
   port = DEV_PORT,
-  timeoutMs = 90_000,
+  timeoutMs = 150_000,
 } = {}) {
   // Only reuse a server that is actually serving THIS app. A foreign server
   // on the same port would be booted instead of ours and every check would
@@ -307,10 +307,15 @@ export async function startDevServer({
   // La URL que Vite atendio NO se deduce de su salida (puede llegar
   // troceada entre chunks): se sondean los puertos candidatos y se usa el
   // primero que sirva ESTA app. Determinista y sin depender del texto.
+  //
+  // El puerto preferido se prueba primero y con margen (800 ms se quedaba
+  // corto con la maquina cargada y agotaba el plazo de espera entero);
+  // el barrido de los vecinos va despues, con timeouts algo menores.
   const findOurPort = async () => {
-    for (let p = port; p < port + 40; p++) {
+    if (await isOurAppServed(url, 2000)) return url;
+    for (let p = port + 1; p < port + 40; p++) {
       const candidate = `http://${host}:${p}/`;
-      if (await isOurAppServed(candidate, 800)) return candidate;
+      if (await isOurAppServed(candidate, 1200)) return candidate;
     }
     return null;
   };
@@ -360,7 +365,11 @@ export async function startDevServer({
     await delay(250);
   }
 
-  if (!(await isOurAppServed(boundUrl, 1000))) {
+  // Verificacion final con margen: con la maquina cargada un timeout corto
+  // hacia fallar un servidor que si estaba sirviendo la app.
+  const served =
+    (await isOurAppServed(boundUrl, 3000)) || (await isOurAppServed(url, 3000));
+  if (!served) {
     killGroup('SIGKILL');
     throw new Error(
       `El servidor de desarrollo no respondio en ${boundUrl}:\n${output.slice(-2000)}`

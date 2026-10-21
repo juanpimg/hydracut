@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  RotateCcw,
-  RotateCw,
   Download,
   Smartphone,
   Tv,
@@ -25,8 +23,9 @@ const ASPECT_MENU_WIDTH = 150;
 const ASPECT_MENU_HEIGHT = 142;
 
 /**
- * Barra de la app en móvil (48 px, 32 px en apaisado): marca · proyecto ·
- * Exportar siempre visible a la derecha.
+ * Barra de la app en móvil (48 px, blancos de 44 px en todos los anchos):
+ * marca · proyecto · aspecto · Exportar siempre visible a la derecha.
+ * Deshacer/rehacer viven en la tira inferior para dejar sitio al nombre.
  *
  * Superficies planas con hairlines de 1 px, sin gradientes ni brillos. La
  * marca es el mismo distintivo plano del escritorio (`Header.tsx`): un
@@ -37,10 +36,6 @@ export const MobileHeader: React.FC = () => {
   const aspectRatio = useProjectStore((s) => s.project.aspectRatio);
   const setProjectName = useProjectStore((s) => s.setProjectName);
   const setAspectRatio = useProjectStore((s) => s.setAspectRatio);
-  const undo = useProjectStore((s) => s.undo);
-  const redo = useProjectStore((s) => s.redo);
-  const canUndo = useProjectStore((s) => s.past.length > 0);
-  const canRedo = useProjectStore((s) => s.future.length > 0);
 
   const { setExportModalOpen, setShortcutsModalOpen, setProjectsModalOpen, setWelcomeOpen } = useUIStore();
   const [showAspectMenu, setShowAspectMenu] = useState(false);
@@ -117,21 +112,17 @@ export const MobileHeader: React.FC = () => {
 
   return (
     // Sin scroll ni fijados internos: la barra encaja en 320 px sin que nada
-    // se pinte encima de nada (F1). El nombre siempre está visible (también
-    // bajo 560 px: es el contexto esencial del proyecto en edición) y es
-    // flexible con ellipsis. Bajo 560 px los blancos táctiles se compactan
-    // de 44 px a 36 px y Exportar a altura 32 px para que el nombre conserve
-    // sitio; el aspecto sigue oculto bajo 360 px. Sin `sticky` no hay
-    // superposición posible; con `overflow-hidden` el documento nunca gana
-    // scroll horizontal por la cabecera. En apaisado la barra se compacta a
-    // 32 px con solo CSS (sin hooks de viewport: esta superficie nunca
-    // provoca renders por tamaño).
-    <header className="min-h-12 [@media(max-height:500px)]:min-h-8 [@media(max-height:500px)]:[&_a]:min-h-0 [@media(max-height:500px)]:[&_button]:min-h-0 [@media(max-height:500px)]:[&_button]:h-7 [@media(max-height:500px)]:[&_input]:h-7 bg-panel border-b border-border-subtle px-1.5 sm:px-3 flex items-center gap-1 z-30 select-none shrink-0 pt-[env(safe-area-inset-top)] overflow-hidden">
-      {/* Marca plana y proyectos: siempre visibles, tamaño fijo (36 px bajo
-          560 px para dejar sitio al nombre, 44 px táctiles desde 560 px). */}
+    // se pinte encima de nada (F1). El nombre siempre está visible y es
+    // flexible con ellipsis. C1: cada blanco mide 44 px reales en todos los
+    // anchos (sin compactar a 36/32 ni a 22–28 en apaisado); deshacer/rehacer
+    // viven en la tira inferior, así el nombre conserva sitio a 320 px. Sin
+    // `sticky` no hay superposición posible; con `overflow-hidden` el
+    // documento nunca gana scroll horizontal por la cabecera.
+    <header className="min-h-12 bg-panel border-b border-border-subtle px-1 flex items-center gap-0.5 z-30 select-none shrink-0 pt-[env(safe-area-inset-top)] overflow-hidden">
+      {/* Marca plana y proyectos: siempre visibles, 44 px táctiles. */}
       <a
         href="/"
-        className="flex min-h-9 min-w-9 min-[560px]:min-h-[44px] min-[560px]:min-w-[44px] items-center justify-center rounded border border-border bg-raised px-2 shrink-0 transition hover:bg-overlay focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+        className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded border border-border bg-raised px-2 shrink-0 transition hover:bg-overlay focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
         title="Volver al Hub"
         aria-label="Volver al Hub"
       >
@@ -145,28 +136,28 @@ export const MobileHeader: React.FC = () => {
       </a>
       <button
         onClick={() => setProjectsModalOpen(true)}
-        className="p-2 min-h-9 min-w-9 min-[560px]:min-h-[44px] min-[560px]:min-w-[44px] flex items-center justify-center text-text-2 hover:text-text-1 active:scale-95 transition shrink-0 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+        className="p-2 min-h-[44px] min-w-[44px] flex items-center justify-center text-text-2 hover:text-text-1 active:scale-95 transition shrink-0 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
         title="Proyectos"
         aria-label="Abrir proyectos"
       >
         <FolderKanban size={18} />
       </button>
-      {/* Nombre del proyecto: siempre visible y flexible con ellipsis (nunca
-          menos de ~48 px de ancho: presente y legible también en 320 px). */}
-      <div className="flex flex-1 min-w-[48px] items-center">
+      {/* Nombre del proyecto: flexible con ellipsis y sin mínimo que lo deje
+          en «Mi …» a 320 px (M8); el campo mide 44 px de alto (C1). */}
+      <div className="flex flex-1 min-w-0 items-center">
         <input
           type="text"
           value={projectName}
           onChange={(e) => setProjectName(e.target.value)}
           aria-label="Nombre del proyecto"
-          className="bg-transparent text-text-1 font-semibold text-sm px-1 py-0.5 rounded outline-none focus:bg-raised w-full min-w-0 truncate focus-visible:ring-2 focus-visible:ring-accent"
+          className="bg-transparent text-text-1 font-semibold text-sm px-1 py-0.5 rounded outline-none focus:bg-raised w-full min-w-0 min-h-[44px] truncate focus-visible:ring-2 focus-visible:ring-accent"
           title="Renombrar proyecto"
         />
       </div>
 
-      {/* Relación de aspecto: solo icono bajo 400 px; oculta bajo 360 px
-          (sigue en el escritorio y en ≥360 px). */}
-      <div className="hidden min-[360px]:block shrink-0">
+      {/* Relación de aspecto: siempre visible (M8); solo-icono bajo 400 px,
+          con 44 px de alto y el área de golpe de la primitiva. */}
+      <div className="shrink-0">
         {/* Aspect Ratio Button & Dropdown (portaled: the header is clipped in
             landscape, audit UI-03) */}
         <div className="relative">
@@ -178,7 +169,7 @@ export const MobileHeader: React.FC = () => {
             aria-controls="mobile-aspect-menu"
             aria-label={`Relación de aspecto: ${aspectRatio}. Cambiar`}
             data-testid="mobile-aspect-button"
-            className="flex items-center gap-1 px-2 min-h-9 min-[560px]:min-h-[44px] bg-raised hover:bg-overlay text-text-2 rounded text-[11px] font-mono border border-border active:scale-95 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            className="flex items-center gap-1 px-2 min-h-[44px] bg-raised hover:bg-overlay text-text-2 rounded text-[11px] font-mono border border-border active:scale-95 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
             title="Cambiar relación de aspecto"
           >
             {aspectRatio === '9:16' && <Smartphone size={12} aria-hidden="true" />}
@@ -189,33 +180,8 @@ export const MobileHeader: React.FC = () => {
         </div>
       </div>
 
-      {/* Deshacer/rehacer: siempre visibles (36 px bajo 560 px, 44 px
-          táctiles desde 560 px). Sin tercer botón: la lista de proyectos ya
-          vive en «Proyectos» y en «Volver al Hub». */}
-      <div className="flex items-center bg-raised rounded border border-border-subtle p-0.5 shrink-0">
-          <button
-            onClick={undo}
-            disabled={!canUndo}
-            aria-label="Deshacer"
-            className={`min-h-9 min-w-9 min-[560px]:min-h-[44px] min-[560px]:min-w-[44px] flex items-center justify-center rounded active:scale-90 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
-              canUndo ? 'text-text-2' : 'text-text-3'
-            }`}
-            title="Deshacer"
-          >
-            <RotateCcw size={15} />
-          </button>
-          <button
-            onClick={redo}
-            disabled={!canRedo}
-            aria-label="Rehacer"
-            className={`min-h-9 min-w-9 min-[560px]:min-h-[44px] min-[560px]:min-w-[44px] flex items-center justify-center rounded active:scale-90 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none ${
-              canRedo ? 'text-text-2' : 'text-text-3'
-            }`}
-            title="Rehacer"
-          >
-            <RotateCw size={15} />
-          </button>
-      </div>
+      {/* Deshacer/rehacer viven en la tira inferior (C1): así la cabecera
+          deja sitio al nombre a 320 px sin compactar ningún blanco. */}
 
       {/* Derecha: ayuda, guía y exportar (siempre visibles, sin fijados:
           nada se pinta encima de nada). */}
@@ -241,7 +207,8 @@ export const MobileHeader: React.FC = () => {
         </button>
 
         {/* Exportar: etiqueta visible siempre, sin icono pulsante.
-            Compacto bajo 560 px para no quitarle sitio al nombre. */}
+            Altura real de 44 px en todos los anchos (C1): se compacta el
+            relleno, nunca la altura. */}
         <Button
           variant="primary"
           size="lg"
@@ -250,7 +217,7 @@ export const MobileHeader: React.FC = () => {
           aria-label="Abrir modal de exportación de vídeo"
           title="Exportar vídeo"
           data-testid="export-open-button"
-          className="min-h-[44px] shrink-0 font-bold max-[559px]:h-8 max-[559px]:min-h-0 max-[559px]:px-3 max-[559px]:text-body"
+          className="min-h-[44px] shrink-0 font-bold max-[559px]:px-3 max-[559px]:text-body"
         >
           Exportar
         </Button>

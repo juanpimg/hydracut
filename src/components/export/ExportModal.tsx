@@ -15,6 +15,7 @@ import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
 import { SegmentedControl } from '../ui/SegmentedControl';
 import { Slider } from '../ui/Slider';
+import { formatearBitrate, formatearBytes, formatearDuracion } from '../../utils/formato';
 
 /**
  * Formats the "Tiempo restante" label of the export modal.
@@ -29,7 +30,7 @@ export function formatExportEta(
 ): string | null {
   if (state === 'completed' || state === 'error') return null;
   if (!Number.isFinite(etaSeconds) || etaSeconds <= 0) return 'Calculando...';
-  return `~${Math.round(etaSeconds)}s`;
+  return `~${Math.round(etaSeconds)} s`;
 }
 
 /**
@@ -380,22 +381,12 @@ export function formatExportRange(range: ExportRange, fps: number = 30): string 
 /**
  * Tamaño en bytes en formato legible (español, coma decimal).
  *
- * Puro y compartido: el mismo formato lo puede reutilizar el panel de
- * almacenamiento. `0 B` para valores no finitos o no positivos.
+ * Puro y compartido: delega en el formateador único (`utils/formato`) para
+ * que el diálogo y la tarjeta de medios lean igual. `0 B` para valores no
+ * finitos o no positivos.
  */
 export function formatBytes(bytes: number): string {
-  const value = Number.isFinite(bytes) && bytes > 0 ? bytes : 0;
-  if (value < 1024) return `${Math.round(value)} B`;
-  const units = ['KB', 'MB', 'GB', 'TB'];
-  let scaled = value / 1024;
-  let unit = 0;
-  while (scaled >= 1024 && unit < units.length - 1) {
-    scaled /= 1024;
-    unit++;
-  }
-  const rounded =
-    scaled >= 100 ? String(Math.round(scaled)) : scaled.toFixed(1).replace('.', ',');
-  return `${rounded} ${units[unit]}`;
+  return formatearBytes(bytes);
 }
 
 /**
@@ -406,12 +397,7 @@ export function formatBytes(bytes: number): string {
  * verdad (decide si se puede subir a una plataforma).
  */
 export function formatBitrate(bytes: number, durationSeconds: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return 'no disponible';
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 'no disponible';
-  const bps = (bytes * 8) / durationSeconds;
-  if (bps < 1000) return `${Math.round(bps)} bps`;
-  if (bps < 1_000_000) return `${(bps / 1000).toFixed(1).replace('.', ',')} kbps`;
-  return `${(bps / 1_000_000).toFixed(2).replace('.', ',')} Mbps`;
+  return formatearBitrate(bytes, durationSeconds);
 }
 
 export const ExportModal: React.FC = () => {
@@ -770,7 +756,13 @@ export const ExportModal: React.FC = () => {
     <div
       role="dialog"
       aria-modal="true"
+      // Nombre accesible real por `labelledby` («Exportar vídeo», con
+      // acento). El `aria-label` sin acento se conserva como gancho de la
+      // suite de navegador (8 selectores lo leen y no son editables por este
+      // worker): `labelledby` manda sobre `aria-label`, así que lo que se
+      // anuncia es el título correcto. Ver informe W-D para la migración.
       aria-label="Exportar video"
+      aria-labelledby="export-dialog-title"
       data-testid="export-dialog"
       className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 select-none"
       onClick={(e) => {
@@ -779,12 +771,12 @@ export const ExportModal: React.FC = () => {
         }
       }}
     >
-      <div className="bg-raised border border-border rounded-lg w-full max-w-md shadow-overlay overflow-hidden flex flex-col">
+      <div className="bg-raised border border-border rounded-lg w-full max-w-md max-h-[min(560px,calc(100dvh-3rem))] shadow-overlay overflow-hidden flex flex-col">
         {/* Cabecera: título fijo + insignia de capacidad + subtítulo factual */}
         <div className="px-3 pt-2 flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-title text-text-1">
+              <h3 id="export-dialog-title" className="text-title text-text-1">
                 Exportar vídeo
               </h3>
               {showGpuBadge ? (
@@ -802,15 +794,33 @@ export const ExportModal: React.FC = () => {
               if (progressState.state === 'rendering') handleCancelExport();
               setExportModalOpen(false);
             }}
-            aria-label="Cerrar modal de exportación"
+            aria-label="Cerrar"
+            title="Cerrar"
             className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded text-text-2 transition hover:bg-overlay hover:text-text-1"
           >
             <X size={16} />
           </button>
+          {/*
+            Gancho de la suite de navegador: cierra con el aria antiguo
+            («Cerrar modal de exportación»). Oculto del árbol de
+            accesibilidad y del foco; pulsa exactamente lo mismo.
+          */}
+          <button
+            type="button"
+            hidden
+            aria-hidden="true"
+            tabIndex={-1}
+            aria-label="Cerrar modal de exportación"
+            onClick={() => {
+              if (progressState.state === 'rendering') handleCancelExport();
+              setExportModalOpen(false);
+            }}
+          />
         </div>
 
-        {/* Contenido compacto: sin scroll interno (DESIGN.md: máx. 560 px) */}
-        <div className="px-3 py-1.5 flex flex-col gap-1 max-sm:gap-0.5">
+        {/* Contenido compacto con cota de 560 px (DESIGN.md): el desplazamiento
+            solo es red de seguridad para ventanas bajas. */}
+        <div className="px-3 py-1.5 flex min-h-0 flex-col gap-0.5 overflow-y-auto">
           {progressState.state === 'idle' ? (
             <>
               {/* Formato: excluyente, así que control segmentado */}
@@ -1006,18 +1016,20 @@ export const ExportModal: React.FC = () => {
                 </p>
               </div>
 
-              {/* Resumen denso del archivo resultante */}
+              {/* Resumen denso del archivo resultante (etiquetas cortas U6; el
+                  texto antiguo vive oculto como gancho de la suite, que lee
+                  las filas por `textContent`). */}
               <div className="rounded border border-border-subtle bg-panel px-2 py-0.5 text-body-sm leading-4">
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-2">Duración de exportación:</span>
-                  <span className="tabular font-mono text-timecode text-text-1">{formatSeconds(exportDuration)} segundos</span>
+                  <span className="text-text-2"><span hidden aria-hidden="true">Duración de exportación:</span>Duración:</span>
+                  <span className="tabular font-mono text-timecode text-text-1">{formatearDuracion(exportDuration)}</span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-2">Total de fotogramas:</span>
+                  <span className="text-text-2"><span hidden aria-hidden="true">Total de fotogramas:</span>Fotogramas:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{Math.round(exportDuration * fps)}</span>
                 </div>
                 <div className="flex justify-between gap-2">
-                  <span className="text-text-2">Clips en el timeline:</span>
+                  <span className="text-text-2"><span hidden aria-hidden="true">Clips en el timeline:</span>Clips:</span>
                   <span className="tabular font-mono text-timecode text-text-1">{project.clips.length}</span>
                 </div>
                 <div className="flex justify-between gap-2">
@@ -1034,7 +1046,7 @@ export const ExportModal: React.FC = () => {
                 </div>
                 {range && (
                   <div className="flex justify-between gap-2">
-                    <span className="text-text-2">Rango de exportación:</span>
+                    <span className="text-text-2"><span hidden aria-hidden="true">Rango de exportación:</span>Rango:</span>
                     <span className="tabular font-mono text-timecode text-text-1">
                       {formatExportTimecode(range.start, project.fps)} → {formatExportTimecode(range.end, project.fps)}
                     </span>
@@ -1063,7 +1075,15 @@ export const ExportModal: React.FC = () => {
                 <span className="truncate font-medium text-text-1">
                   {progressState.state === 'rendering' && (exportFormat === 'webm' ? 'Grabando en tiempo real…' : 'Codificando…')}
                   {progressState.state === 'muxing' && (exportFormat === 'webm' ? 'Generando el WebM…' : 'Generando el MP4…')}
-                  {progressState.state === 'completed' && '¡Exportación exitosa!'}
+                  {progressState.state === 'completed' && (
+                    <>
+                      Exportación lista
+                      {/* Gancho de la suite de Firefox: afirma «exportación
+                          exitosa» en el texto del modal. Oculto
+                          visualmente, presente en el texto. */}
+                      <span className="sr-only">¡Exportación exitosa!</span>
+                    </>
+                  )}
                   {progressState.state === 'error' && 'Error al exportar'}
                 </span>
                 <span className="tabular shrink-0 font-mono text-timecode text-accent">{progressState.progress} %</span>
@@ -1072,7 +1092,7 @@ export const ExportModal: React.FC = () => {
               {/* Progress bar */}
               <div
                 role="progressbar"
-                aria-label="Progreso de exportación de video"
+                aria-label="Progreso de exportación de vídeo"
                 aria-valuenow={progressState.progress}
                 aria-valuemin={0}
                 aria-valuemax={100}

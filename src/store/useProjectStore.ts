@@ -19,6 +19,7 @@ import {
 import {
   autosaveProject,
   deleteMediaFiles,
+  discardRelinkBackup,
   flushAutosave,
   relinkMediaBytes,
   revokeAllObjectUrls,
@@ -451,7 +452,7 @@ export function buildOverlapRefusalReason(
   return (
     `No se puede insertar «${media.name}» en «${track.name}»: se solapa con ${conflictLabel}${conflictRange}. ` +
     `El clip entraría de ${formatTimelineTime(start)} a ${formatTimelineTime(end)}. ` +
-    `Muévelo a otro momento o cambia la política de solapamiento a «Sobrescribir» o «Ripple» en el Inspector.`
+    `Muévelo a otro momento o cambia la política de solapamiento a «Sobrescribir» o «Desplazar» en el Inspector.`
   );
 }
 
@@ -688,6 +689,89 @@ export interface ClipboardEntry {
  */
 export function deepCopyClip(clip: Clip): Clip {
   return JSON.parse(JSON.stringify(clip)) as Clip;
+}
+
+/**
+ * D01 · Medios destruidos físicamente (purga).
+ *
+ * La purga borra los bytes de OPFS y revoca las URLs: es irreversible y por
+ * eso NO empuja historial. Pero las entradas de historial ANTERIORES aún
+ * referencian esos medios, y deshacerlas los resucitaría como si funcionaran.
+ * Este registro recuerda qué ids ya no tienen bytes para que `undo`, `redo` y
+ * `restoreFromTrash` los marquen como `status: 'missing'` ("medio ausente")
+ * en vez de mentir. `relinkMedia` saca el id del registro (los bytes vuelven)
+ * y `resetProject`/`loadProject` lo vacían (nuevo contexto).
+ */
+const destroyedMediaIds = new Set<string>();
+
+/** Marca los medios destruidos del proyecto como ausentes (D01). */
+function markDestroyedMediaMissing<T extends { id: string; name: string; status?: MediaStatus }>(
+  items: T[]
+): { items: T[]; missingNames: string[] } {
+  const missingNames: string[] = [];
+  const next = items.map((item) => {
+    if (item && destroyedMediaIds.has(item.id) && item.status !== 'missing') {
+      missingNames.push(item.name || item.id);
+      return { ...item, status: 'missing' as const };
+    }
+    return item;
+  });
+  return { items: next, missingNames };
+}
+
+/** Aviso honesto cuando un medio vuelve sin sus bytes (D01). */
+function buildMissingMediaReason(names: string[]): string {
+  const first = names[0] ?? 'El medio';
+  const extra = names.length > 1 ? ` (y ${names.length - 1} más)` : '';
+  return (
+    `«${first}»${extra} se ha restaurado, pero su archivo ya no existe (medio ausente): ` +
+    'revínculalo desde Medios.'
+  );
+}
+
+/**
+ * D05 · Resuelve el cambio del rango `[start, start + duration)` de un clip
+ * según la política de solapamiento del proyecto (la misma que en inserción).
+ *
+ * - `block`: el cambio se RECHAZA cuando crea un solape ilegal (motivo + sin
+ *   cambios, como `addClipFromMedia`).
+ * - `overwrite`: los clips en conflicto se recortan (el nuevo rango gana).
+ * - `ripple`: los clips posteriores se desplazan a la derecha.
+ *
+ * Los solapes deliberados de fundido de cruce del propio clip no cuentan
+ * (misma lista blanca que la inserción).
+ */
+function resolveRangeChange(
+  clips: Clip[],
+  trackId: string,
+  start: number,
+  duration: number,
+  excludeClipId: string,
+  policy: OverlapPolicy,
+  verb: 'mover' | 'recortar' | 'editar',
+  clipName: string,
+  trackName: string
+): { ok: true; clips: Clip[]; removed: Clip[] } | { ok: false; reason: string } {
+  const conflicts = findIllegalOverlappingClips(clips, trackId, start, duration, excludeClipId);
+  if (conflicts.length === 0) return { ok: true, clips, removed: [] };
+
+  if (policy === 'block') {
+    const conflict = conflicts[0];
+    const conflictRange = ` (${formatTimelineTime(conflict.start)}–${formatTimelineTime(clipEnd(conflict))})`;
+    const verbNoun = verb === 'mover' ? 'mover' : verb === 'recortar' ? 'recortar' : 'editar';
+    const reason =
+      `No se puede ${verbNoun} «${clipName}» en «${trackName}»: se solapa con «${conflict.name}»${conflictRange}. ` +
+      `Muévelo a otro momento o cambia la política de solapamiento a «Sobrescribir» o «Desplazar» en el Inspector.`;
+    return { ok: false, reason };
+  }
+
+  if (policy === 'overwrite') {
+    const result = applyOverwriteInsert(clips, trackId, start, duration);
+    return { ok: true, clips: result.clips, removed: result.removed };
+  }
+
+  const result = applyRippleInsert(clips, trackId, start, duration);
+  return { ok: true, clips: result.clips, removed: [] };
 }
 
 /** Id of a new clip (unique enough for the timeline). */
@@ -1143,14 +1227,14 @@ export interface ProjectState {
 
 const DEFAULT_TRACKS: Track[] = [
   { id: 'track_text_1', name: 'Texto T1', type: 'text', isMuted: false, isLocked: false, isVisible: true },
-  { id: 'track_video_2', name: 'Video V2 (Superposición)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
-  { id: 'track_video_1', name: 'Video V1 (Principal)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
+  { id: 'track_video_2', name: 'Vídeo V2 (superposición)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
+  { id: 'track_video_1', name: 'Vídeo V1 (principal)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
   { id: 'track_audio_1', name: 'Audio A1', type: 'audio', isMuted: false, isLocked: false, isVisible: true },
 ];
 
 const INITIAL_PROJECT: Project = {
   id: 'proj_' + Math.random().toString(36).substring(2, 9),
-  name: 'Mi Proyecto de Video',
+  name: 'Mi proyecto de vídeo',
   aspectRatio: '16:9',
   resolution: { width: 1920, height: 1080 },
   fps: 30,
@@ -1423,6 +1507,61 @@ export function installAutosaveFlushOnUnload(): void {
   window.addEventListener('pagehide', flush);
 }
 
+/**
+ * D03 · Valida los campos que `updateClip` puede escribir.
+ *
+ * Un valor imposible se RECHAZA con un motivo (el caller lo publica en
+ * `lastError`) en vez de aterrizar en el estado: tiempos no finitos,
+ * `start`/`sourceStart`/`sourceDuration` negativos, `duration` negativa, una
+ * pista que no existe o un medio que no existe (salvo `''`, el clip de texto
+ * sin medio). La validación ocurre ANTES de empujar historial: un rechazo no
+ * deja entradas fantasma.
+ */
+function validateClipUpdates(
+  project: Project,
+  clip: Clip,
+  updates: Partial<Clip>
+): string | null {
+  if (!updates || typeof updates !== 'object') return `No se puede editar «${clip.name}»: cambios no válidos.`;
+  if ('trackId' in updates) {
+    const trackId = updates.trackId;
+    if (typeof trackId !== 'string' || !project.tracks.some((t) => t.id === trackId)) {
+      return `No se puede editar «${clip.name}»: la pista «${String(trackId)}» no existe.`;
+    }
+  }
+  if ('mediaId' in updates) {
+    const mediaId = updates.mediaId;
+    if (
+      typeof mediaId !== 'string' ||
+      (mediaId !== '' && !project.mediaPool.some((m) => m.id === mediaId))
+    ) {
+      return `No se puede editar «${clip.name}»: el medio «${String(mediaId)}» no existe.`;
+    }
+  }
+  if (updates.start !== undefined && (!Number.isFinite(updates.start) || updates.start < 0)) {
+    return `No se puede editar «${clip.name}»: el inicio (${String(updates.start)}) no es un tiempo válido.`;
+  }
+  if (
+    updates.duration !== undefined &&
+    (!Number.isFinite(updates.duration) || updates.duration < 0)
+  ) {
+    return `No se puede editar «${clip.name}»: la duración (${String(updates.duration)}) no es válida.`;
+  }
+  if (
+    updates.sourceStart !== undefined &&
+    (!Number.isFinite(updates.sourceStart) || updates.sourceStart < 0)
+  ) {
+    return `No se puede editar «${clip.name}»: el inicio de origen (${String(updates.sourceStart)}) no es válido.`;
+  }
+  if (
+    updates.sourceDuration !== undefined &&
+    (!Number.isFinite(updates.sourceDuration) || updates.sourceDuration < 0)
+  ) {
+    return `No se puede editar «${clip.name}»: la duración de origen (${String(updates.sourceDuration)}) no es válida.`;
+  }
+  return null;
+}
+
 export const useProjectStore = create<ProjectState>((set, get) => ({
   project: INITIAL_PROJECT,
   selectedClipId: null,
@@ -1594,7 +1733,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
     if (removable.length === 0) {
       const trackName = state.project.tracks.find((t) => t.id === locked[0].trackId)?.name ?? '';
-      const message = `La pista "${trackName}" está bloqueada: desbloquéala para poder eliminar ${
+      const message = `La pista «${trackName}» está bloqueada: desbloquéala para poder eliminar ${
         doomed.length === 1 ? 'el clip' : 'los clips'
       } seleccionado${doomed.length === 1 ? '' : 's'}.`;
       console.warn(message);
@@ -1633,7 +1772,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const trackName = state.project.tracks.find((t) => t.id === locked[0].trackId)?.name ?? '';
       const message = `Se han eliminado ${removable.length} clip${
         removable.length === 1 ? '' : 's'
-      }, pero ${locked.length} clip${locked.length === 1 ? '' : 's'} de la pista bloqueada "${trackName}" no se han eliminado.`;
+      }, pero ${locked.length} clip${locked.length === 1 ? '' : 's'} de la pista bloqueada «${trackName}» no se han eliminado.`;
       console.warn(message);
       set({ lastError: message });
     }
@@ -1718,6 +1857,19 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       trash: [...(previous.trash ?? [])],
       updatedAt: Date.now(),
     };
+    // D01: un undo puede resucitar un medio cuyos bytes ya se purgaron. El
+    // estado restaurado NUNCA parece funcional cuando no lo es: esos medios
+    // vuelven como `status: 'missing'` ("medio ausente") con su motivo.
+    const markedPool = markDestroyedMediaMissing(updated.mediaPool);
+    const markedTrashNames: string[] = [];
+    const markedTrash = (updated.trash ?? []).map((entry) => {
+      const marked = markDestroyedMediaMissing([entry.media]);
+      markedTrashNames.push(...marked.missingNames);
+      return marked.missingNames.length > 0 ? { ...entry, media: marked.items[0] } : entry;
+    });
+    const missingNames = [...markedPool.missingNames, ...markedTrashNames];
+    updated.mediaPool = markedPool.items;
+    updated.trash = markedTrash;
     // F6: the selection of the restored state is restored too, but a clip that
     // does not exist any more NEVER stays in the selection (no dangling id).
     const restoredSelection = pruneSelection(previous.selectedClipIds, updated.clips);
@@ -1731,8 +1883,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       historyGesturePending: false,
       historyCoalesceKey: null,
       historyCoalesceAt: 0,
-      // F6: a successful undo clears the stale refusal of a previous action.
-      lastError: null,
+      // F6: a successful undo clears the stale refusal of a previous action…
+      // salvo cuando el undo resucita medios sin bytes (D01: el aviso manda).
+      lastError: missingNames.length > 0 ? buildMissingMediaReason(missingNames) : null,
     });
     get().recalculateDuration();
     persistProject(updated);
@@ -1758,6 +1911,18 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       trash: [...(next.trash ?? [])],
       updatedAt: Date.now(),
     };
+    // D01: como en el undo, un redo nunca resucita medios sin bytes como si
+    // funcionaran (ver el comentario del undo).
+    const markedPool = markDestroyedMediaMissing(updated.mediaPool);
+    const markedTrashNames: string[] = [];
+    const markedTrash = (updated.trash ?? []).map((entry) => {
+      const marked = markDestroyedMediaMissing([entry.media]);
+      markedTrashNames.push(...marked.missingNames);
+      return marked.missingNames.length > 0 ? { ...entry, media: marked.items[0] } : entry;
+    });
+    const missingNames = [...markedPool.missingNames, ...markedTrashNames];
+    updated.mediaPool = markedPool.items;
+    updated.trash = markedTrash;
     // F6: same rule as the undo (no dangling id in the selection).
     const restoredSelection = pruneSelection(next.selectedClipIds, updated.clips);
     set({
@@ -1770,8 +1935,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       historyGesturePending: false,
       historyCoalesceKey: null,
       historyCoalesceAt: 0,
-      // F6: a successful redo clears the stale refusal of a previous action.
-      lastError: null,
+      // F6: a successful redo clears the stale refusal of a previous action…
+      // salvo cuando resucita medios sin bytes (D01).
+      lastError: missingNames.length > 0 ? buildMissingMediaReason(missingNames) : null,
     });
     get().recalculateDuration();
     persistProject(updated);
@@ -1835,9 +2001,42 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!entry) return false;
 
     get().pushHistory();
+    let notice: string | null = null;
     set((s) => {
-      const updatedPool = [...s.project.mediaPool, entry.media];
-      const updatedClips = [...s.project.clips, ...entry.clips];
+      // D04: el clip solo vuelve si su pista sigue existiendo. La pista pudo
+      // borrarse mientras el medio estaba en la papelera: reinsertar el clip
+      // igual crearía un huérfano invisible que contamina la selección y el
+      // export. El medio SIEMPRE se restaura (sus bytes siguen en OPFS); los
+      // clips sin pista se descartan con aviso. (Recrear la pista a escondidas
+      // resucitaría una estructura que el usuario borró a propósito.)
+      const liveTrackIds = new Set(s.project.tracks.map((t) => t.id));
+      const liveClipIds = new Set(s.project.clips.map((c) => c.id));
+      const restoredClips: Clip[] = [];
+      let droppedByTrack = 0;
+      let renamed = 0;
+      for (const clip of entry.clips) {
+        if (!liveTrackIds.has(clip.trackId)) {
+          droppedByTrack += 1;
+          continue;
+        }
+        // D08: un id no vive a la vez en la línea y en la papelera: la
+        // colisión se repara con un id nuevo (el contenido se conserva).
+        let clipId = clip.id;
+        if (liveClipIds.has(clipId)) {
+          clipId = createClipId();
+          renamed += 1;
+        }
+        liveClipIds.add(clipId);
+        restoredClips.push(clipId === clip.id ? clip : { ...clip, id: clipId });
+      }
+      // D01: si los bytes se purgaron tras aparcar el medio, lo restaurado
+      // vuelve como ausente, nunca como funcional.
+      let restoredMedia = entry.media;
+      if (destroyedMediaIds.has(restoredMedia.id) && restoredMedia.status !== 'missing') {
+        restoredMedia = { ...restoredMedia, status: 'missing' };
+      }
+      const updatedPool = [...s.project.mediaPool, restoredMedia];
+      const updatedClips = [...s.project.clips, ...restoredClips];
       const updatedTrash = (s.project.trash ?? []).filter((e) => e.media.id !== mediaId);
       const updated: Project = {
         ...s.project,
@@ -1847,9 +2046,30 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         updatedAt: Date.now(),
       };
       persistProject(updated);
-      return { project: updated, lastError: null };
+      const parts: string[] = [];
+      if (droppedByTrack > 0) {
+        parts.push(
+          droppedByTrack === 1
+            ? '1 clip no se ha recuperado porque su pista ya no existe.'
+            : `${droppedByTrack} clips no se han recuperado porque su pista ya no existe.`
+        );
+      }
+      if (renamed > 0) {
+        parts.push(
+          renamed === 1
+            ? '1 clip ha recibido un identificador nuevo para no duplicarse.'
+            : `${renamed} clips han recibido un identificador nuevo para no duplicarse.`
+        );
+      }
+      if (restoredMedia.status === 'missing') {
+        parts.push(buildMissingMediaReason([restoredMedia.name || restoredMedia.id]));
+      }
+      notice =
+        parts.length > 0 ? `Se ha restaurado «${restoredMedia.name}». ${parts.join(' ')}` : null;
+      return { project: updated, lastError: notice };
     });
     get().recalculateDuration();
+    if (notice) console.warn(notice);
     return true;
   },
 
@@ -1857,7 +2077,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const trash = get().project.trash ?? [];
     if (trash.length === 0) return 0;
 
-    get().pushHistory();
+    // D01: la purga destruye los bytes (OPFS) y revoca las URLs: es
+    // IRREVERSIBLE y por eso no empuja historial (como borrar un proyecto).
+    // Deshacerla mentiría (el estado volvería pero los bytes no). Los ids se
+    // registran para que ningún undo/redo posterior los resucite como sanos.
+    for (const entry of trash) destroyedMediaIds.add(entry.media.id);
+    void discardRelinkBackup(trash.map((entry) => entry.media.id));
     set((s) => {
       const updated: Project = {
         ...s.project,
@@ -1880,7 +2105,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const entry = trash.find((e) => e.media.id === mediaId);
     if (!entry) return false;
 
-    get().pushHistory();
+    // D01: irreversible, como `purgeTrash` (sin entrada de historial).
+    destroyedMediaIds.add(entry.media.id);
+    void discardRelinkBackup(entry.media.id);
     set((s) => {
       const updated: Project = {
         ...s.project,
@@ -1935,12 +2162,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       (state.project.trash ?? []).find((e) => e.media.id === mediaId)?.media;
     if (!media) return false;
 
-    const relinked = await relinkMediaBytes(media, file, state.project.id);
+    // D09: revincular es UNA edición deshacible (un solo paso de historial).
+    // El snapshot se toma cuando los bytes ya están a salvo: un revinculado
+    // fallido no deja una entrada fantasma ni limpia el redo (S-17).
+    const relinked = await relinkMediaBytes(media, file, state.project.id, { keepPrevious: true });
     if (!relinked) {
       const message = `No se pudo revincular «${media.name}»: el archivo no se pudo guardar.`;
       set({ lastError: message });
       return false;
     }
+    get().pushHistory();
+    // …y el archivo previo se conserva como copia de seguridad para que el
+    // undo recupere los bytes anteriores de verdad (ver `relinkMediaBytes` con
+    // `keepPrevious`). Revíncular vuelve a hacer válido el medio.
+    destroyedMediaIds.delete(mediaId);
 
     set((s) => {
       const updatedPool = s.project.mediaPool.map((m) => (m.id === mediaId ? relinked : m));
@@ -1967,7 +2202,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     get().pushHistory();
     set((state) => {
       const index = state.project.tracks.filter((t) => t.type === type).length + 1;
-      const trackName = name || `${type === 'video' ? 'Video' : type === 'audio' ? 'Audio' : 'Texto'} ${index}`;
+      const trackName = name || `${type === 'video' ? 'Vídeo' : type === 'audio' ? 'Audio' : 'Texto'} ${index}`;
       const newTrack: Track = {
         id: `track_${type}_${Date.now()}`,
         name: trackName,
@@ -2007,7 +2242,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // destroy the clips it protects, so the store refuses (guard lives here
     // because the UI is not the only caller).
     if (track.isLocked) {
-      const message = `La pista "${track.name}" está bloqueada: desbloquéala para poder eliminarla.`;
+      const message = `La pista «${track.name}» está bloqueada: desbloquéala para poder eliminarla.`;
       console.warn(message);
       set({ lastError: message });
       return;
@@ -2190,8 +2425,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (!track) {
       const message =
         media.type === 'audio'
-          ? `No hay ninguna pista de audio para "${media.name}". Crea una pista de audio antes de insertarlo.`
-          : `No hay ninguna pista de vídeo para "${media.name}". Crea una pista de vídeo antes de insertarlo.`;
+          ? `No hay ninguna pista de audio para «${media.name}». Crea una pista de audio antes de insertarlo.`
+          : `No hay ninguna pista de vídeo para «${media.name}». Crea una pista de vídeo antes de insertarlo.`;
       console.warn(message);
       set({ lastError: message });
       return { ok: false, reason: message };
@@ -2202,7 +2437,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // must survive it.
     let refusal: string | null = null;
     if (requested && requested.type !== requiredType) {
-      refusal = `"${media.name}" es ${media.type === 'audio' ? 'audio' : 'vídeo'} y no puede colocarse en la pista "${requested.name}".`;
+      const mediaKind = media.type === 'audio' ? 'audio' : 'vídeo';
+      const requiredKind =
+        requiredType === 'audio' ? 'audio' : requiredType === 'text' ? 'texto' : 'vídeo';
+      refusal = `«${media.name}» es ${mediaKind} y no cabe en «${requested.name}»: usa una pista de ${requiredKind}.`;
       console.warn(refusal);
     }
 
@@ -2774,7 +3012,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       return [];
     }
     if (track.isLocked) {
-      const message = `La pista "${track.name}" está bloqueada: desbloquéala para poder pegar clips.`;
+      const message = `La pista «${track.name}» está bloqueada: desbloquéala para poder pegar clips.`;
       console.warn(message);
       set({ lastError: message });
       return [];
@@ -2786,7 +3024,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const clipKind =
         incompatible.clip.type === 'audio' ? 'audio' : incompatible.clip.type === 'text' ? 'texto' : 'vídeo';
       const trackKind = track.type === 'audio' ? 'audio' : track.type === 'text' ? 'texto' : 'vídeo';
-      const message = `No se puede pegar un clip de ${clipKind} en la pista "${track.name}" (${trackKind}).`;
+      const message = `No se puede pegar un clip de ${clipKind} en la pista «${track.name}» (${trackKind}).`;
       console.warn(message);
       set({ lastError: message });
       return [];
@@ -2855,7 +3093,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         const message =
           `No se puede pegar aquí: se solapa con «${conflict.name}» ` +
           `(${formatTimelineTime(conflict.start)}–${formatTimelineTime(clipEnd(conflict))}). ` +
-          `Mueve el cabezal de reproducción o cambia la política de solapamiento a «Sobrescribir» o «Ripple» en el Inspector.`;
+          `Mueve el cabezal de reproducción o cambia la política de solapamiento a «Sobrescribir» o «Desplazar» en el Inspector.`;
         console.warn(message);
         set({ lastError: message });
         return [];
@@ -2917,7 +3155,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       const track = project.tracks.find((t) => t.id === source.trackId);
       if (!track) continue;
       if (track.isLocked) {
-        const message = `La pista "${track.name}" está bloqueada: desbloquéala para poder duplicar clips.`;
+        const message = `La pista «${track.name}» está bloqueada: desbloquéala para poder duplicar clips.`;
         console.warn(message);
         set({ lastError: message });
         return [];
@@ -2978,11 +3216,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return newClips.map((clip) => clip.id);
   },
 
-  addTextClip: (text = 'Título Nuevo', startTime) => {
+  addTextClip: (text = 'Título', startTime) => {
     const { project, currentTime } = get();
     let textTrack = project.tracks.find((t) => t.type === 'text');
     if (!textTrack) {
-      get().addTrack('text', 'Pista de Texto');
+      const index = project.tracks.filter((t) => t.type === 'text').length + 1;
+      get().addTrack('text', `Texto T${index}`);
       textTrack = get().project.tracks.find((t) => t.type === 'text');
     }
     if (!textTrack) return;
@@ -3026,6 +3265,15 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const clip = state.project.clips.find((c) => c.id === clipId);
     if (!clip) return;
 
+    // D03: lo imposible se rechaza con `lastError` (sin escribir nada, sin
+    // historial) en vez de aterrizar en el estado.
+    const invalid = validateClipUpdates(state.project, clip, updates);
+    if (invalid) {
+      console.warn(invalid);
+      set({ lastError: invalid });
+      return;
+    }
+
     const now = Date.now();
     // While a drag/trim gesture is open the gesture owns the history entry.
     const inGesture = state.historyGesturePending;
@@ -3036,9 +3284,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       state.historyCoalesceKey === clipId &&
       now - state.historyCoalesceAt <= UPDATE_COALESCE_WINDOW_MS;
 
-    if (!inGesture && !canCoalesce) {
-      get().pushHistory();
-    }
+    // (El snapshot se empuja más abajo: después de validar (D03) y de
+    // resolver la política (D05). Un rechazo no deja entradas fantasma.)
 
     // S-04: changing the speed rescales the clip duration so the invariant
     // `sourceStart + duration * speed <= sourceDuration` always holds.
@@ -3108,8 +3355,59 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       nextUpdates.audioEffects = normalizeAudioEffects(nextUpdates.audioEffects);
     }
 
+    // D05: la edición cambia el rango temporal del clip cuando toca `start`,
+    // `duration`, `trackId` (o cuando la velocidad reescala la duración). La
+    // política de solapamiento se aplica igual que en la inserción: bajo
+    // `block` el cambio se rechaza; bajo `overwrite`/`ripple` los vecinos se
+    // recortan/desplazan. Sin cambios de rango no hay nada que resolver.
+    const newStart = nextUpdates.start !== undefined ? nextUpdates.start : clip.start;
+    const newDuration = nextUpdates.duration !== undefined ? nextUpdates.duration : clip.duration;
+    const newTrackId =
+      nextUpdates.trackId !== undefined ? (nextUpdates.trackId as string) : clip.trackId;
+    const timeChanged =
+      newStart !== clip.start || newDuration !== clip.duration || newTrackId !== clip.trackId;
+    let baseClips = state.project.clips;
+    const removedByPolicy: Clip[] = [];
+    if (timeChanged) {
+      const policy: OverlapPolicy = state.project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
+      const trackName =
+        state.project.tracks.find((t) => t.id === newTrackId)?.name ?? newTrackId;
+      const others = state.project.clips.filter((c) => c.id !== clipId);
+      const resolution = resolveRangeChange(
+        others,
+        newTrackId,
+        newStart,
+        newDuration,
+        clipId,
+        policy,
+        'editar',
+        clip.name,
+        trackName
+      );
+      if (!resolution.ok) {
+        console.warn(resolution.reason);
+        set({ lastError: resolution.reason });
+        return;
+      }
+      // El clip editado conserva su posición en la lista (el orden pinta).
+      const updatedSelf: Clip = { ...clip, ...nextUpdates };
+      const selfIndex = state.project.clips.findIndex((c) => c.id === clipId);
+      const next = [...resolution.clips];
+      next.splice(Math.min(selfIndex, next.length), 0, updatedSelf);
+      baseClips = next;
+      removedByPolicy.push(...resolution.removed);
+    }
+
+    if (!inGesture && !canCoalesce) {
+      get().pushHistory();
+    }
+
     set((s) => {
-      const updatedClips = s.project.clips.map((c) => (c.id === clipId ? { ...c, ...nextUpdates } : c));
+      // Con resolución de política `baseClips` ya trae a los vecinos
+      // recortados/desplazados; sin ella es el estado actual.
+      const updatedClips = timeChanged
+        ? baseClips
+        : s.project.clips.map((c) => (c.id === clipId ? { ...c, ...nextUpdates } : c));
       const updated = { ...s.project, clips: updatedClips, updatedAt: Date.now() };
       persistProject(updated);
       return {
@@ -3122,6 +3420,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         lastError: audioFadeClampReason,
       };
     });
+    for (const removed of removedByPolicy) {
+      runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(removed.id));
+    }
     get().recalculateDuration();
   },
 
@@ -3203,9 +3504,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
         const clipKind =
           clip.type === 'audio' ? 'audio' : clip.type === 'text' ? 'texto' : 'vídeo';
-        const trackKind =
-          target.type === 'audio' ? 'audio' : target.type === 'text' ? 'texto' : 'vídeo';
-        refusal = `Un clip de ${clipKind} no puede colocarse en la pista "${target.name}" (${trackKind}).`;
+        const requiredKind =
+          requiredType === 'audio' ? 'audio' : requiredType === 'text' ? 'texto' : 'vídeo';
+        refusal = `«${clip.name}» es ${clipKind} y no cabe en «${target.name}»: usa una pista de ${requiredKind}.`;
         console.warn(refusal);
       }
     }
@@ -3225,20 +3526,56 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const finalStart = toFiniteTime(snap.snappedTime, clip.start);
     const snapGuide = snap.didSnap && snap.snapTargetTime !== undefined ? snap.snapTargetTime : null;
 
+    // D05: mover cambia el rango temporal del clip, así que la política de
+    // solapamiento se aplica igual que en la inserción (bloquear = rechazar,
+    // sobrescribir = recortar vecinos, desplazar = moverlos). Los fundidos de
+    // cruce deliberados del propio clip no cuentan como conflicto.
+    const policy: OverlapPolicy = project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
+    const effectiveTrack = project.tracks.find((t) => t.id === effectiveTrackId);
+    const others = project.clips.filter((c) => c.id !== clipId);
+    const resolution = resolveRangeChange(
+      others,
+      effectiveTrackId,
+      finalStart,
+      clip.duration,
+      clipId,
+      policy,
+      'mover',
+      clip.name,
+      effectiveTrack?.name ?? effectiveTrackId
+    );
+    if (!resolution.ok) {
+      console.warn(resolution.reason);
+      set({ lastError: resolution.reason });
+      return;
+    }
+
+    // D06: sin gesto abierto el move se basta solo: empuja su propia entrada
+    // de historial (deshacerlo es posible) en vez de esperar un commit que
+    // puede no llegar nunca. Con gesto, el gesto es dueño de la entrada.
+    const inGesture = get().historyGesturePending;
+    if (!inGesture) {
+      get().pushHistory();
+    }
+
+    // El clip movido conserva su posición en la lista (el orden pinta).
+    const moved: Clip = { ...clip, start: finalStart, trackId: effectiveTrackId };
+    const selfIndex = project.clips.findIndex((c) => c.id === clipId);
+    const next = [...resolution.clips];
+    next.splice(Math.min(selfIndex, next.length), 0, moved);
+
     set((state) => {
-      const updatedClips = state.project.clips.map((c) => {
-        if (c.id === clipId) {
-          return {
-            ...c,
-            start: finalStart,
-            trackId: effectiveTrackId,
-          };
-        }
-        return c;
-      });
-      const updated = { ...state.project, clips: updatedClips, updatedAt: Date.now() };
+      const updated = { ...state.project, clips: next, updatedAt: Date.now() };
+      // D06: el camino sin gesto persiste como el gestual (tras el commit).
+      if (!inGesture) persistProject(updated);
       return { project: updated, snappingGuideTime: snapGuide, lastError: refusal };
     });
+    for (const removed of resolution.removed) {
+      runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(removed.id));
+    }
+    // D06: la duración se recalcula siempre (el camino sin gesto la dejaba
+    // obsoleta); con gesto el commit la recalcula de nuevo sin daño.
+    get().recalculateDuration();
   },
 
   commitClipChange: () => {
@@ -3288,38 +3625,74 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     const newSourceStart = Math.max(0, clip.sourceStart + delta * speed);
     const newDuration = originalEnd - effectiveStart;
 
+    // D05: el recorte cambia el rango temporal del clip (extender a la
+    // izquierda puede invadir al vecino): la política se aplica igual que en
+    // la inserción. D06: sin gesto abierto el trim empuja su propia entrada de
+    // historial y persiste (con gesto, el gesto es dueño de la entrada).
+    const policy: OverlapPolicy = project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
+    const track = project.tracks.find((t) => t.id === clip.trackId);
+    const others = project.clips.filter((c) => c.id !== clipId);
+    const resolution = resolveRangeChange(
+      others,
+      clip.trackId,
+      effectiveStart,
+      newDuration,
+      clipId,
+      policy,
+      'recortar',
+      clip.name,
+      track?.name ?? clip.trackId
+    );
+    if (!resolution.ok) {
+      console.warn(resolution.reason);
+      set({ lastError: resolution.reason });
+      return;
+    }
+    const inGesture = get().historyGesturePending;
+    if (!inGesture) {
+      get().pushHistory();
+    }
+
+    const trimmed: Clip = {
+      ...clip,
+      start: effectiveStart,
+      duration: newDuration,
+      sourceStart: newSourceStart,
+      // F8: el `t` es relativo al inicio: al moverlo, los keyframes se
+      // desplazan con él y los que quedan fuera se descartan. Sin
+      // keyframes el objeto es idéntico al de hoy.
+      ...(clip.keyframes && clip.keyframes.length > 0
+        ? {
+            keyframes: shiftKeyframesAfterTrimStart(
+              clip.keyframes,
+              delta,
+              newDuration,
+              project.fps
+            ),
+          }
+        : {}),
+    };
+    const selfIndex = project.clips.findIndex((c) => c.id === clipId);
+    const next = [...resolution.clips];
+    next.splice(Math.min(selfIndex, next.length), 0, trimmed);
+
     set((state) => {
-      const updatedClips = state.project.clips.map((c) =>
-        c.id === clipId
-          ? {
-              ...c,
-              start: effectiveStart,
-              duration: newDuration,
-              sourceStart: newSourceStart,
-              // F8: el `t` es relativo al inicio: al moverlo, los keyframes se
-              // desplazan con él y los que quedan fuera se descartan. Sin
-              // keyframes el objeto es idéntico al de hoy.
-              ...(c.keyframes && c.keyframes.length > 0
-                ? {
-                    keyframes: shiftKeyframesAfterTrimStart(
-                      c.keyframes,
-                      delta,
-                      newDuration,
-                      project.fps
-                    ),
-                  }
-                : {}),
-            }
-          : c
-      );
+      const updated: Project = { ...state.project, clips: next, updatedAt: Date.now() };
+      // D06: el camino sin gesto persiste como el gestual (tras el commit).
+      if (!inGesture) persistProject(updated);
       // S-05: a trim is an edit, so the project must rise in the projects gallery.
       return {
-        project: { ...state.project, clips: updatedClips, updatedAt: Date.now() },
+        project: updated,
         snappingGuideTime: snapGuide,
         // F6: a successful trim clears the stale refusal of a previous action.
         lastError: null,
       };
     });
+    for (const removed of resolution.removed) {
+      runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(removed.id));
+    }
+    // D06: la duración se recalcula siempre (ver `moveClip`).
+    get().recalculateDuration();
   },
 
   trimClipEnd: (clipId, newEnd, options) => {
@@ -3366,28 +3739,62 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     // S-19: never write a non-finite duration into the timeline.
     if (!Number.isFinite(newDuration) || newDuration <= 0) return;
 
+    // D05 + D06: igual que en `trimClipStart` (política sobre el nuevo rango,
+    // historial y persistencia propios sin gesto abierto).
+    const policy: OverlapPolicy = project.overlapPolicy ?? DEFAULT_OVERLAP_POLICY;
+    const track = project.tracks.find((t) => t.id === clip.trackId);
+    const others = project.clips.filter((c) => c.id !== clipId);
+    const resolution = resolveRangeChange(
+      others,
+      clip.trackId,
+      clip.start,
+      newDuration,
+      clipId,
+      policy,
+      'recortar',
+      clip.name,
+      track?.name ?? clip.trackId
+    );
+    if (!resolution.ok) {
+      console.warn(resolution.reason);
+      set({ lastError: resolution.reason });
+      return;
+    }
+    const inGesture = get().historyGesturePending;
+    if (!inGesture) {
+      get().pushHistory();
+    }
+
+    const trimmed: Clip = {
+      ...clip,
+      duration: newDuration,
+      // F8: los keyframes más allá del nuevo final desaparecen con el
+      // material recortado. Sin keyframes el objeto es idéntico al de hoy.
+      ...(clip.keyframes && clip.keyframes.length > 0
+        ? { keyframes: cropKeyframesToDuration(clip.keyframes, newDuration) }
+        : {}),
+    };
+    const selfIndex = project.clips.findIndex((c) => c.id === clipId);
+    const next = [...resolution.clips];
+    next.splice(Math.min(selfIndex, next.length), 0, trimmed);
+
     set((state) => {
-      const updatedClips = state.project.clips.map((c) =>
-        c.id === clipId
-          ? {
-              ...c,
-              duration: newDuration,
-              // F8: los keyframes más allá del nuevo final desaparecen con el
-              // material recortado. Sin keyframes el objeto es idéntico al de hoy.
-              ...(c.keyframes && c.keyframes.length > 0
-                ? { keyframes: cropKeyframesToDuration(c.keyframes, newDuration) }
-                : {}),
-            }
-          : c
-      );
+      const updated: Project = { ...state.project, clips: next, updatedAt: Date.now() };
+      // D06: el camino sin gesto persiste como el gestual (tras el commit).
+      if (!inGesture) persistProject(updated);
       // S-05: a trim is an edit, so the project must rise in the projects gallery.
       return {
-        project: { ...state.project, clips: updatedClips, updatedAt: Date.now() },
+        project: updated,
         snappingGuideTime: snapGuide,
         // F6: a successful trim clears the stale refusal of a previous action.
         lastError: null,
       };
     });
+    for (const removed of resolution.removed) {
+      runEngineCleanup('mediaSourcePool.releaseClip', () => mediaSourcePool.releaseClip(removed.id));
+    }
+    // D06: la duración se recalcula siempre (ver `moveClip`).
+    get().recalculateDuration();
   },
 
   splitClip: (clipId, splitTime) => {
@@ -3545,6 +3952,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     runEngineCleanup('audioEngine.stopAll', () => audioEngine.stopAll());
     // Every object URL of the previous project is dead now.
     revokeAllObjectUrls();
+    // D01: nuevo proyecto, nuevo contexto: los ids destruidos del anterior no
+    // significan nada aquí (el historial también se vacía).
+    destroyedMediaIds.clear();
     set({
       project: {
         ...INITIAL_PROJECT,
@@ -3585,6 +3995,9 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     if (previousProjectId && previousProjectId !== loadedProject.id) {
       revokeProjectObjectUrls(previousProjectId);
     }
+    // D01: como en `resetProject`, el registro de destruidos no cruza de un
+    // proyecto a otro (el historial también se vacía).
+    destroyedMediaIds.clear();
     set({
       project: loadedProject,
       selectedClipId: null,

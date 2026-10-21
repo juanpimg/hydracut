@@ -182,9 +182,13 @@ describe('KI-02 · computeRenderScale', () => {
     expect(r.pixels).toBeLessThanOrEqual(LOGICAL.width * LOGICAL.height);
   });
 
-  it('keeps the pixel ceiling from blurring a HiDPI preview', () => {
-    // The ceiling is a safety net for pathological cases, it must not force
-    // the preview below the resolution the display needs.
+  it('applies the pixel ceiling as a hard budget (it binds when the display needs more)', () => {
+    // El techo es DURO: con un presupuesto explícito de 1,3 M px y una
+    // necesidad de 1,6 M px (851x478 @2x), el backing store se queda en el
+    // presupuesto en vez de superarlo. La proporción y los números pares se
+    // conservan; la nitidez cede solo en los casos que superan el techo (ver
+    // el contrato B4: los timelines 1080p con el techo por defecto siguen
+    // nítidos porque 2,1 M px cubren un 1080p completo).
     const r = computeRenderScale({
       logicalWidth: LOGICAL.width,
       logicalHeight: LOGICAL.height,
@@ -193,7 +197,10 @@ describe('KI-02 · computeRenderScale', () => {
       devicePixelRatio: 2,
       maxPixels: 1_300_000,
     });
-    expect(r.width * r.height).toBeGreaterThan(851 * 2 * 478 * 2 * 0.95);
+    expect(r.width * r.height).toBeLessThanOrEqual(1_300_000);
+    expect(r.width % 2).toBe(0);
+    expect(r.height % 2).toBe(0);
+    expect(aspectError(r.width, r.height, LOGICAL.width, LOGICAL.height)).toBeLessThan(0.01);
   });
 
   it('always produces even dimensions', () => {
@@ -289,7 +296,10 @@ describe('KI-02 · computeRenderScale', () => {
   });
 
   it('exposes the default pixel ceiling', () => {
-    expect(MAX_PREVIEW_PIXELS).toBe(1_300_000);
+    // 2,1 M px: cubre un proyecto 1080p completo (2 073 600 px) con margen y
+    // acota los proyectos mayores (un 4K a pantalla completa necesitaría
+    // 8,3 M px).
+    expect(MAX_PREVIEW_PIXELS).toBe(2_100_000);
   });
 });
 

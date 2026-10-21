@@ -173,7 +173,7 @@ export const Header: React.FC = () => {
           size="sm"
           icon={<Download size={14} aria-hidden="true" />}
           onClick={() => setExportModalOpen(true)}
-          aria-label="Abrir modal de exportación de vídeo"
+          aria-label="Exportar vídeo"
           title="Exportar vídeo"
           data-testid="export-open-button"
           className="ml-1 shrink-0 font-bold"

@@ -510,7 +510,7 @@ async function runMobileSplit({ browser, report, baseUrl }) {
     // 3.1 — mobile shell, empty timeline: the button must be disabled.
     await waitForPreviewCanvas(page);
     const empty = await evaluateWithRetry(page, () => {
-      const button = document.querySelector('button[aria-label="Dividir clip en el cabezal"]');
+      const button = document.querySelector('nav button[aria-label^="Dividir en cabezal"]');
       return button
         ? { found: true, disabled: button.disabled }
         : { found: false, disabled: null };
@@ -536,7 +536,7 @@ async function runMobileSplit({ browser, report, baseUrl }) {
     await delay(800);
 
     const atStart = await evaluateWithRetry(page, () => {
-      const button = document.querySelector('button[aria-label="Dividir clip en el cabezal"]');
+      const button = document.querySelector('nav button[aria-label^="Dividir en cabezal"]');
       return {
         found: Boolean(button),
         disabled: button ? button.disabled : null,
@@ -557,7 +557,7 @@ async function runMobileSplit({ browser, report, baseUrl }) {
       const deadline = Date.now() + 8000;
       while (Date.now() < deadline) {
         inside = await evaluateWithRetry(page, () => {
-          const button = document.querySelector('button[aria-label="Dividir clip en el cabezal"]');
+          const button = document.querySelector('nav button[aria-label^="Dividir en cabezal"]');
           return {
             found: Boolean(button),
             disabled: button ? button.disabled : null,

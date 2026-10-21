@@ -810,7 +810,9 @@ describe('F1 — gestor de almacenamiento', () => {
     const card = readFileSync(new URL('../components/media/MediaItemCard.tsx', import.meta.url), 'utf8');
 
     expect(card).toContain('media-size-');
-    expect(card).toContain('formatStorageBytes');
+    // Formateador único compartido con el diálogo de exportación (M7/M8).
+    expect(card).toContain('formatearBytes');
+    expect(card).toContain('utils/formato');
   });
 });
 

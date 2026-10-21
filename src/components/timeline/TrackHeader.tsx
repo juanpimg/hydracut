@@ -30,6 +30,16 @@ const MARCA_POR_TIPO: Record<TrackType, string> = {
   text: 'bg-clip-text',
 };
 
+/**
+ * Nombre canónico del tipo de pista en español (`docs/copy.md` §3):
+ * el menú muestra «Vídeo», nunca el crudo `video`.
+ */
+export const NOMBRE_TIPO_PISTA: Record<TrackType, string> = {
+  video: 'Vídeo',
+  audio: 'Audio',
+  text: 'Texto',
+};
+
 export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
   const toggleTrackMute = useProjectStore((s) => s.toggleTrackMute);
   const toggleTrackLock = useProjectStore((s) => s.toggleTrackLock);
@@ -62,7 +72,10 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
   return (
     <div
       data-testid={`track-header-${track.id}`}
-      className="h-14 px-2 bg-panel border-b border-r border-border-subtle flex flex-col justify-center gap-1 select-none overflow-hidden"
+      // Sin `overflow-hidden`: el `::after` táctil de los botones (C2) debe
+      // vivir fuera de la caja sin recortes (la columna ya recorta en ambos
+      // ejes y el nombre trunca en su propio `span`).
+      className="h-14 px-2 bg-panel border-b border-r border-border-subtle flex flex-col justify-center gap-1 select-none"
     >
       {/* Fila 1 · Marca de tipo + código + nombre real. En columna estrecha
           (< 400 px) el nombre se oculta: solo queda el código corto (V2/A1/T1)
@@ -152,7 +165,7 @@ export const TrackHeader: React.FC<TrackHeaderProps> = ({ track, index }) => {
       >
         <div className="px-2.5 py-1.5 text-caption text-text-2 flex items-center justify-between gap-2 uppercase">
           <span className="truncate normal-case text-body-sm text-text-1">{track.name}</span>
-          <span className="shrink-0">{track.type}</span>
+          <span className="shrink-0">{NOMBRE_TIPO_PISTA[track.type]}</span>
         </div>
         <MenuSeparador />
 

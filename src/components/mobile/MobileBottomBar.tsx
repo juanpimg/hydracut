@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   FolderPlus,
   Type,
@@ -10,10 +10,17 @@ import {
   Trash2,
   Eye,
   Sliders,
-  X
+  X,
+  Undo2,
+  Redo2,
+  MonitorPlay,
+  ListVideo
 } from 'lucide-react';
 import { useProjectStore } from '../../store/useProjectStore';
 import { masterClock } from '../../core/engine/MasterClock';
+import { Button } from '../ui/Button';
+import { Dialog } from '../ui/Dialog';
+import type { VistaPaisaje } from './MobileCapCutLayout';
 
 export type MobileSheetType =
   | 'media'
@@ -28,6 +35,14 @@ export type MobileSheetType =
 
 interface MobileBottomBarProps {
   onOpenSheet: (sheet: MobileSheetType) => void;
+  /**
+   * C4 · Conmutador Visor ⇄ Línea de tiempo: solo lo muestra quien lo pide
+   * (la maquetación apaisada). Opcional para no cambiar el montaje que
+   * afirma el aislamiento de renders (R5).
+   */
+  mostrarConmutadorVista?: boolean;
+  vistaPaisaje?: VistaPaisaje;
+  onCambiarVista?: (vista: VistaPaisaje) => void;
 }
 
 interface MobileSplitButtonProps {
@@ -48,9 +63,9 @@ interface MobileSplitButtonProps {
  * reproducción.
  *
  * Contrato de etiquetas (fijado por tests):
- * - modo global: habilitado `Dividir en el cabezal` exacto; deshabilitado la
+ * - modo global: habilitado `Dividir en cabezal` exacto; deshabilitado la
  *   misma base con el motivo (`…no disponible…`).
- * - modo clip: habilitado `Dividir en el cabezal`; deshabilitado
+ * - modo clip: habilitado `Dividir en cabezal`; deshabilitado
  *   `Sin clip bajo el cabezal`.
  */
 export const MobileSplitButton: React.FC<MobileSplitButtonProps> = ({ mode, onSplit }) => {
@@ -119,64 +134,139 @@ export const MobileSplitButton: React.FC<MobileSplitButtonProps> = ({ mode, onSp
       ref={buttonRef}
       onClick={onSplit}
       disabled={!canSplitNow()}
-      className="flex flex-col items-center justify-center min-w-14 min-h-12 [@media(max-height:500px)]:min-h-10 px-2 rounded text-text-2 hover:text-text-1 hover:bg-raised active:bg-raised active:scale-95 transition disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+      className="flex flex-col items-center justify-center min-w-14 min-h-12 px-2 rounded text-text-2 hover:text-text-1 hover:bg-raised active:bg-raised active:scale-95 transition disabled:opacity-40 focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
       title={canSplitNow() ? enabledLabel : disabledLabel}
       aria-label={canSplitNow() ? enabledLabel : disabledLabel}
     >
       <Scissors size={20} aria-hidden="true" />
-      <span className="text-caption mt-0.5 font-medium whitespace-nowrap [@media(max-height:500px)]:hidden">Dividir</span>
+      <span className="text-caption mt-0.5 font-medium whitespace-nowrap">Dividir</span>
     </button>
   );
 };
 
-/** Etiqueta de la tira: caption legible, nunca truncada; solo icono en apaisado. */
+/** Etiqueta de la tira: caption legible, nunca truncada, en todos los anchos (H3). */
 const EtiquetaTira: React.FC<{ texto: string }> = ({ texto }) => (
-  <span className="text-caption mt-0.5 font-medium whitespace-nowrap [@media(max-height:500px)]:hidden">
+  <span className="text-caption mt-0.5 font-medium whitespace-nowrap">
     {texto}
   </span>
 );
 
 /**
  * Tira de herramientas contextual (modelo CapCut): sin clip muestra las
- * herramientas globales (Medios / Texto / Audio / Dividir); con un clip
- * seleccionado muestra las del clip (Cerrar / Inspector / Dividir /
- * Velocidad / Volumen / Fundido / Opacidad / Eliminar).
+ * herramientas globales (Medios / Texto / Audio / Dividir / Deshacer /
+ * Rehacer); con un clip seleccionado muestra las del clip (chip con el
+ * nombre + Cerrar / Inspector / Dividir / Velocidad / Volumen / Fundido /
+ * Opacidad / Eliminar).
+ *
+ * H1: en móvil la tira es la ÚNICA puerta de Dividir (el transporte y la
+ * toolbar no la duplican en táctil). H6: el modo clip anuncia qué clip edita
+ * (chip «Clip: {nombre}») y el cambio entra con 150 ms de fundido (sin
+ * `setState` de montaje: la animación es CSS pura para no romper R5).
  *
  * Tira neutra y plana: iconos de 20 px en un solo peso, sin baldosas de
  * colores. El rojo solo aparece en la acción destructiva (semántico, no
  * decoración) y el acento queda reservado al significado.
  */
-export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet }) => {
+export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({
+  onOpenSheet,
+  mostrarConmutadorVista = false,
+  vistaPaisaje = 'visor',
+  onCambiarVista,
+}) => {
   const selectedClipId = useProjectStore((s) => s.selectedClipId);
   const selectClip = useProjectStore((s) => s.selectClip);
   const splitAtPlayhead = useProjectStore((s) => s.splitAtPlayhead);
   const deleteSelectedClip = useProjectStore((s) => s.deleteSelectedClip);
+  const undo = useProjectStore((s) => s.undo);
+  const redo = useProjectStore((s) => s.redo);
+  const canUndo = useProjectStore((s) => s.past.length > 0);
+  const canRedo = useProjectStore((s) => s.future.length > 0);
+  // H6 · Nombre del clip que edita la tira (suscripción al store, nunca al
+  // reloj: la reproducción no toca los clips y R5 sigue en un commit).
+  const nombreClip = useProjectStore((s) =>
+    s.project.clips.find((c) => c.id === s.selectedClipId)?.name ?? ''
+  );
+  // H4 · Confirmación propia en español (nunca `confirm()` nativo).
+  const [confirmarEliminar, setConfirmarEliminar] = useState(false);
 
   const hasSelectedClip = !!selectedClipId;
 
-  const handleDelete = () => {
-    if (confirm('¿Eliminar este clip? Puedes deshacerlo.')) {
-      deleteSelectedClip();
-    }
-  };
-
-  /** Botón de la tira: 44 px en vertical, 40 px solo-icono en apaisado. */
+  /** Botón de la tira: 44 px en vertical y en apaisado, siempre con etiqueta. */
   const tiraBtn =
-    'flex flex-col items-center justify-center min-w-14 min-h-12 [@media(max-height:500px)]:min-h-10 px-2 rounded text-text-2 hover:text-text-1 hover:bg-raised active:bg-raised active:scale-95 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none';
+    'flex flex-col items-center justify-center min-w-14 min-h-12 px-2 rounded text-text-2 hover:text-text-1 hover:bg-raised active:bg-raised active:scale-95 transition focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none';
+
+  // C4 · Conmutador Visor ⇄ Línea de tiempo (solo apaisado): un botón que
+  // nombra el destino, con el mismo blanco de 44 px que el resto.
+  const conmutador = mostrarConmutadorVista ? (
+    <button
+      onClick={() => onCambiarVista?.(vistaPaisaje === 'visor' ? 'linea' : 'visor')}
+      className={tiraBtn}
+      title={vistaPaisaje === 'visor' ? 'Mostrar la línea de tiempo' : 'Mostrar el visor'}
+      aria-label={vistaPaisaje === 'visor' ? 'Mostrar la línea de tiempo' : 'Mostrar el visor'}
+      data-testid="mobile-vista-toggle"
+    >
+      {vistaPaisaje === 'visor'
+        ? <ListVideo size={20} aria-hidden="true" />
+        : <MonitorPlay size={20} aria-hidden="true" />}
+      <EtiquetaTira texto={vistaPaisaje === 'visor' ? 'Línea' : 'Visor'} />
+    </button>
+  ) : null;
+
+  // C1 · Deshacer/rehacer (antes en la cabecera): su casa móvil es la tira.
+  const deshacerBtn = (
+    <button
+      onClick={undo}
+      disabled={!canUndo}
+      className={`${tiraBtn} disabled:opacity-40`}
+      title="Deshacer"
+      aria-label="Deshacer"
+    >
+      <Undo2 size={20} aria-hidden="true" />
+      <EtiquetaTira texto="Deshacer" />
+    </button>
+  );
+  const rehacerBtn = (
+    <button
+      onClick={redo}
+      disabled={!canRedo}
+      className={`${tiraBtn} disabled:opacity-40`}
+      title="Rehacer"
+      aria-label="Rehacer"
+    >
+      <Redo2 size={20} aria-hidden="true" />
+      <EtiquetaTira texto="Rehacer" />
+    </button>
+  );
 
   return (
     // `min-h-16` (en vez de un `h-16` fijo) para que el relleno del área
-    // segura agrande la barra en lugar de comprimir su contenido.
+    // segura agrande la barra en lugar de comprimir su contenido. En
+    // apaisado el contenido (44 px + etiquetas) define la altura.
     <nav
       aria-label={hasSelectedClip ? 'Herramientas del clip' : 'Herramientas'}
-      className="min-h-16 [@media(max-height:500px)]:min-h-10 bg-panel border-t border-border-subtle px-2 flex items-center z-30 select-none shrink-0 pb-[env(safe-area-inset-bottom)] overflow-x-auto no-scrollbar"
+      className="min-h-16 [@media(max-height:500px)]:min-h-0 bg-panel border-t border-border-subtle px-2 flex items-center z-30 select-none shrink-0 pb-[env(safe-area-inset-bottom)] overflow-x-auto no-scrollbar"
     >
       {hasSelectedClip ? (
         /* MODO 2: acciones del clip seleccionado. `justify-start` (nunca
             `around`/`center`): con desborde el inicio queda anclado y el
             último útil asoma a medio ver — ese recorte es el affordance de
-            scroll. Las etiquetas son `whitespace-nowrap`: nunca ellipsis. */
-        <div className="flex items-center gap-1 w-full min-w-max justify-start py-1">
+            scroll. Las etiquetas son `whitespace-nowrap`: nunca ellipsis.
+            La `key` re-monta la fila al cambiar de modo y la animación CSS
+            (150 ms, keyframes del sistema) hace legible el cambio (H6). */
+        <div
+          key={`tira-${selectedClipId}`}
+          className="flex items-center gap-1 w-full min-w-max justify-start py-1 animate-[fadeIn_150ms_ease-out_both]"
+        >
+          {/* H6 · Contexto: qué clip editan estas herramientas (no
+              accionable, con el nombre completo en el `title`). */}
+          <span
+            aria-hidden="true"
+            title={nombreClip || 'Clip seleccionado'}
+            className="flex items-center min-h-12 max-w-28 px-2 rounded bg-accent-soft text-accent text-caption font-bold truncate shrink-0"
+          >
+            Clip: {nombreClip}
+          </span>
+          {conmutador}
           {/* Quitar la selección */}
           <button
             onClick={() => selectClip(null)}
@@ -187,6 +277,8 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
             <X size={20} aria-hidden="true" />
             <EtiquetaTira texto="Cerrar" />
           </button>
+          {deshacerBtn}
+          {rehacerBtn}
 
           {/* Inspector del clip (transformación, silencio, texto…) */}
           <button
@@ -200,7 +292,7 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
             <EtiquetaTira texto="Inspector" />
           </button>
 
-          {/* Dividir */}
+          {/* Dividir (H1: la única puerta móvil) */}
           <MobileSplitButton mode="clip" onSplit={splitAtPlayhead} />
 
           {/* Velocidad */}
@@ -247,10 +339,10 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
             <EtiquetaTira texto="Opacidad" />
           </button>
 
-          {/* Eliminar */}
+          {/* Eliminar (H4: confirma con el diálogo propio, en español) */}
           <button
-            onClick={handleDelete}
-            className="flex flex-col items-center justify-center min-w-14 min-h-12 [@media(max-height:500px)]:min-h-10 px-2 rounded text-danger hover:bg-raised active:bg-raised active:scale-95 transition focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none"
+            onClick={() => setConfirmarEliminar(true)}
+            className="flex flex-col items-center justify-center min-w-14 min-h-12 px-2 rounded text-danger hover:bg-raised active:bg-raised active:scale-95 transition focus-visible:ring-2 focus-visible:ring-danger focus-visible:outline-none"
             title="Eliminar clip"
             aria-label="Eliminar clip seleccionado"
           >
@@ -261,7 +353,11 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
       ) : (
         /* MODO 1: acciones globales (mismo anclaje al inicio: el desborde
             asoma el último útil en vez de recortar una etiqueta). */
-        <div className="flex items-center gap-2 w-full min-w-max justify-start py-1">
+        <div
+          key="tira-global"
+          className="flex items-center gap-2 w-full min-w-max justify-start py-1 animate-[fadeIn_150ms_ease-out_both]"
+        >
+          {conmutador}
           {/* Medios */}
           <button
             onClick={() => onOpenSheet('media')}
@@ -296,9 +392,43 @@ export const MobileBottomBar: React.FC<MobileBottomBarProps> = ({ onOpenSheet })
             <EtiquetaTira texto="Audio" />
           </button>
 
-          {/* Dividir en el cabezal */}
+          {/* Dividir en el cabezal (H1: la única puerta móvil) */}
           <MobileSplitButton mode="global" onSplit={splitAtPlayhead} />
+
+          {/* Deshacer/rehacer (C1: su casa móvil es la tira) */}
+          {deshacerBtn}
+          {rehacerBtn}
         </div>
+      )}
+
+      {/* H4 · Confirmación del borrado con el diálogo propio (español, la
+          destructiva en `danger`), nunca `confirm()` nativo. */}
+      {confirmarEliminar && (
+        <Dialog
+          titulo="¿Eliminar este clip?"
+          descripcion="Puedes deshacerlo."
+          onCerrar={() => setConfirmarEliminar(false)}
+          acciones={
+            <>
+              <Button variant="secondary" onClick={() => setConfirmarEliminar(false)}>
+                Cancelar
+              </Button>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  setConfirmarEliminar(false);
+                  deleteSelectedClip();
+                }}
+              >
+                Eliminar
+              </Button>
+            </>
+          }
+        >
+          <p className="text-body-sm text-text-2">
+            El clip{nombreClip ? ` «${nombreClip}»` : ''} se quita de la línea de tiempo.
+          </p>
+        </Dialog>
       )}
     </nav>
   );

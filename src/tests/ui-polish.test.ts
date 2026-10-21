@@ -292,8 +292,8 @@ describe('3 · el header no promete solo MP4', () => {
     const header = sourceOf('../components/layout/Header.tsx');
     expect(header).not.toContain('>MP4<');
     expect(header).toContain('Exportar vídeo');
-    // El nombre accesible sigue siendo significativo.
-    expect(header).toContain('Abrir modal de exportación');
+    // El nombre accesible nombra la acción (docs/copy.md U6).
+    expect(header).toContain('aria-label="Exportar vídeo"');
   });
 
   it('el header móvil es agnóstico (ni visible ni accesible dice MP4)', () => {
@@ -323,7 +323,7 @@ describe('4 · duplicar proyecto', () => {
     expect(modal.slice(dupCall, dupCall + 300)).toContain('refreshList');
   });
 
-  it('el duplicado tiene id nuevo, nombre "(Copia)", mismos clips y MISMA media', async () => {
+  it('el duplicado tiene id nuevo, nombre "(Copia)" y media INDEPENDIENTE (D02)', async () => {
     const original = await createNewProject('Viaje a Roma');
     original.clips.push({
       id: 'clip_orig_1',
@@ -367,11 +367,15 @@ describe('4 · duplicar proyecto', () => {
     expect(duplicate.clips.length).toBe(1);
     expect(duplicate.clips[0].id).not.toBe('clip_orig_1');
     expect(duplicate.clips[0].audioEffects).toEqual({ pan: -0.5 });
-    // La media se comparte por referencia: mismo mediaId y misma entrada
-    // OPFS (no se duplican los bytes en disco).
+    // D02: el clon es independiente del original: ids de media nuevos y bytes
+    // propios (nunca la misma ruta OPFS: borrar el original corrompería al
+    // clon). En este mock los bytes no se pueden leer, así que el clon queda
+    // como ausente (honesto) en vez de apuntar al archivo del original.
     expect(duplicate.mediaPool.length).toBe(1);
-    expect(duplicate.mediaPool[0].id).toBe('media_roma');
-    expect(duplicate.mediaPool[0].opfsPath).toBe('media_roma_coliseo.mp4');
+    expect(duplicate.mediaPool[0].id).not.toBe('media_roma');
+    expect(duplicate.mediaPool[0].opfsPath).not.toBe('media_roma_coliseo.mp4');
+    expect(duplicate.clips[0].mediaId).toBe(duplicate.mediaPool[0].id);
+    expect(duplicate.mediaPool[0].status).toBe('missing');
 
     // Aparece en la galería y se puede abrir.
     const gallery = await listProjects();
@@ -560,14 +564,23 @@ describe('U7a · F4 — la tarjeta no recorta la duración con ellipsis', () => 
 
   it('ninguna fila de metadatos usa `truncate`/ellipsis', () => {
     const tarjeta = sourceOf('../components/media/MediaItemCard.tsx');
-    expect(tarjeta).not.toContain('truncate');
+    // El nombre usa clamp de 2 líneas (nunca recorte de 1 línea).
+    expect(tarjeta).toContain('line-clamp-2');
+    const iNombre = tarjeta.indexOf('line-clamp-2');
+    expect(tarjeta.slice(tarjeta.lastIndexOf('<p', iNombre), iNombre)).not.toContain(
+      'truncate'
+    );
+    // La única línea con `truncate` es la alerta compacta de rechazo (M8:
+    // una línea + tooltip, con su testid y su role).
+    expect(tarjeta.split('truncate').length - 1).toBe(1);
     expect(tarjeta).toContain('whitespace-nowrap');
     expect(tarjeta).toContain('media-size-');
   });
 
   it('los `aria-label` que lee la suite se conservan', () => {
     const tarjeta = sourceOf('../components/media/MediaItemCard.tsx');
-    expect(tarjeta).toContain('pulsa para añadir a la línea de tiempo');
+    expect(tarjeta).toContain(': añadir a la línea de tiempo');
+    expect(tarjeta).not.toContain('pulsa para añadir');
     expect(tarjeta).toContain('a la papelera');
   });
 });

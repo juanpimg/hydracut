@@ -107,9 +107,13 @@ export const PlayerControls: React.FC = () => {
   };
 
   return (
-    <div className="h-9 shrink-0 bg-panel border-t border-border-subtle px-3 flex items-center gap-2 justify-between select-none">
+    // Rejilla de 3 columnas (timecode · transporte · volumen): las columnas
+    // laterales ceden (`minmax(0,1fr)`) y la central es automática, así que el
+    // transporte nunca se monta sobre el timecode ni siquiera a 1024 px (el
+    // ancho mínimo de escritorio). El reparto flexible anterior se solapaba ahí.
+    <div className="h-9 shrink-0 bg-panel border-t border-border-subtle px-3 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 select-none">
       {/* Izquierda: timecode actual / duración total (mono, tabular, text-1). */}
-      <div className="flex items-center gap-1.5 min-w-0">
+      <div className="flex items-center gap-1.5 min-w-0 justify-self-start">
         <TimecodeActual fps={fps} />
         <span aria-hidden="true" className="text-body-sm text-text-3">/</span>
         <span className="font-mono text-timecode tabular text-text-2 whitespace-nowrap">
@@ -118,7 +122,7 @@ export const PlayerControls: React.FC = () => {
       </div>
 
       {/* Centro: inicio · −1 fotograma · reproducir/pausar · +1 fotograma. */}
-      <div className="flex items-center gap-0.5 shrink-0" role="group" aria-label="Transporte">
+      <div className="flex items-center gap-0.5 shrink-0 justify-self-center" role="group" aria-label="Transporte">
         <IconButton
           aria-label="Ir al inicio"
           title="Ir al inicio"
@@ -156,8 +160,10 @@ export const PlayerControls: React.FC = () => {
         </IconButton>
       </div>
 
-      {/* Derecha: silencio + volumen general (compartido con el móvil). */}
-      <div className="flex items-center gap-1 min-w-0 w-40 lg:w-[336px]">
+      {/* Derecha: silencio + volumen general (compartido con el móvil). La
+          etiqueta textual se oculta bajo `lg`: a 1024 px colapsaba a «V..»;
+          el control, su valor y su aria (`Volumen general`) se conservan. */}
+      <div className="flex items-center gap-1 min-w-0 w-40 lg:w-[336px] justify-self-end">
         <IconButton
           aria-label={isMuted ? 'Activar sonido general' : 'Silenciar sonido general'}
           title={isMuted ? 'Activar sonido' : 'Silenciar'}
@@ -169,6 +175,7 @@ export const PlayerControls: React.FC = () => {
         <div className="min-w-0 flex-1">
           <Slider
             label="Volumen general"
+            labelHiddenBelowLg
             value={volumenPorcentaje}
             min={0}
             max={100}

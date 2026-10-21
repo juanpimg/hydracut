@@ -838,7 +838,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
             ? 'opacity-100 bg-white text-app shadow-md'
             : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-white/70 text-white'
         }`}
-        title="Recortar inicio: usa las flechas del teclado para ajustar"
+        title="Arrastra para recortar el inicio"
       >
         <div className={`w-[2px] h-3.5 rounded-sm ${isInSelection ? 'bg-app' : 'bg-white/80'}`} />
       </div>
@@ -1012,7 +1012,7 @@ export const ClipItem: React.FC<ClipItemProps> = ({ clip }) => {
             ? 'opacity-100 bg-white text-app shadow-md'
             : 'opacity-0 group-hover:opacity-100 bg-black/40 hover:bg-white/70 text-white'
         }`}
-        title="Recortar final: usa las flechas del teclado para ajustar"
+        title="Arrastra para recortar el final"
       >
         <div className={`w-[2px] h-3.5 rounded-sm ${isInSelection ? 'bg-app' : 'bg-white/80'}`} />
       </div>

@@ -71,6 +71,21 @@ export interface ResolvedPlayback {
 }
 
 /**
+ * Camino rápido del caso común (`speed === 1` con tono preservado, que es lo
+ * que tiene la inmensa mayoría de los clips).
+ *
+ * Es UNA constante congelada y compartida: los llamantes del camino caliente
+ * (60 Hz) solo la LEEN, nunca la mutan, así que no hay nada que asignar por
+ * frame (~40–50 objetos/frame menos con 20 clips). No mutar el resultado de
+ * `resolvePlayback()`.
+ */
+const DEFAULT_RESOLVED_PLAYBACK: ResolvedPlayback = Object.freeze({
+  rate: 1,
+  preservesPitch: true,
+  detuneCents: 0,
+});
+
+/**
  * Resuelve la velocidad y la política de tono de un clip.
  *
  * - `rate = clamp(speed, 0.0625, 4)`.
@@ -87,11 +102,18 @@ export interface ResolvedPlayback {
  * coherencia con la duración del clip.
  */
 export function resolvePlayback(clip?: PlaybackOptions | null): ResolvedPlayback {
-  const raw = clip?.speed;
+  // Camino rápido sin asignaciones: el caso común (sin clip, velocidad
+  // ausente/degenerada/1x con tono preservado) es la constante compartida.
+  if (clip == null) return DEFAULT_RESOLVED_PLAYBACK;
+  const raw = clip.speed;
+  if ((raw === undefined || raw === 1) && clip.preservePitch !== false) {
+    return DEFAULT_RESOLVED_PLAYBACK;
+  }
   const speed =
     typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : 1;
+  if (speed === 1 && clip.preservePitch !== false) return DEFAULT_RESOLVED_PLAYBACK;
   const rate = Math.min(MAX_PLAYBACK_RATE, Math.max(MIN_PLAYBACK_RATE, speed));
-  const preservesPitch = clip?.preservePitch !== false;
+  const preservesPitch = clip.preservePitch !== false;
   // `-1200 * log2(1)` es `-0`: se normaliza a `0` para que la compensación de
   // una reproducción normal sea exactamente cero.
   const cents = -1200 * Math.log2(rate);

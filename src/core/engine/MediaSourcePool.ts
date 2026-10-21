@@ -54,6 +54,15 @@ export interface MediaErrorInfo {
 }
 
 /**
+ * Tope de píxeles retenidos por la caché de últimos fotogramas
+ * (`lastFrameMap`): 6 fotogramas 1080p (~50 MB a 4 B/px más el coste del
+ * lienzo). Por encima se desalojan los menos usados (LRU). Un clip sin
+ * fotograma cacheado se comporta como un arranque en frío (reintento de
+ * dibujado), nunca como un error: desalojar es siempre seguro.
+ */
+export const MAX_LAST_FRAME_PIXELS = 6 * 1920 * 1080;
+
+/**
  * Manages reusable HTMLVideoElement and HTMLImageElement instances
  * for preview compositing and playback sync with zero memory leaks
  * and anti-flicker frame caching.
@@ -70,6 +79,17 @@ export class MediaSourcePool {
   private lastStoredFrameTimeMap: Map<string, number> = new Map();
   /** Source time of the frame cached under a media id (E-13). */
   private mediaFrameSourceTimeMap: Map<string, number> = new Map();
+  /**
+   * Píxeles (`w × h`) retenidos por cada fotograma cacheado, en orden LRU
+   * (el primero es el más antiguo: `delete` + `set` al tocar).
+   *
+   * P8: sin cota, 20 clips distintos a 1080p retenían ~330 MB en 2 lienzos
+   * por clip (clave de clip + clave de medio). `storeVideoFrame` desaloja
+   * los más antiguos hasta volver bajo `MAX_LAST_FRAME_PIXELS`.
+   */
+  private lastFramePixels: Map<string, number> = new Map();
+  /** Suma de `lastFramePixels` (se mantiene a mano para no recorrerla). */
+  private lastFramePixelsTotal = 0;
   /** Applied `sourceStart` per element, so it is only seeked once (E-10). */
   private sourceStartMap: WeakMap<HTMLMediaElement, number> = new WeakMap();
   /** Elements whose `play()` failed terminally (E-11). */
@@ -196,8 +216,18 @@ export class MediaSourcePool {
     }
   }
 
-  public getVideoElement(media: MediaItem, clipId?: string, sourceStart?: number): HTMLVideoElement {
-    const key = clipId ? `${media.id}_${clipId}` : media.id;
+  public getVideoElement(
+    media: MediaItem,
+    clipId?: string,
+    sourceStart?: number,
+    /**
+     * Clave ya calculada (`${mediaId}_${clipId}`): el llamante del camino
+     * caliente (Compositor) la aporta desde su caché para no reconstruir la
+     * cadena en cada pasada. Cuando se omite se calcula como siempre.
+     */
+    keyHint?: string
+  ): HTMLVideoElement {
+    const key = keyHint ?? (clipId ? `${media.id}_${clipId}` : media.id);
     let el = this.videoElements.get(key);
     if (!el) {
       if (typeof document !== 'undefined') {
@@ -347,9 +377,63 @@ export class MediaSourcePool {
   }
 
   /**
+   * Desaloja el fotograma cacheado bajo `key` y descuenta sus píxeles.
+   * Mantiene la cota de `MAX_LAST_FRAME_PIXELS`.
+   */
+  private evictFrame(key: string): void {
+    if (this.lastFrameMap.delete(key)) {
+      const pixels = this.lastFramePixels.get(key) ?? 0;
+      this.lastFramePixels.delete(key);
+      this.lastFramePixelsTotal = Math.max(0, this.lastFramePixelsTotal - pixels);
+    } else {
+      this.lastFramePixels.delete(key);
+    }
+    this.mediaFrameSourceTimeMap.delete(key);
+  }
+
+  /**
+   * Anota `w × h` píxeles bajo `key` (orden LRU) y desaloja los más antiguos
+   * hasta volver bajo la cota. El recién guardado nunca se desaloja a sí
+   * mismo: un fotograma enorme (p. ej. 8K) queda solo en la caché en vez de
+   * rebotar.
+   */
+  private trackFramePixels(key: string, w: number, h: number): void {
+    const pixels = Math.max(0, w) * Math.max(0, h);
+    const previous = this.lastFramePixels.get(key);
+    if (previous !== undefined) {
+      this.lastFramePixelsTotal = Math.max(0, this.lastFramePixelsTotal - previous);
+      this.lastFramePixels.delete(key);
+    }
+    this.lastFramePixels.set(key, pixels);
+    this.lastFramePixelsTotal += pixels;
+    while (this.lastFramePixelsTotal > MAX_LAST_FRAME_PIXELS) {
+      const oldest = this.lastFramePixels.keys().next().value as string | undefined;
+      if (oldest === undefined || oldest === key) break;
+      this.evictFrame(oldest);
+    }
+  }
+
+  /** Marca `key` como recién usado (solo en acierto). */
+  private touchFrame(key: string): void {
+    const pixels = this.lastFramePixels.get(key);
+    if (pixels === undefined) return;
+    this.lastFramePixels.delete(key);
+    this.lastFramePixels.set(key, pixels);
+  }
+
+  /**
+   * Píxeles retenidos ahora mismo por la caché de fotogramas (para tests y
+   * diagnóstico: siempre ≤ `MAX_LAST_FRAME_PIXELS` tras guardar).
+   */
+  public getLastFrameCachePixels(): number {
+    return this.lastFramePixelsTotal;
+  }
+
+  /**
    * Stores the current video frame into an offscreen canvas cache to prevent black
    * flashes during temporary seeks or buffering periods. Caches by both clipId and mediaId.
    * Throttled during continuous playback to avoid copying 8.3MB full-res frames 60 times a second.
+   * The total is bounded by MAX_LAST_FRAME_PIXELS (LRU eviction).
    */
   public storeVideoFrame(
     clipId: string,
@@ -407,6 +491,7 @@ export class MediaSourcePool {
       } catch {
         // Ignored
       }
+      this.trackFramePixels(key, w, h);
     };
 
     saveToCanvas(clipId);
@@ -424,7 +509,9 @@ export class MediaSourcePool {
    * Retrieves the last successfully rendered frame for a clip or media.
    */
   public getLastFrame(id: string): HTMLCanvasElement | OffscreenCanvas | null {
-    return this.lastFrameMap.get(id) || null;
+    const frame = this.lastFrameMap.get(id) || null;
+    if (frame) this.touchFrame(id);
+    return frame;
   }
 
   /**
@@ -443,6 +530,7 @@ export class MediaSourcePool {
     if (stored === undefined) return null;
     if (!isFinite(sourceTime)) return null;
     if (Math.abs(stored - sourceTime) > tolerance) return null;
+    this.touchFrame(mediaId);
     return frame;
   }
 
@@ -836,7 +924,7 @@ export class MediaSourcePool {
         this.imageElements.delete(key);
       }
     }
-    this.lastFrameMap.delete(clipId);
+    this.evictFrame(clipId);
     this.lastStoredFrameTimeMap.delete(clipId);
   }
 
@@ -871,7 +959,13 @@ export class MediaSourcePool {
         this.imageElements.delete(key);
       }
     }
-    this.lastFrameMap.delete(mediaId);
+    // El fotograma de nivel de medio y los de nivel de clip de ese medio ya
+    // no sirven: se desalojan (antes los de clip goteaban hasta el `clear`).
+    for (const key of Array.from(this.lastFramePixels.keys())) {
+      if (key === mediaId || key.startsWith(prefix)) {
+        this.evictFrame(key);
+      }
+    }
     this.lastStoredFrameTimeMap.delete(mediaId);
     this.mediaFrameSourceTimeMap.delete(mediaId);
   }
@@ -885,6 +979,8 @@ export class MediaSourcePool {
     this.startingPlayMap.clear();
     this.lastFrameMap.clear();
     this.lastStoredFrameTimeMap.clear();
+    this.lastFramePixels.clear();
+    this.lastFramePixelsTotal = 0;
     this.mediaFrameSourceTimeMap.clear();
     this.mediaErrors.clear();
     this.failedElements = new WeakSet();

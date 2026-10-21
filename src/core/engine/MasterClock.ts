@@ -166,12 +166,12 @@ export class MasterClock {
   }
 
   /**
-   * Pure, side-effect-free calculation of current timeline time.
-   * Uses dual-clock synchronization: tracks AudioContext.currentTime when healthy,
-   * but falls back to performance.now() if AudioContext is null, suspended,
-   * or stalled/throttled in mobile/background.
+   * Muestrea el tiempo actual y actualiza el seguimiento del reloj (failover
+   * incluido). SOLO `tick()` / `play()` / `pause()` / `seek()` pueden
+   * llamarlo: son los únicos que poseen el estado del reloj. `getTime()` usa
+   * `peekCurrentTime()` y nunca muta nada (F-A3-04).
    */
-  private calculateCurrentTime(): number {
+  private sampleCurrentTime(): number {
     if (!this.isPlaying) {
       return this.timelineTime;
     }
@@ -214,30 +214,70 @@ export class MasterClock {
     }
 
     if (timelineTime < 0) timelineTime = 0;
+    return this.clampTime(timelineTime);
+  }
+
+  /**
+   * Lectura pura del tiempo actual: calcula lo que vale el timeline AHORA a
+   * partir del estado enclavado, sin muestrear ni mutar nada (sin enclavar el
+   * failover, sin actualizar el seguimiento). Es seguro llamarla desde un
+   * render React.
+   *
+   * Pura pero no ingenua: cuando el reloj de audio es utilizable pero sus
+   * números ya son imposibles (parado en cero con el muro avanzado, o
+   * divergencia grave), se lee el muro — son las dos ramas SIN historia de
+   * `shouldFailOverToPerf`, evaluadas sin tocar el estado. El valor coincide
+   * con lo que publicaría el siguiente `tick()`; el enclavamiento
+   * (`clockSource`, seguimiento) lo sigue poseyendo el muestreo, que corre a
+   * cada frame.
+   */
+  private peekCurrentTime(): number {
+    if (!this.isPlaying) {
+      return this.timelineTime;
+    }
+    const perfElapsed = (this.now() - this.perfStart) / 1000;
+    if (this.clockSource === 'audio' && this.audioCtx && this.audioCtx.state === 'running') {
+      const audioElapsed = this.audioCtx.currentTime - this.audioCtxStart;
+      if (audioElapsed <= 0 && perfElapsed > CLOCK_STALL_THRESHOLD) {
+        return this.clampTime(this.timelineStart + Math.max(0, perfElapsed));
+      }
+      if (Math.abs(perfElapsed - audioElapsed) > CLOCK_DRIFT_TOLERANCE) {
+        return this.clampTime(this.timelineStart + Math.max(0, perfElapsed));
+      }
+      return this.clampTime(this.timelineStart + Math.max(0, audioElapsed));
+    }
+    return this.clampTime(this.timelineStart + Math.max(0, perfElapsed));
+  }
+
+  /** Recorta un tiempo candidato al rango válido del timeline. */
+  private clampTime(timelineTime: number): number {
+    if (timelineTime < 0) timelineTime = 0;
     return Math.max(0, Math.min(timelineTime, this.duration));
   }
 
   /**
-   * Current timeline time. Side-effect free: it never pauses and never mutates
-   * the playback state (E-15). It is safe to call from a React render.
+   * Current timeline time. Side-effect free: it never pauses, never fails
+   * over and never mutates the playback state (E-15, F-A3-04). It is safe to
+   * call from a React render.
    */
   public getTime(): number {
     if (!this.isPlaying) {
       return this.timelineTime;
     }
-    return this.calculateCurrentTime();
+    return this.peekCurrentTime();
   }
 
   /**
    * Advances the playback clock by one tick.
    * This is the only place that owns the "pause at the end of the timeline"
-   * behaviour, so `getTime()` stays a pure getter (E-15).
+   * behaviour, so `getTime()` stays a pure getter (E-15). It also owns the
+   * clock sampling (failover audio→perf): `getTime()` never samples.
    */
   public tick(): number {
     if (!this.isPlaying) {
       return this.timelineTime;
     }
-    const current = this.calculateCurrentTime();
+    const current = this.sampleCurrentTime();
     if (current >= this.duration) {
       this.pause();
       return this.duration;
@@ -272,7 +312,7 @@ export class MasterClock {
       ctx.resume().then(() => {
         if (this.isPlaying && this.audioCtx) {
           // The audio clock is healthy again: re-anchor on it without a jump.
-          const current = this.calculateCurrentTime();
+          const current = this.sampleCurrentTime();
           this.reanchor(this.now(), current, 'audio');
         }
       }).catch(() => {});
@@ -284,7 +324,7 @@ export class MasterClock {
 
   public pause(): void {
     if (!this.isPlaying) return;
-    const finalTime = this.calculateCurrentTime();
+    const finalTime = this.sampleCurrentTime();
     this.isPlaying = false;
     this.timelineTime = finalTime;
 

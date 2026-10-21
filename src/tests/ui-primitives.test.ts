@@ -88,10 +88,10 @@ const HEX_ESPERADOS = [
   // Texto.
   '#f0f3f6', // text-1
   '#9aa4b2', // text-2
-  '#636c76', // text-3
+  '#8b949e', // text-3 (contraste ≥ 4.5:1, ver ui-contrast-a11y)
   // Acento único.
   '#22d3ee', // accent
-  '#0891b2', // accent-fill
+  '#06748f', // accent-fill (blanco encima ≥ 4.5:1)
   // Semánticos.
   '#f85149', // danger
   '#d29922', // warning

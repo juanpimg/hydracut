@@ -201,10 +201,11 @@ describe('F1 · MasterClock dual-clock failover is continuous and latched', () =
     let previous = clock.getTime();
 
     // 12 healthy frames: the audio clock advances in lockstep with the wall clock.
+    // Sampling is owned by `tick()`; `getTime()` is a pure read (F-A3-04).
     for (let frame = 0; frame < 12; frame++) {
       wall += 16;
       ctx.currentTime += 0.016;
-      const t = clock.getTime();
+      const t = clock.tick();
       maxLag = Math.max(maxLag, (wall - wallAtStart) / 1000 - t);
       maxJump = Math.max(maxJump, t - previous);
       previous = t;
@@ -214,7 +215,7 @@ describe('F1 · MasterClock dual-clock failover is continuous and latched', () =
     // while the wall clock keeps running.
     for (let frame = 0; frame < 40; frame++) {
       wall += 16;
-      const t = clock.getTime();
+      const t = clock.tick();
       maxLag = Math.max(maxLag, (wall - wallAtStart) / 1000 - t);
       maxJump = Math.max(maxJump, t - previous);
       previous = t;
@@ -241,13 +242,13 @@ describe('F1 · MasterClock dual-clock failover is continuous and latched', () =
 
     wall += 16;
     ctx.currentTime += 0.016;
-    expect(clock.getTime()).toBeGreaterThan(0);
+    expect(clock.tick()).toBeGreaterThan(0);
     expect(clock.getClockSource()).toBe('audio');
 
-    // The audio clock freezes -> failover.
+    // The audio clock freezes -> failover (sampled by `tick()`, never by a read).
     for (let frame = 0; frame < 10; frame++) {
       wall += 16;
-      clock.getTime();
+      clock.tick();
     }
     expect(clock.getClockSource()).toBe('perf');
 
@@ -255,7 +256,7 @@ describe('F1 · MasterClock dual-clock failover is continuous and latched', () =
     for (let frame = 0; frame < 10; frame++) {
       wall += 16;
       ctx.currentTime += 0.016;
-      clock.getTime();
+      clock.tick();
     }
     expect(clock.getClockSource()).toBe('perf');
 
@@ -264,7 +265,7 @@ describe('F1 · MasterClock dual-clock failover is continuous and latched', () =
     clock.play();
     wall += 16;
     ctx.currentTime += 0.016;
-    clock.getTime();
+    clock.tick();
     expect(clock.getClockSource()).toBe('audio');
   });
 });

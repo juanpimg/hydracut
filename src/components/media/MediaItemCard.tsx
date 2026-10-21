@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Image as ImageIcon, Music, Plus, Trash2, Video } from 'lucide-react';
 import { MediaItem } from '../../types/project';
 import { formatDuration } from '../../core/utils/time';
-import { formatStorageBytes } from '../../core/storage/projectStorage';
+import { formatearBytes } from '../../utils/formato';
 import { useProjectStore } from '../../store/useProjectStore';
 import { Badge } from '../ui/Badge';
 import { Button } from '../ui/Button';
@@ -84,7 +84,7 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
       onClick={() => handleAdd()}
       tabIndex={0}
       role="button"
-      aria-label={`${item.name}: pulsa para añadir a la línea de tiempo`}
+      aria-label={`${item.name}: añadir a la línea de tiempo`}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
@@ -110,7 +110,7 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
         {item.duration > 0 && (
           <span
             title={`Duración: ${formatDuration(item.duration)}`}
-            className="absolute right-0.5 bottom-0.5 rounded bg-black/70 px-1 font-mono text-timecode text-text-1"
+            className="absolute right-0.5 bottom-0.5 rounded bg-black/70 px-1 font-mono text-timecode tabular text-text-1"
           >
             {formatDuration(item.duration)}
           </span>
@@ -131,7 +131,7 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
               data-testid={`media-size-${item.id}`}
               title="Espacio que ocupa en este navegador"
             >
-              {formatStorageBytes(item.size)}
+              {formatearBytes(item.size)}
             </span>
           </p>
         )}
@@ -168,12 +168,15 @@ export const MediaItemCard: React.FC<MediaItemCardProps> = ({ item, onRevincular
           </div>
         )}
 
-        {/* F1: el motivo de un rechazo de inserción (nunca un no-op silencioso). */}
+        {/* F1: el motivo de un rechazo de inserción (nunca un no-op
+            silencioso). Caja compacta de una línea con el motivo completo en
+            el tooltip: el bloque de 6 líneas rompía el ritmo del bin. */}
         {refusal && (
           <p
             data-testid="media-card-refusal"
             role="alert"
-            className="mt-1 rounded border border-danger/40 bg-danger/10 px-1.5 py-1 text-[10px] leading-tight text-danger"
+            title={refusal}
+            className="mt-1 truncate rounded border border-danger/40 bg-danger/10 px-1.5 py-1 text-[10px] leading-tight text-danger"
           >
             {refusal}
           </p>

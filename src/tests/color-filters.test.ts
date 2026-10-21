@@ -885,7 +885,7 @@ describe('F9 · el Inspector ofrece los controles de color', () => {
   );
 
   it('tiene una sección de color con presets y los seis deslizadores', () => {
-    expect(inspector).toContain('Color del Clip');
+    expect(inspector).toContain('titulo="Color"');
     expect(inspector).toContain('COLOR_FILTER_PRESET_ORDER');
     expect(inspector).toContain('COLOR_FILTER_PRESETS');
     for (const label of [
@@ -901,9 +901,9 @@ describe('F9 · el Inspector ofrece los controles de color', () => {
   });
 
   it('los controles son accesibles (aria-label) y están en español', () => {
-    expect(inspector).toContain('aria-label="Preset de color del clip"');
+    expect(inspector).toContain('aria-label="Preajuste de color del clip"');
     expect(inspector).toContain('aria-label="Restablecer los filtros de color del clip"');
-    expect(inspector).toContain('Preset de color:');
+    expect(inspector).toContain('Preajuste de color:');
     expect(inspector).toContain('Restablecer color');
   });
 

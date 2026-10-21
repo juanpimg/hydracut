@@ -42,8 +42,8 @@ const IDB_STORE_NAME = 'keyval';
 
 export const DEFAULT_PROJECT_TRACKS: Track[] = [
   { id: 'track_text_1', name: 'Texto T1', type: 'text', isMuted: false, isLocked: false, isVisible: true },
-  { id: 'track_video_2', name: 'Video V2 (Superposición)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
-  { id: 'track_video_1', name: 'Video V1 (Principal)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
+  { id: 'track_video_2', name: 'Vídeo V2 (superposición)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
+  { id: 'track_video_1', name: 'Vídeo V1 (principal)', type: 'video', isMuted: false, isLocked: false, isVisible: true },
   { id: 'track_audio_1', name: 'Audio A1', type: 'audio', isMuted: false, isLocked: false, isVisible: true },
 ];
 
@@ -631,6 +631,8 @@ export async function deleteProjectMediaFiles(project: Project): Promise<void> {
     ? project.trash.map((entry) => entry?.media).filter(Boolean)
     : [];
   await deleteMediaFiles([...items, ...trashed]);
+  // D09: las copias de seguridad del revinculado mueren con el proyecto.
+  await discardRelinkBackup([...items, ...trashed].map((m) => m.id));
 }
 
 /**
@@ -702,14 +704,18 @@ function resolveOpfsDeleter(): ((fileNames: string[]) => Promise<void>) | null {
  *
  * The media KEEPS ITS ID (so the clips that use it keep working) and its
  * object URL is renewed. The previous file is deleted from OPFS so the
- * relink does not leave an orphan behind.
+ * relink does not leave an orphan behind — unless `options.keepPrevious` is
+ * set: the store keeps the previous file as a backup so that undoing the
+ * relink really restores the previous bytes (D09). At most one backup file
+ * per media is kept (see `discardRelinkBackup`).
  *
  * Returns `null` when the new file could not be stored.
  */
 export async function relinkMediaBytes(
   item: MediaItem,
   file: File,
-  projectId?: string
+  projectId?: string,
+  options?: { keepPrevious?: boolean }
 ): Promise<MediaItem | null> {
   if (!item || !file) return null;
 
@@ -722,8 +728,13 @@ export async function relinkMediaBytes(
     return null;
   }
 
-  // The old file is an orphan now: delete it (the quota must not grow).
-  if (previousPath && previousPath !== opfsPath) {
+  if (options?.keepPrevious) {
+    // D09: el archivo previo se conserva como copia de seguridad para que el
+    // undo recupere los bytes anteriores (una copia como máximo por medio: la
+    // obsoleta se borra antes de registrar la nueva).
+    rememberRelinkBackup(item.id, previousPath, opfsPath);
+  } else if (previousPath && previousPath !== opfsPath) {
+    // The old file is an orphan now: delete it (the quota must not grow).
     const deleter = resolveOpfsDeleter();
     if (deleter) {
       await deleter([previousPath]);
@@ -762,7 +773,61 @@ export async function relinkMediaBytes(
 }
 
 /**
+ * D09 · Copias de seguridad del revinculado (una por medio como máximo).
+ *
+ * `relinkMediaBytes(..., { keepPrevious: true })` conserva el archivo previo
+ * para que deshacer el revinculado recupere los bytes anteriores. La copia se
+ * descarta cuando otro revinculado la deja obsoleta, cuando el medio sale del
+ * proyecto (purga) o cuando el proyecto se borra: el coste en disco está
+ * acotado a un archivo extra por medio revinculado.
+ */
+const relinkBackupPaths = new Map<string, string>();
+
+/**
+ * Registra `previousPath` como copia de seguridad de `mediaId`.
+ * Una copia obsoleta (distinta de la ruta previa actual) se borra.
+ */
+function rememberRelinkBackup(mediaId: string, previousPath: string, nextPath: string | undefined): void {
+  if (!mediaId || !previousPath || previousPath === nextPath) return;
+  const stale = relinkBackupPaths.get(mediaId);
+  if (stale && stale !== previousPath) {
+    void deleteBackupFile(stale);
+  }
+  relinkBackupPaths.set(mediaId, previousPath);
+}
+
+async function deleteBackupFile(path: string): Promise<void> {
+  const deleter = resolveOpfsDeleter();
+  if (deleter) {
+    await deleter([path]);
+  }
+}
+
+/**
+ * D09 · Descarta la copia de seguridad del revinculado de un medio (o de
+ * varios) y borra su archivo. Llamar cuando el medio sale del proyecto para
+ * siempre (purga, borrado del proyecto): la copia ya no puede recuperarse con
+ * un undo.
+ */
+export async function discardRelinkBackup(mediaId: string | string[]): Promise<void> {
+  const ids = Array.isArray(mediaId) ? mediaId : [mediaId];
+  for (const id of ids) {
+    const path = relinkBackupPaths.get(id);
+    if (!path) continue;
+    relinkBackupPaths.delete(id);
+    await deleteBackupFile(path);
+  }
+}
+
+/**
  * Duplicates an existing project with decoupled IDs and stores it.
+ *
+ * D02: the clone owns its media: every media item gains a NEW id and its OWN
+ * bytes (the OPFS file is copied, never shared). Deleting the original can no
+ * longer corrupt the clone. Coste: el duplicado ocupa en disco lo mismo que
+ * el original (los bytes se copian, no se comparten). When the bytes cannot
+ * be copied, the cloned media is flagged as `missing` (honest) instead of
+ * pointing at the original file.
  */
 export async function duplicateProject(id: string, newName?: string): Promise<Project> {
   const source = await getProjectById(id);
@@ -786,10 +851,58 @@ export async function duplicateProject(id: string, newName?: string): Promise<Pr
     return { ...t, id: newTrackId };
   });
 
+  // D02: cada medio del clon tiene su PROPIO id y sus PROPIOS bytes (copia en
+  // OPFS, nunca la misma ruta). Así el clon y el original son independientes.
+  const mediaIdMap = new Map<string, string>();
+  const cloneMediaItem = async (item: MediaItem, idx: number): Promise<MediaItem> => {
+    const newMediaId = `media_${now.toString(36)}_${idx}_${Math.random().toString(36).substring(2, 6)}`;
+    mediaIdMap.set(item.id, newMediaId);
+    const copy: MediaItem = { ...item, id: newMediaId };
+    // La URL del original pertenece a su sesión/proyecto: el clon la renueva
+    // al rehidratarse desde sus propios bytes.
+    if (typeof copy.url === 'string' && copy.url.startsWith('blob:')) copy.url = '';
+    if (typeof copy.thumbnailUrl === 'string' && copy.thumbnailUrl.startsWith('blob:')) {
+      copy.thumbnailUrl = '';
+    }
+    const sourcePath = typeof item.opfsPath === 'string' ? item.opfsPath : '';
+    if (!sourcePath) return copy;
+    try {
+      const file = await opfsStorage.getMediaFromOPFS(sourcePath);
+      if (!file) throw new Error('Bytes no disponibles para copiar.');
+      const newPath = await opfsStorage.saveMediaToOPFS(newMediaId, file);
+      copy.opfsPath = newPath;
+      copy.size = file.size;
+    } catch (err) {
+      // No se pudo copiar: el clon NO comparte la ruta del original (quedaría
+      // corrupto al borrarlo), sino que declara el medio como ausente.
+      console.warn(`Could not copy the media bytes for the duplicate ("${item.id}"):`, err);
+      copy.opfsPath = undefined;
+      copy.url = '';
+      copy.thumbnailUrl = '';
+      copy.status = 'missing';
+    }
+    return copy;
+  };
+
+  cloned.mediaPool = await Promise.all((cloned.mediaPool || []).map((m, idx) => cloneMediaItem(m, idx)));
+  cloned.trash = await Promise.all(
+    (cloned.trash || []).map(async (entry, idx) => ({
+      ...entry,
+      media: await cloneMediaItem(entry.media, 1000 + idx),
+      clips: (entry.clips || []).map((c, cIdx) => ({
+        ...c,
+        id: `clip_${now}_${cIdx}_${Math.random().toString(36).substring(2, 6)}`,
+        trackId: trackIdMap.get(c.trackId) || c.trackId,
+        mediaId: mediaIdMap.get(c.mediaId) || c.mediaId,
+      })),
+    }))
+  );
+
   cloned.clips = (cloned.clips || []).map((c, idx) => ({
     ...c,
     id: `clip_${now}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
     trackId: trackIdMap.get(c.trackId) || c.trackId,
+    mediaId: mediaIdMap.get(c.mediaId) || c.mediaId,
   }));
 
   await saveProject(cloned);
@@ -2094,6 +2207,23 @@ export function sanitizeImportedProject(
       const start = Number(c.start);
       const duration = Number(c.duration);
       if (!Number.isFinite(start) || !Number.isFinite(duration) || duration < MIN_CLIP_DURATION) continue;
+      // D08: el id de un clip no puede vivir a la vez en la línea de tiempo y
+      // en la papelera (la vía principal ya controla duplicados con
+      // `seenClipIds`; aquí se comparte el mismo conjunto). La colisión se
+      // REPARA renombrando el clip de la papelera, con aviso: el contenido se
+      // conserva y ningún `updateClip`/`removeClip` actúa sobre dos clips.
+      let trashClipId = c.id;
+      if (seenClipIds.has(trashClipId)) {
+        let n = 2;
+        let renamed = `${c.id}_importado_${n}`;
+        while (seenClipIds.has(renamed)) {
+          n += 1;
+          renamed = `${c.id}_importado_${n}`;
+        }
+        warnings.push(`Clip duplicado "${c.id}" en la papelera: se ha renombrado a "${renamed}".`);
+        trashClipId = renamed;
+      }
+      seenClipIds.add(trashClipId);
       // The trash is restored verbatim into the live project, so its clips
       // are normalised with the SAME production normalisers as the main
       // path: the `...c` spread below would otherwise carry keyframes,
@@ -2112,7 +2242,7 @@ export function sanitizeImportedProject(
       const trashWords = sanitizeClipWords(c.words, duration);
       const trashAudioEffects = normalizeAudioEffects(c.audioEffects);
       const rebuiltTrashClip = {
-        id: c.id,
+        id: trashClipId,
         trackId: c.trackId,
         mediaId: media.id,
         name: typeof c.name === 'string' && c.name.length > 0 ? c.name : media.name,
@@ -2278,11 +2408,33 @@ export interface RestoreEmbeddedMediaResult {
   restored: string[];
   /** Ids of the media that could not be restored. */
   failed: string[];
+  /**
+   * D07 · Ids whose bytes were REFUSED: restoring them would exceed the same
+   * size limit the export applies (`MAX_EMBEDDED_MEDIA_BYTES`). They are NOT
+   * written to the disk.
+   */
+  skipped: string[];
+  /**
+   * D07 · Ids ignored because no `mediaPool`/`trash` item references them
+   * (orphan payload): they are NOT written to the disk.
+   */
+  ignored: string[];
+}
+
+export interface RestoreEmbeddedMediaOptions {
+  /** Maximum total bytes (decoded) accepted. Defaults to `MAX_EMBEDDED_MEDIA_BYTES`. */
+  maxBytes?: number;
 }
 
 /**
  * Writes the embedded media bytes back into the local storage (OPFS, with
  * the IndexedDB fallback) and points the media items to their new path.
+ *
+ * D07: the same size limit the export enforces applies here too — a hostile
+ * or corrupt file cannot exhaust the disk. Entries that would push the total
+ * over the limit are skipped (with their id in `skipped`), and entries whose
+ * `mediaId` nobody references (pool + trash) are ignored outright (orphan
+ * bytes are never written).
  *
  * The media keeps its id, so the clips that reference it keep working; the
  * dead `blob:` URL of the exported file is replaced later by the
@@ -2290,24 +2442,66 @@ export interface RestoreEmbeddedMediaResult {
  */
 export async function restoreEmbeddedMedia(
   project: Project,
-  files: EmbeddedMediaFile[]
+  files: EmbeddedMediaFile[],
+  options?: RestoreEmbeddedMediaOptions
 ): Promise<RestoreEmbeddedMediaResult> {
+  const empty: RestoreEmbeddedMediaResult = { project, restored: [], failed: [], skipped: [], ignored: [] };
+  if (!Array.isArray(files) || files.length === 0) return empty;
+
+  const requested = Number(options?.maxBytes);
+  const limitBytes =
+    Number.isFinite(requested) && requested >= 0 ? requested : MAX_EMBEDDED_MEDIA_BYTES;
+
+  // D07: solo los medios que el proyecto referencia tienen dueño; el resto es
+  // carga huérfana y no se toca (ni se decodifica).
+  const owned = new Set<string>();
+  for (const item of Array.isArray(project?.mediaPool) ? project.mediaPool : []) {
+    if (item && typeof item.id === 'string') owned.add(item.id);
+  }
+  for (const entry of Array.isArray(project?.trash) ? project.trash : []) {
+    if (entry?.media && typeof entry.media.id === 'string') owned.add(entry.media.id);
+  }
+
   const restored: string[] = [];
   const failed: string[] = [];
-  if (!Array.isArray(files) || files.length === 0) return { project, restored, failed };
+  const skipped: string[] = [];
+  const ignored: string[] = [];
+  let acceptedBytes = 0;
 
   /** mediaId -> { path, size } */
   const written = new Map<string, { path: string; size: number }>();
 
   for (const entry of files) {
+    if (!owned.has(entry.mediaId)) {
+      ignored.push(entry.mediaId);
+      continue;
+    }
+    let bytes: Uint8Array;
     try {
-      const bytes = decodeBase64(entry.data);
+      bytes = decodeBase64(entry.data);
       if (bytes.byteLength === 0) throw new Error('El archivo incrustado está vacío.');
-      const file = new File([bytes], entry.fileName, {
+    } catch (err) {
+      console.warn(`Could not restore the embedded media "${entry.mediaId}":`, err);
+      failed.push(entry.mediaId);
+      continue;
+    }
+    // D07: el tope es ACUMULADO (como en la exportación): lo que lo supera se
+    // rechaza con un mensaje claro en el informe de importación.
+    if (acceptedBytes + bytes.byteLength > limitBytes) {
+      console.warn(
+        `Embedded media "${entry.mediaId}" exceeds the import limit ` +
+          `(${formatStorageBytes(limitBytes)}): skipped.`
+      );
+      skipped.push(entry.mediaId);
+      continue;
+    }
+    try {
+      const file = new File([bytes as Uint8Array<ArrayBuffer>], entry.fileName, {
         type: entry.mimeType || guessMimeType(entry.fileName),
       });
       const path = await opfsStorage.saveMediaToOPFS(entry.mediaId, file);
       written.set(entry.mediaId, { path, size: bytes.byteLength });
+      acceptedBytes += bytes.byteLength;
       restored.push(entry.mediaId);
     } catch (err) {
       console.warn(`Could not restore the embedded media "${entry.mediaId}":`, err);
@@ -2327,7 +2521,7 @@ export async function restoreEmbeddedMedia(
     media: apply(entry.media),
   }));
 
-  return { project: { ...project, mediaPool, trash }, restored, failed };
+  return { project: { ...project, mediaPool, trash }, restored, failed, skipped, ignored };
 }
 
 /**
@@ -2411,6 +2605,19 @@ export async function importProjectFromFileWithReport(file: File): Promise<Impor
     if (restore.failed.length > 0) {
       warnings.push(
         `No se pudieron restaurar ${restore.failed.length} medio(s) del archivo exportado: ${restore.failed.join(', ')}.`
+      );
+    }
+    // D07: lo rechazado por el tope y lo ignorado por huérfano se avisan con
+    // un mensaje claro (nada se escribe en el disco por estas vías).
+    if (restore.skipped.length > 0) {
+      warnings.push(
+        `Los medios incrustados superan el límite de ${formatStorageBytes(MAX_EMBEDDED_MEDIA_BYTES)}: ` +
+          `no se han restaurado ${restore.skipped.length} medio(s) (${restore.skipped.join(', ')}).`
+      );
+    }
+    if (restore.ignored.length > 0) {
+      warnings.push(
+        `${restore.ignored.length} medio(s) del archivo no pertenecen al proyecto y se han ignorado: ${restore.ignored.join(', ')}.`
       );
     }
   }

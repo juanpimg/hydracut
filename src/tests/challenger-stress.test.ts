@@ -189,7 +189,8 @@ describe('Challenger 1: MasterClock & AudioEngine Adversarial Stress Test Harnes
       let simWallTime = performance.now();
       const perfSpy = vi.spyOn(performance, 'now').mockImplementation(() => simWallTime);
 
-      // 1. Normal sync for 100ms
+      // 1. Normal sync for 100ms (`getTime()` is a pure read, F-A3-04: the
+      // stateless branches report the sane clock without latching)
       simWallTime += 100;
       mockAudioCurrentTime += 0.1;
       let t = clock.getTime();

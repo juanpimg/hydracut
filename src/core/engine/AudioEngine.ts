@@ -2,7 +2,7 @@ import { Clip, MediaItem, Track } from '../../types/project';
 import { masterClock } from './MasterClock';
 import { mediaSourcePool } from './MediaSourcePool';
 import { resolvePlayback } from '../utils/playbackRate';
-import { previewClipFadeGain } from '../utils/audioFades';
+import { fadeDurationScale, previewClipFadeGain } from '../utils/audioFades';
 import {
   duckEnvelopeGain,
   getBiquadFilterSupport,
@@ -357,10 +357,10 @@ export class AudioEngine {
 
       // Re-populate reusable map caches without heap allocation on every frame
       this.mediaMapCache.clear();
-      for (const m of mediaPool) this.mediaMapCache.set(m.id, m);
+      for (let i = 0; i < mediaPool.length; i++) this.mediaMapCache.set(mediaPool[i].id, mediaPool[i]);
 
       this.trackMapCache.clear();
-      for (const t of tracks) this.trackMapCache.set(t.id, t);
+      for (let i = 0; i < tracks.length; i++) this.trackMapCache.set(tracks[i].id, tracks[i]);
 
       // F5: the crossfade index is refreshed once per clip change, never
       // per frame (zero allocations when nothing relevant changed).
@@ -376,7 +376,8 @@ export class AudioEngine {
       const biquadSupported = getBiquadFilterSupport();
 
       // Process clips with audio
-      for (const clip of clips) {
+      for (let i = 0; i < clips.length; i++) {
+        const clip = clips[i];
         if (clip.type !== 'audio' && clip.type !== 'video') continue;
 
         const track = this.trackMapCache.get(clip.trackId);
@@ -446,21 +447,32 @@ export class AudioEngine {
           }
 
           // Apply volume factoring in clip volume, master volume, and transitions
+          // F-A3-01: cuando `fadeIn + fadeOut` supera la duración del clip
+          // (p. ej. fundidos puestos y luego un trim que lo acorta), ambas
+          // ventanas se encogen en la MISMA proporción que en el export
+          // (`fadeDurationScale`, la función compartida: preview ≡ export).
           let transitionMultiplier = 1;
           if (clip.transition) {
             const { fadeInType, fadeInDuration, fadeOutType, fadeOutDuration } = clip.transition;
+            const scale = fadeDurationScale(
+              fadeInDuration > 0 ? fadeInDuration : 0,
+              fadeOutDuration > 0 ? fadeOutDuration : 0,
+              clip.duration
+            );
+            const effectiveIn = (fadeInDuration || 0) * scale;
+            const effectiveOut = (fadeOutDuration || 0) * scale;
             const timeInClip = time - clip.start;
             const timeLeft = clip.start + clip.duration - time;
 
-            if (fadeInDuration > 0 && timeInClip >= 0 && timeInClip < fadeInDuration) {
+            if (effectiveIn > 0 && timeInClip >= 0 && timeInClip < effectiveIn) {
               if (fadeInType === 'fade-black' || fadeInType === 'fade-white') {
-                transitionMultiplier *= Math.max(0, timeInClip / fadeInDuration);
+                transitionMultiplier *= Math.max(0, timeInClip / effectiveIn);
               }
             }
 
-            if (fadeOutDuration > 0 && timeLeft >= 0 && timeLeft < fadeOutDuration) {
+            if (effectiveOut > 0 && timeLeft >= 0 && timeLeft < effectiveOut) {
               if (fadeOutType === 'fade-black' || fadeOutType === 'fade-white') {
-                transitionMultiplier *= Math.max(0, timeLeft / fadeOutDuration);
+                transitionMultiplier *= Math.max(0, timeLeft / effectiveOut);
               }
             }
           }

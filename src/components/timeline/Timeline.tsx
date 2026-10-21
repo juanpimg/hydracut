@@ -541,7 +541,7 @@ export const Timeline: React.FC = () => {
             )}
           </div>
 
-          {/* F5 · Estado vacío diseñado: titular + una acción (+ pista de arrastrar y soltar). */}
+          {/* F5 · Estado vacío diseñado: titular + una acción por toque (M2: sin verbos de ratón). */}
           {!hayClips && (
             <div
               data-testid="timeline-empty-state"
@@ -550,14 +550,14 @@ export const Timeline: React.FC = () => {
               <div className="pointer-events-auto flex max-w-72 flex-col items-center gap-1.5 rounded-md border border-border bg-panel px-6 py-5 text-center">
                 <p className="text-body-lg text-text-1">Sin clips</p>
                 <p className="text-body-sm text-text-2">
-                  Arrastra un medio al carril o impórtalo desde Medios
+                  Añade un clip para empezar a editar.
                 </p>
                 <Button
                   type="button"
                   size="sm"
                   onClick={handleAnadirPrimerMedio}
                   disabled={!hayMedios}
-                  title={hayMedios ? 'Añade el primer medio en el cabezal' : 'Importa primero un archivo desde Medios'}
+                  title={hayMedios ? 'Añade el primer medio en el cabezal' : 'Importa primero un medio desde Medios'}
                 >
                   Añade un medio
                 </Button>
