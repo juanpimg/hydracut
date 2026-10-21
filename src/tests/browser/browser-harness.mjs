@@ -145,6 +145,56 @@ export function isFirefoxAvailable() {
   return isExecutableFile(resolveFirefoxPath());
 }
 
+/* ------------------------------------------------------------------ *
+ * ffmpeg / ffprobe (verificación de los ficheros exportados)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Rutas explícitas opcionales (ganan a la búsqueda en el PATH, como
+ * `HYDRA_CHROME_PATH` / `HYDRA_FIREFOX_PATH`). Sirven para pinchar un
+ * binario concreto y para simular su ausencia en pruebas.
+ */
+const DEFAULT_FFPROBE_PATH = 'ffprobe';
+const DEFAULT_FFMPEG_PATH = 'ffmpeg';
+
+/** Busca `name` en el PATH; un override explícito se devuelve tal cual. */
+function resolveToolPath(override, name) {
+  if (override) return override;
+  const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const dir of pathDirs) {
+    const full = path.join(dir, name);
+    if (isExecutableFile(full)) return full;
+  }
+  return name;
+}
+
+/** Ruta del binario `ffprobe` (o su nombre, como último recurso). */
+export function resolveFfprobePath() {
+  return resolveToolPath(process.env.HYDRA_FFPROBE_PATH, DEFAULT_FFPROBE_PATH);
+}
+
+/** Ruta del binario `ffmpeg` (o su nombre, como último recurso). */
+export function resolveFfmpegPath() {
+  return resolveToolPath(process.env.HYDRA_FFMPEG_PATH, DEFAULT_FFMPEG_PATH);
+}
+
+/**
+ * True cuando `ffprobe` está disponible en esta máquina.
+ * Las comprobaciones que lo necesitan deben OMITIRSE con un mensaje claro
+ * cuando falte (nunca fallar): un desarrollador sin ffmpeg tiene que poder
+ * correr la suite igual. Patrón de `isFirefoxAvailable()`.
+ */
+export function isFfprobeAvailable() {
+  // Un override explícito manda incluso si apunta a ningún sitio: en ese
+  // caso la herramienta se considera ausente (sirve para probar el skip).
+  return isExecutableFile(resolveFfprobePath());
+}
+
+/** True cuando `ffmpeg` está disponible en esta máquina (mismo contrato). */
+export function isFfmpegAvailable() {
+  return isExecutableFile(resolveFfmpegPath());
+}
+
 /** Default timeout applied to every wait helper (30 s). */
 export const DEFAULT_TIMEOUT = 30_000;
 

@@ -79,7 +79,9 @@ export class MediaSourcePool {
   /** Media id -> last error message (E-12). */
   private mediaErrors: Map<string, string> = new Map();
   private mediaErrorListeners: Set<(info: MediaErrorInfo) => void> = new Set();
-  private lastPrewarmTime = 0;
+  // "Nunca" es -Infinity, no 0: con 0 la primera llamada dentro de los
+  // 250 ms del proceso se saltaba (comparado con `now - x < 250`).
+  private lastPrewarmTime = -Infinity;
   private frameReadyListeners: Set<() => void> = new Set();
   private frameReadyScheduled = false;
 
@@ -88,7 +90,9 @@ export class MediaSourcePool {
     if (!state) {
       state = {
         isCorrecting: false,
-        lastRateChangeTime: 0,
+        // "Nunca se cambió" es -Infinity, no 0: con 0 la primera corrección
+        // solo se permitía cuando el proceso llevaba vivo 300 ms (cooldown).
+        lastRateChangeTime: -Infinity,
         lastTargetTime: Number.NaN,
         hasTargetTime: false,
         seekSuppressUntil: 0,
@@ -360,7 +364,9 @@ export class MediaSourcePool {
     if (w <= 0 || h <= 0) return;
 
     const now = this.now();
-    const lastStored = this.lastStoredFrameTimeMap.get(clipId) || 0;
+    // Sin registro significa "nunca", no tiempo 0: con `|| 0` el primer
+    // guardado dentro de los 300 ms del proceso se estrangulaba.
+    const lastStored = this.lastStoredFrameTimeMap.get(clipId) ?? -Infinity;
     if (!force && now - lastStored < 300) {
       return;
     }
@@ -884,7 +890,7 @@ export class MediaSourcePool {
     this.failedElements = new WeakSet();
     this.playFailureCountMap = new WeakMap();
     this.nextPlayAttemptMap = new WeakMap();
-    this.lastPrewarmTime = 0;
+    this.lastPrewarmTime = -Infinity;
     for (const v of this.videoElements.values()) {
       this.videoSyncStateMap.delete(v);
       this.lastHardSeekTimeMap.delete(v);

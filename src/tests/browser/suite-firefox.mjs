@@ -47,6 +47,8 @@ import {
   BASE_URL,
   DEFAULT_TIMEOUT,
   isFirefoxAvailable,
+  isFfprobeAvailable,
+  resolveFfprobePath,
   launchFirefox,
   resolveFirefoxPath,
   waitForAppReady,
@@ -326,26 +328,35 @@ export async function run({ report, baseUrl = BASE_URL }) {
     );
 
     /* ---- 6. video AND audio streams inside the file ---- */
-    let streams = null;
-    let probeError = null;
-    try {
-      streams = ffprobeStreams(filePath);
-    } catch (err) {
-      probeError = err && err.message ? err.message : String(err);
+    // Sin ffprobe no se puede inspeccionar el fichero: el check se omite
+    // con un mensaje (no es un fallo), como la suite sin Firefox.
+    if (!isFfprobeAvailable()) {
+      console.log(
+        `  ⊘ FIREFOX-EXPORT-STREAMS omitido: no se encontró ffprobe en "${resolveFfprobePath()}". ` +
+          `Instala ffmpeg para verificar las pistas (no es un fallo).`
+      );
+    } else {
+      let streams = null;
+      let probeError = null;
+      try {
+        streams = ffprobeStreams(filePath);
+      } catch (err) {
+        probeError = err && err.message ? err.message : String(err);
+      }
+      const types = streams ? streams.map((s) => s.codec_type) : [];
+      const streamsOk = Boolean(
+        streams && types.includes('video') && types.includes('audio')
+      );
+      report.check(
+        'FIREFOX-EXPORT-STREAMS',
+        'El fichero exportado trae pista de vídeo Y pista de audio (ffprobe)',
+        streamsOk,
+        streams
+          ? `streams: ${streams.map((s) => `${s.codec_type}=${s.codec_name}${s.width ? ` ${s.width}x${s.height}` : ''}${s.channels ? ` ${s.channels}ch` : ''}`).join(' | ')}`
+          : `ffprobe falló: ${(probeError || 'n/d').slice(0, 300)}`,
+        { details: { streams, probeError } }
+      );
     }
-    const types = streams ? streams.map((s) => s.codec_type) : [];
-    const streamsOk = Boolean(
-      streams && types.includes('video') && types.includes('audio')
-    );
-    report.check(
-      'FIREFOX-EXPORT-STREAMS',
-      'El fichero exportado trae pista de vídeo Y pista de audio (ffprobe)',
-      streamsOk,
-      streams
-        ? `streams: ${streams.map((s) => `${s.codec_type}=${s.codec_name}${s.width ? ` ${s.width}x${s.height}` : ''}${s.channels ? ` ${s.channels}ch` : ''}`).join(' | ')}`
-        : `ffprobe falló: ${(probeError || 'n/d').slice(0, 300)}`,
-      { details: { streams, probeError } }
-    );
   } finally {
     if (context) {
       try {

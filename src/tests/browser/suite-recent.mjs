@@ -49,6 +49,10 @@ import {
   navigateWithRetry,
   waitForPersistedProject,
   readMp4VideoTrackSize,
+  isFfprobeAvailable,
+  isFfmpegAvailable,
+  resolveFfprobePath,
+  resolveFfmpegPath,
   delay,
 } from './browser-harness.mjs';
 
@@ -1100,6 +1104,11 @@ async function caseSupport({ report, baseUrl, live }) {
  * Case 3 — ONE export serving audio + colour + keyframes + round-trip
  * ------------------------------------------------------------------ */
 async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }) {
+  // ffprobe + ffmpeg solo existen donde hay ffmpeg instalado (la CI los
+  // instala; en local pueden faltar): sin ellos los checks de inspección del
+  // MP4 se omiten con un mensaje, nunca fallan.
+  const canInspect = isFfprobeAvailable() && isFfmpegAvailable();
+  const exportExpected = canInspect ? EXPORT_EXPECTED : [];
   const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hydra-cut-recent-'));
   const outcome = await runScenario(async () => {
     const { context, page } = await bootApp(browser, { width: 1440, height: 900, baseUrl });
@@ -1125,7 +1134,7 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
       });
       if (!img.ok || !wav.ok) {
         const msg = `Sin medios de prueba: ${JSON.stringify({ img, wav })}`;
-        for (const item of EXPORT_EXPECTED) decide(item.id, item.title, false, msg);
+        for (const item of exportExpected) decide(item.id, item.title, false, msg);
         decide('STORAGE-ROUNDTRIP-WITH-MEDIA', 'Round-trip con medios', false, msg);
         return { reloaded: navCount(page) !== navBefore, checks };
       }
@@ -1154,7 +1163,7 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
       }
       if (!videoClipId || !audioClipId) {
         const msg = `Sin clips para exportar: ${JSON.stringify({ rV, rA })}`;
-        for (const item of EXPORT_EXPECTED) decide(item.id, item.title, false, msg);
+        for (const item of exportExpected) decide(item.id, item.title, false, msg);
         decide('STORAGE-ROUNDTRIP-WITH-MEDIA', 'Round-trip con medios', false, msg);
         return { reloaded: navCount(page) !== navBefore, checks };
       }
@@ -1206,12 +1215,22 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
       }
       if (!file) {
         const msg = 'La exportación no descargó ningún .mp4 en 90 s.';
-        for (const item of EXPORT_EXPECTED) decide(item.id, item.title, false, msg);
+        for (const item of exportExpected) decide(item.id, item.title, false, msg);
         decide('STORAGE-ROUNDTRIP-WITH-MEDIA', 'Round-trip con medios', false, msg);
         return { reloaded: navCount(page) !== navBefore, checks };
       }
 
-      const streams = ffprobeStreams(file.filePath);
+      // Sin ffprobe/ffmpeg el MP4 no se puede inspeccionar: los checks de
+      // exportación se omiten con un mensaje (no es un fallo). El round-trip
+      // no necesita ffmpeg y sigue corriendo.
+      if (!canInspect) {
+        console.log(
+          '  ⊘ AUDIO-FADE-EXPORT, COLOR-EXPORT-CARRIES-FILTER y KEYFRAMES-EXPORT omitidos: ' +
+            `falta ${!isFfprobeAvailable() ? `ffprobe ("${resolveFfprobePath()}")` : `ffmpeg ("${resolveFfmpegPath()}")`}. ` +
+            'Instala ffmpeg para inspeccionar el MP4 (no es un fallo).'
+        );
+      }
+      const streams = canInspect ? ffprobeStreams(file.filePath) : [];
       const videoStream = streams.find((s) => s.codec_type === 'video') || {};
       const audioStream = streams.find((s) => s.codec_type === 'audio') || null;
       const outW = Number(videoStream.width) || 1280;
@@ -1237,22 +1256,24 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
         audioMsg = `El MP4 exportado NO trae pista de audio (streams: ${JSON.stringify(streams.map((s) => s.codec_type))}): el fundido no puede sonar.`;
         audioDetail = { streams: streams.map((s) => s.codec_type) };
       }
-      decide(
-        'AUDIO-FADE-EXPORT',
-        'El audio del MP4 respeta el fundido de 1 s (el inicio suena claramente más bajo)',
-        audioOk,
-        audioMsg,
-        audioDetail
-      );
+      if (canInspect) {
+        decide(
+          'AUDIO-FADE-EXPORT',
+          'El audio del MP4 respeta el fundido de 1 s (el inicio suena claramente más bajo)',
+          audioOk,
+          audioMsg,
+          audioDetail
+        );
+      }
 
       /* --- video frames --------------------------------------------- */
       const frameTimes = [0.2, 1.0, 1.8];
-      const frames = frameTimes.map((t, i) => {
+      const frames = canInspect ? frameTimes.map((t, i) => {
         const rawPath = path.join(workdir, `frame${i}.raw`);
         extractRawFrame(file.filePath, t, rawPath, outW, outH);
         const raw = fs.readFileSync(rawPath);
         return { t, stats: rawFrameStats(raw, outW, outH) };
-      });
+      }) : [];
 
       /* --- COLOR-EXPORT-CARRIES-FILTER ------------------------------- */
       const spreads = frames.map((f) => f.stats.maxSpread);
@@ -1261,32 +1282,36 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
         unfilteredSpread !== null && unfilteredSpread > 100 &&
         spreads.every((s) => typeof s === 'number' && s <= 16)
       );
-      decide(
-        'COLOR-EXPORT-CARRIES-FILTER',
-        'El preajuste B/N llega al MP4: el fotograma exportado está desaturado',
-        colorOk,
-        `preset aplicado por UI=${presetOk}, filtros en el store=${JSON.stringify(filtersNow)} | ` +
-          `preview sin filtro: dispersión=${unfilteredSpread} (> 100) | ` +
-          `preview con B/N: dispersión=${filteredPreviewSpread} | ` +
-          `fotogramas exportados@${frameTimes.join('/')} s: dispersión=[${spreads.join(', ')}] (<= 16) | ` +
-          `tkhd=${JSON.stringify(readMp4VideoTrackSize(file.filePath))}`,
-        { presetOk, filtersNow, unfilteredSpread, filteredPreviewSpread, spreads }
-      );
+      if (canInspect) {
+        decide(
+          'COLOR-EXPORT-CARRIES-FILTER',
+          'El preajuste B/N llega al MP4: el fotograma exportado está desaturado',
+          colorOk,
+          `preset aplicado por UI=${presetOk}, filtros en el store=${JSON.stringify(filtersNow)} | ` +
+            `preview sin filtro: dispersión=${unfilteredSpread} (> 100) | ` +
+            `preview con B/N: dispersión=${filteredPreviewSpread} | ` +
+            `fotogramas exportados@${frameTimes.join('/')} s: dispersión=[${spreads.join(', ')}] (<= 16) | ` +
+            `tkhd=${JSON.stringify(readMp4VideoTrackSize(file.filePath))}`,
+          { presetOk, filtersNow, unfilteredSpread, filteredPreviewSpread, spreads }
+        );
+      }
 
       /* --- KEYFRAMES-EXPORT ------------------------------------------ */
       const cxs = frames.map((f) => f.stats.cx);
       const mono = cxs.length === 3 && cxs[0] < cxs[1] && cxs[1] < cxs[2];
       const span = cxs.length === 3 ? cxs[2] - cxs[0] : null;
       const kfOk = Boolean(mono && span !== null && span >= 60 && previewDirUp);
-      decide(
-        'KEYFRAMES-EXPORT',
-        'Los fotogramas exportados siguen la animación (X monótona, como el preview)',
-        kfOk,
-        `centroides X exportados@${frameTimes.join('/')} s: [${cxs.map((c) => (c !== undefined ? c.toFixed(0) : 'n/d')).join(', ')}] ` +
-          `(monótonos=${mono}, recorrido=${span !== null ? span.toFixed(0) : 'n/d'} px >= 60) | ` +
-          `preview en la misma dirección (0,3 s → 1,7 s)=${previewDirUp}`,
-        { cxs, span, previewDirUp }
-      );
+      if (canInspect) {
+        decide(
+          'KEYFRAMES-EXPORT',
+          'Los fotogramas exportados siguen la animación (X monótona, como el preview)',
+          kfOk,
+          `centroides X exportados@${frameTimes.join('/')} s: [${cxs.map((c) => (c !== undefined ? c.toFixed(0) : 'n/d')).join(', ')}] ` +
+            `(monótonos=${mono}, recorrido=${span !== null ? span.toFixed(0) : 'n/d'} px >= 60) | ` +
+            `preview en la misma dirección (0,3 s → 1,7 s)=${previewDirUp}`,
+          { cxs, span, previewDirUp }
+        );
+      }
 
       /* --- STORAGE-ROUNDTRIP-WITH-MEDIA ------------------------------- */
       try {
@@ -1505,7 +1530,7 @@ async function caseExportRoundtrip({ browser, report, baseUrl, assets, workdir }
     }
   }, {
     expected: [
-      ...EXPORT_EXPECTED,
+      ...exportExpected,
       { id: 'STORAGE-ROUNDTRIP-WITH-MEDIA', title: 'Round-trip con medios' },
     ],
   });
